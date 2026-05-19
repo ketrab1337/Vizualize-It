@@ -58,6 +58,6 @@
     "sql:allow-select",
     "sql:allow-close",
     "updater:default",
-    "process:allow-relaunch"
+    "process:allow-restart"
   ]
 }
