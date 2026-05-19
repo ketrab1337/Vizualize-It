@@ -2,7 +2,8 @@ import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { useProjectStore } from "../stores/projectStore";
-import { useEditorStore } from "../stores/editorStore";
+import { useEditorStore, type LedProjectConfig } from "../stores/editorStore";
+import { useGenerationStore, type GenerationSnapshot } from "../stores/generationStore";
 import { useToastStore } from "../stores/toastStore";
 import { updateSvgWithOverrides } from "../lib/svgHelpers";
 import { getDb } from "../lib/db";
@@ -10,22 +11,21 @@ import type { Project } from "../types";
 
 export function useProject() {
   const { projects, setProjects, activeProjectId, setActiveProject } = useProjectStore();
-  const { resetEditor, setSvgContent, setBackground } = useEditorStore();
+  const { resetEditor, setSvgContent, setBackground, setLedConfig } = useEditorStore();
   const addToast = useToastStore((s) => s.addToast);
 
   // Czyta stan bezpośrednio ze store w momencie wywołania — bez stale closure
   const saveEditorState = useCallback(async (projectId: string) => {
     try {
-      const { svgContent, nodeOverrides, backgroundPath } = useEditorStore.getState();
-      // Bake overrides into SVG at save time — fixes race between setNodeOverride and saveFnRef
+      const { svgContent, nodeOverrides, backgroundPath, ledConfig } = useEditorStore.getState();
       const svgToSave = svgContent
         ? updateSvgWithOverrides(svgContent, nodeOverrides)
         : null;
       const db = await getDb();
       const now = new Date().toISOString();
       await db.execute(
-        "UPDATE projects SET svg_content = $1, background_path = $2, updated_at = $3 WHERE id = $4",
-        [svgToSave ?? null, backgroundPath ?? null, now, projectId]
+        "UPDATE projects SET svg_content = $1, background_path = $2, updated_at = $3, led_config_json = $4 WHERE id = $5",
+        [svgToSave ?? null, backgroundPath ?? null, now, JSON.stringify(ledConfig), projectId]
       );
     } catch (e) {
       console.error("Błąd zapisu stanu edytora:", e);
@@ -37,17 +37,28 @@ export function useProject() {
       resetEditor();
       try {
         const db = await getDb();
-        const rows = await db.select<{ svg_content: string | null; background_path: string | null }[]>(
-          "SELECT svg_content, background_path FROM projects WHERE id = $1",
+        const rows = await db.select<{
+          svg_content: string | null;
+          background_path: string | null;
+          led_config_json: string | null;
+        }[]>(
+          "SELECT svg_content, background_path, led_config_json FROM projects WHERE id = $1",
           [projectId]
         );
         const row = rows[0];
         if (!row) return;
 
-        // nodeOverrides zostaną przywrócone automatycznie przez Canvas
-        // na podstawie atrybutów data-* zawartych w SVG
         if (row.svg_content) {
           setSvgContent(row.svg_content);
+        }
+
+        if (row.led_config_json) {
+          try {
+            const cfg = JSON.parse(row.led_config_json) as Partial<LedProjectConfig>;
+            setLedConfig(cfg);
+          } catch {
+            // ignoruj nieprawidłowy JSON
+          }
         }
 
         if (row.background_path) {
@@ -67,7 +78,7 @@ export function useProject() {
         console.error("Błąd ładowania stanu edytora:", e);
       }
     },
-    [resetEditor, setSvgContent, setBackground]
+    [resetEditor, setSvgContent, setBackground, setLedConfig]
   );
 
   const loadProjects = useCallback(async () => {
@@ -194,6 +205,49 @@ export function useProject() {
     [projects, setProjects, addToast]
   );
 
+  // ── Per-projekt stan generowania (prompt + presety + ustawienia panelu) ─────
+  // JSON w `projects.generation_state_json` — patrz migracja 014. Powód: bez tego
+  // wybór presetów i prompt wyciekały między projektami (cały generationStore był
+  // globalny w pamięci).
+
+  const saveGenerationState = useCallback(async (projectId: string) => {
+    try {
+      const snapshot = useGenerationStore.getState().toSnapshot();
+      const db = await getDb();
+      await db.execute(
+        "UPDATE projects SET generation_state_json = $1 WHERE id = $2",
+        [JSON.stringify(snapshot), projectId]
+      );
+    } catch (e) {
+      console.error("Błąd zapisu stanu generowania:", e);
+    }
+  }, []);
+
+  const loadGenerationState = useCallback(async (projectId: string) => {
+    const { applySnapshot } = useGenerationStore.getState();
+    try {
+      const db = await getDb();
+      const rows = await db.select<{ generation_state_json: string | null }[]>(
+        "SELECT generation_state_json FROM projects WHERE id = $1",
+        [projectId]
+      );
+      const raw = rows[0]?.generation_state_json;
+      if (!raw) {
+        applySnapshot(null);
+        return;
+      }
+      try {
+        const snapshot = JSON.parse(raw) as GenerationSnapshot;
+        applySnapshot(snapshot);
+      } catch {
+        applySnapshot(null);
+      }
+    } catch (e) {
+      console.error("Błąd ładowania stanu generowania:", e);
+      applySnapshot(null);
+    }
+  }, []);
+
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
 
   return {
@@ -207,5 +261,7 @@ export function useProject() {
     renameProject,
     saveEditorState,
     loadEditorState,
+    saveGenerationState,
+    loadGenerationState,
   };
 }

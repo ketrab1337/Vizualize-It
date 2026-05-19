@@ -9,7 +9,7 @@ import paper from "paper";
 import { useEditorStore } from "../../stores/editorStore";
 import { useGenerationStore } from "../../stores/generationStore";
 import { useToastStore } from "../../stores/toastStore";
-import { saveFnRef, resizeElementFnRef, captureCanvasFnRef } from "../../lib/paperCanvas";
+import { saveFnRef, resizeElementFnRef, captureCanvasFnRef, pushHistoryRef } from "../../lib/paperCanvas";
 import { updateSvgWithOverrides, patchSvgLayerState } from "../../lib/svgHelpers";
 import { RULER_SIZE, RULER_BG, RULER_BORDER, drawHRuler, drawVRuler } from "./canvas/rulers";
 import {
@@ -29,6 +29,26 @@ import { useZoomActions } from "./canvas/useZoomActions";
 import type { LayerItem } from "./LayersPanel";
 import type { NodeOverride, Project } from "../../types";
 
+function computeCombinedBounds(items: paper.Item[], mm: number) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let totalArea = 0, totalLength = 0;
+  for (const it of items) {
+    const b = it.bounds;
+    if (b.x < minX) minX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.x + b.width > maxX) maxX = b.x + b.width;
+    if (b.y + b.height > maxY) maxY = b.y + b.height;
+    totalArea += calcTotalArea(it) * mm * mm;
+    totalLength += calcTotalLength(it) * mm;
+  }
+  return {
+    widthMm: (maxX - minX) * mm,
+    heightMm: (maxY - minY) * mm,
+    areaMm2: totalArea,
+    pathLengthMm: totalLength,
+  };
+}
+
 interface CanvasProps { project: Project; }
 interface SvgImportResult { filename: string; content: string; }
 interface BackgroundImportResult { path: string; mime: string; }
@@ -36,6 +56,27 @@ interface BackgroundImportResult { path: string; mime: string; }
 async function backgroundToBlobUrl(path: string, mime: string): Promise<string> {
   const bytes = await readFile(path);
   return URL.createObjectURL(new Blob([bytes], { type: mime }));
+}
+
+function mapDeepLayerItems(
+  items: LayerItem[],
+  id: string,
+  update: (item: LayerItem) => LayerItem,
+): LayerItem[] {
+  return items.map((i) => {
+    if (i.id === id) return update(i);
+    if (i.children) return { ...i, children: mapDeepLayerItems(i.children, id, update) };
+    return i;
+  });
+}
+
+function flattenLayerItems(items: LayerItem[]): LayerItem[] {
+  const result: LayerItem[] = [];
+  for (const item of items) {
+    result.push(item);
+    if (item.children) result.push(...flattenLayerItems(item.children));
+  }
+  return result;
 }
 
 // Guardy modułowe — przeżywają remounty Reacta, są współdzielone przez wszystkie instancje.
@@ -57,6 +98,7 @@ export function Canvas({ project }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const topRulerRef = useRef<HTMLCanvasElement>(null);
   const leftRulerRef = useRef<HTMLCanvasElement>(null);
+  const backgroundImgRef = useRef<HTMLImageElement>(null);
   const drawRulersRef = useRef<() => void>(() => {});
 
   // Refs — stan imperatywny
@@ -120,10 +162,12 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   const {
     svgContent, setSvgContent,
     setSelectedElement, setSelectedItemBounds,
-    setBoundsForElement, clearBoundsPerElement,
+    setBoundsForElement, removeBoundsForElement, clearBoundsPerElement,
+    selectedElementIds: _sel, setSelectedElementIds,
     backgroundDataUrl, backgroundPath, setBackground, clearBackground,
     nodeOverrides, setNodeOverride, renameNodeOverride, removeNodeOverride, clearNodeOverrides,
   } = useEditorStore();
+  void _sel; // używane tylko przez ElementPanel przez store
   const addToast = useToastStore((s) => s.addToast);
 
   svgContentRef.current = svgContent;
@@ -144,16 +188,19 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     setSelectedElement(null);
     setSelectedItemBounds(null);
     setSelectedItemNames([]);
+    setSelectedElementIds([]);
     toolCbRef.current.clearResizeHandles();
-  }, [setSelectedElement, setSelectedItemBounds]);
+  }, [setSelectedElement, setSelectedItemBounds, setSelectedElementIds]);
 
   const addToSelection = useCallback((item: paper.Item) => {
     item.selected = true;
     selectedItemsRef.current.push(item);
-    setSelectedItemNames(selectedItemsRef.current.map((i) => i.name).filter(Boolean));
+    const ids = selectedItemsRef.current.map((i) => i.name).filter(Boolean) as string[];
+    setSelectedItemNames(ids);
+    setSelectedElementIds(ids);
+    const mm = mmPerUnitRef.current;
     if (selectedItemsRef.current.length === 1) {
       setSelectedElement(item.name);
-      const mm = mmPerUnitRef.current;
       const b = item.bounds;
       const bounds = {
         widthMm: b.width * mm,
@@ -165,10 +212,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       if (item.name) setBoundsForElement(item.name, bounds);
     } else {
       setSelectedElement(null);
-      setSelectedItemBounds(null);
+      setSelectedItemBounds(computeCombinedBounds(selectedItemsRef.current, mm));
     }
     toolCbRef.current.drawResizeHandles();
-  }, [setSelectedElement, setSelectedItemBounds, setBoundsForElement]);
+  }, [setSelectedElement, setSelectedItemBounds, setSelectedElementIds, setBoundsForElement]);
 
   const hitTestSvg = useCallback((point: paper.Point): paper.Item | null => {
     // Testuj tylko warstwę "svg" — warstwa "ui" (hover rect, rubber band) nie może
@@ -285,13 +332,23 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   const rebuildLayerItems = useCallback(() => {
     const layer = svgLayerRef.current;
     if (!layer || !layer.children) return;
-    const newItems: LayerItem[] = [...(layer.children as paper.Item[])].reverse().map((item, idx) => ({
-      id: item.name || `__item_${idx}`,
-      name: item.name || getDefaultName(item),
-      type: getItemType(item),
-      locked: item.locked,
-      visible: item.visible,
-    }));
+
+    function buildItem(item: paper.Item, idx: number): LayerItem {
+      const isGroup = item instanceof paper.Group && !(item instanceof paper.CompoundPath);
+      const children = isGroup && (item as paper.Group).children?.length
+        ? [...(item as paper.Group).children].map((c, i) => buildItem(c, i))
+        : undefined;
+      return {
+        id: item.name || `__item_${idx}`,
+        name: item.name || getDefaultName(item),
+        type: getItemType(item),
+        locked: item.locked,
+        visible: item.visible,
+        children,
+      };
+    }
+
+    const newItems = [...(layer.children as paper.Item[])].reverse().map((item, idx) => buildItem(item, idx));
     setLayerItems(newItems);
   }, []);
 
@@ -302,7 +359,14 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef,
     selectedItemsRef, isSavingRef,
     setSvgContent, clearSelection, addToSelection, rebuildLayerItems, setContextMenu,
+    removeNodeOverride, removeBoundsForElement,
   });
+
+  // Udostępnij pushHistory dla komponentów poza Canvas (np. ElementPanel)
+  useEffect(() => {
+    pushHistoryRef.current = pushHistory;
+    return () => { pushHistoryRef.current = null; };
+  }, [pushHistory]);
 
   const handleLayerSelect = useCallback((id: string, multi: boolean) => {
     const layer = svgLayerRef.current;
@@ -314,11 +378,25 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       if (idx >= 0) {
         item.selected = false;
         selectedItemsRef.current.splice(idx, 1);
-        setSelectedItemNames(selectedItemsRef.current.map((i) => i.name).filter(Boolean));
-        setSelectedElement(selectedItemsRef.current.length === 1 ? selectedItemsRef.current[0].name : null);
-        setSelectedItemBounds(null);
-        if (selectedItemsRef.current.length === 1) toolCbRef.current.drawResizeHandles();
-        else toolCbRef.current.clearResizeHandles();
+        const rem = selectedItemsRef.current;
+        const ids = rem.map((i) => i.name).filter(Boolean) as string[];
+        setSelectedItemNames(ids);
+        setSelectedElementIds(ids);
+        const mm = mmPerUnitRef.current;
+        if (rem.length === 1) {
+          setSelectedElement(rem[0].name);
+          const b = rem[0].bounds;
+          setSelectedItemBounds({ widthMm: b.width * mm, heightMm: b.height * mm, pathLengthMm: calcTotalLength(rem[0]) * mm, areaMm2: calcTotalArea(rem[0]) * mm * mm });
+          toolCbRef.current.drawResizeHandles();
+        } else if (rem.length > 1) {
+          setSelectedElement(null);
+          setSelectedItemBounds(computeCombinedBounds(rem, mm));
+          toolCbRef.current.clearResizeHandles();
+        } else {
+          setSelectedElement(null);
+          setSelectedItemBounds(null);
+          toolCbRef.current.clearResizeHandles();
+        }
       } else {
         addToSelection(item);
       }
@@ -326,7 +404,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       clearSelection();
       addToSelection(item);
     }
-  }, [clearSelection, addToSelection, setSelectedElement, setSelectedItemBounds]);
+  }, [clearSelection, addToSelection, setSelectedElement, setSelectedItemBounds, setSelectedElementIds]);
 
   const handleLayerRename = useCallback((id: string, newName: string) => {
     const layer = svgLayerRef.current;
@@ -336,7 +414,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     const item = findItemByName(layer, id);
     if (!item) return;
     item.name = trimmed;
-    setLayerItems((prev) => prev.map((i) => i.id === id ? { ...i, id: trimmed, name: trimmed } : i));
+    setLayerItems((prev) => mapDeepLayerItems(prev, id, (i) => ({ ...i, id: trimmed, name: trimmed })));
     setSelectedItemNames((prev) => prev.map((n) => n === id ? trimmed : n));
     renameNodeOverride(id, trimmed);
 
@@ -360,16 +438,18 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         if (idx >= 0) {
           item.selected = false;
           selectedItemsRef.current.splice(idx, 1);
-          setSelectedItemNames(selectedItemsRef.current.map((i) => i.name).filter(Boolean));
+          const ids = selectedItemsRef.current.map((i) => i.name).filter(Boolean) as string[];
+          setSelectedItemNames(ids);
+          setSelectedElementIds(ids);
         }
       }
     }
     setLayerItems((prev) => {
-      const next = prev.map((i) => i.id === id ? { ...i, locked: !i.locked } : i);
+      const next = mapDeepLayerItems(prev, id, (i) => ({ ...i, locked: !i.locked }));
       const content = svgContentRef.current;
       if (content) {
         isSavingRef.current = true;
-        const patched = patchSvgLayerState(content, next.map((i) => ({ id: i.id, locked: i.locked, visible: i.visible })));
+        const patched = patchSvgLayerState(content, flattenLayerItems(next).map((i) => ({ id: i.id, locked: i.locked, visible: i.visible })));
         setTimeout(() => {
           setSvgContent(patched);
           setTimeout(() => { isSavingRef.current = false; }, 50);
@@ -377,7 +457,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       }
       return next;
     });
-  }, [setSvgContent]);
+  }, [setSvgContent, setSelectedElementIds]);
 
   const handleLayerToggleVisible = useCallback((id: string) => {
     const layer = svgLayerRef.current;
@@ -388,11 +468,11 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       paper.view.update();
     }
     setLayerItems((prev) => {
-      const next = prev.map((i) => i.id === id ? { ...i, visible: !i.visible } : i);
+      const next = mapDeepLayerItems(prev, id, (i) => ({ ...i, visible: !i.visible }));
       const content = svgContentRef.current;
       if (content) {
         isSavingRef.current = true;
-        const patched = patchSvgLayerState(content, next.map((i) => ({ id: i.id, locked: i.locked, visible: i.visible })));
+        const patched = patchSvgLayerState(content, flattenLayerItems(next).map((i) => ({ id: i.id, locked: i.locked, visible: i.visible })));
         setTimeout(() => {
           setSvgContent(patched);
           setTimeout(() => { isSavingRef.current = false; }, 50);
@@ -493,8 +573,39 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const canvas = canvasRef.current;
       if (!canvas) return null;
       try {
-        const dataUrl = canvas.toDataURL("image/png");
-        return dataUrl.replace(/^data:image\/png;base64,/, "");
+        const bgImg = backgroundImgRef.current;
+        const hasBg = !!(bgImg && bgImg.complete && bgImg.naturalWidth > 0);
+
+        // Bez tła — bez kompozycji (sam canvas Paper.js)
+        if (!hasBg) {
+          const pngBase64 = canvas
+            .toDataURL("image/png")
+            .replace(/^data:image\/png;base64,/, "");
+          return { pngBase64 };
+        }
+
+        // Z tłem: kompozyt off-screen (tło object-fit: cover + canvas Paper.js)
+        const off = document.createElement("canvas");
+        off.width = canvas.width;
+        off.height = canvas.height;
+        const ctx = off.getContext("2d");
+        if (!ctx) return null;
+
+        const cw = off.width;
+        const ch = off.height;
+        const iw = bgImg!.naturalWidth;
+        const ih = bgImg!.naturalHeight;
+        const scale = Math.max(cw / iw, ch / ih);
+        const dw = iw * scale;
+        const dh = ih * scale;
+        const dx = (cw - dw) / 2;
+        const dy = (ch - dh) / 2;
+        ctx.drawImage(bgImg!, dx, dy, dw, dh);
+
+        ctx.drawImage(canvas, 0, 0);
+
+        const pngBase64 = off.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+        return { pngBase64 };
       } catch {
         return null;
       }
@@ -509,28 +620,60 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
   useEffect(() => {
     resizeElementFnRef.current = (widthMm: number, heightMm: number) => {
-      const item = selectedItemsRef.current[0];
+      const items = selectedItemsRef.current;
       const mm = mmPerUnitRef.current;
-      if (!item || mm <= 0) return;
-      const b = item.bounds;
-      const targetW = widthMm / mm;
-      const targetH = heightMm / mm;
-      if (b.width <= 0 || b.height <= 0) return;
-      const sx = targetW / b.width;
-      const sy = targetH / b.height;
-      item.scale(sx, sy, b.center);
-      const nb = item.bounds;
-      setSelectedItemBounds({
-        widthMm: nb.width * mm,
-        heightMm: nb.height * mm,
-        pathLengthMm: calcTotalLength(item) * mm,
-        areaMm2: calcTotalArea(item) * mm * mm,
-      });
+      if (items.length === 0 || mm <= 0) return;
+
+      if (items.length === 1) {
+        const item = items[0];
+        const b = item.bounds;
+        if (b.width <= 0 || b.height <= 0) return;
+        item.scale(widthMm / mm / b.width, heightMm / mm / b.height, b.center);
+        const nb = item.bounds;
+        const newBounds = {
+          widthMm: nb.width * mm,
+          heightMm: nb.height * mm,
+          pathLengthMm: calcTotalLength(item) * mm,
+          areaMm2: calcTotalArea(item) * mm * mm,
+        };
+        setSelectedItemBounds(newBounds);
+        if (item.name) setBoundsForElement(item.name, newBounds);
+      } else {
+        // Oblicz łączny bounding box w jednostkach Paper.js
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const it of items) {
+          const b = it.bounds;
+          if (b.x < minX) minX = b.x;
+          if (b.y < minY) minY = b.y;
+          if (b.x + b.width > maxX) maxX = b.x + b.width;
+          if (b.y + b.height > maxY) maxY = b.y + b.height;
+        }
+        const combinedW = (maxX - minX) * mm;
+        const combinedH = (maxY - minY) * mm;
+        if (combinedW <= 0 || combinedH <= 0) return;
+        const sx = widthMm / combinedW;
+        const sy = heightMm / combinedH;
+        const center = new paper.Point((minX + maxX) / 2, (minY + maxY) / 2);
+        for (const it of items) {
+          it.scale(sx, sy, center);
+          if (it.name) {
+            const nb = it.bounds;
+            setBoundsForElement(it.name, {
+              widthMm: nb.width * mm,
+              heightMm: nb.height * mm,
+              pathLengthMm: calcTotalLength(it) * mm,
+              areaMm2: calcTotalArea(it) * mm * mm,
+            });
+          }
+        }
+        setSelectedItemBounds(computeCombinedBounds(items, mm));
+      }
+
       toolCbRef.current.drawResizeHandles();
       toolCbRef.current.pushHistory();
     };
     return () => { resizeElementFnRef.current = null; };
-  }, [setSelectedItemBounds]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setSelectedItemBounds, setBoundsForElement]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Paper.js setup + Warstwy + Tool ───────────────────────────────────────
 
@@ -610,13 +753,19 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
           hitItem.selected = false;
           selectedItemsRef.current.splice(idx, 1);
           const rem = selectedItemsRef.current;
-          setSelectedItemNames(rem.map((i) => i.name).filter(Boolean));
+          const ids = rem.map((i) => i.name).filter(Boolean) as string[];
+          setSelectedItemNames(ids);
+          setSelectedElementIds(ids);
+          const mm = mmPerUnitRef.current;
           if (rem.length === 1) {
             setSelectedElement(rem[0].name);
-            const mm = mmPerUnitRef.current;
             const b = rem[0].bounds;
             setSelectedItemBounds({ widthMm: b.width * mm, heightMm: b.height * mm, pathLengthMm: calcTotalLength(rem[0]) * mm, areaMm2: calcTotalArea(rem[0]) * mm * mm });
             toolCbRef.current.drawResizeHandles();
+          } else if (rem.length > 1) {
+            setSelectedElement(null);
+            setSelectedItemBounds(computeCombinedBounds(rem, mm));
+            toolCbRef.current.clearResizeHandles();
           } else {
             setSelectedElement(null);
             setSelectedItemBounds(null);
@@ -716,17 +865,29 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         resizePrevSyRef.current = 1;
         canvas.style.cursor = "default";
         const items = selectedItemsRef.current;
+        const mm = mmPerUnitRef.current;
         if (items.length === 1) {
-          const mm = mmPerUnitRef.current;
           const b  = items[0].bounds;
-          setSelectedItemBounds({
+          const newBounds = {
             widthMm: b.width * mm,
             heightMm: b.height * mm,
             pathLengthMm: calcTotalLength(items[0]) * mm,
             areaMm2: calcTotalArea(items[0]) * mm * mm,
-          });
+          };
+          setSelectedItemBounds(newBounds);
+          if (items[0].name) setBoundsForElement(items[0].name, newBounds);
         } else {
-          setSelectedItemBounds(null);
+          setSelectedItemBounds(computeCombinedBounds(items, mm));
+          items.forEach((it) => {
+            if (!it.name) return;
+            const b = it.bounds;
+            setBoundsForElement(it.name, {
+              widthMm: b.width * mm,
+              heightMm: b.height * mm,
+              pathLengthMm: calcTotalLength(it) * mm,
+              areaMm2: calcTotalArea(it) * mm * mm,
+            });
+          });
         }
         if (isDraggingItemRef.current) {
           isDraggingItemRef.current = false;
@@ -889,6 +1050,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       setHasSvg(false);
       setLayerItems([]);
       setSelectedItemNames([]);
+      setSelectedElementIds([]);
       clearNodeOverrides();
       fitViewToPage(paper.view.viewSize);
       return;
@@ -1645,6 +1807,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
           <div ref={containerRef} className="flex-1 relative overflow-hidden">
             {backgroundDataUrl && (
               <img
+                ref={backgroundImgRef}
                 src={backgroundDataUrl}
                 alt=""
                 className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"

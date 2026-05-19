@@ -1,9 +1,10 @@
-import { useState, type ReactNode } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, FileText, DollarSign, Zap, Layers } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useProjectStore } from "../../stores/projectStore";
 import { useEditorStore } from "../../stores/editorStore";
+import { useMaterialsStore } from "../../stores/materialsStore";
 import { useToastStore } from "../../stores/toastStore";
 import { usePricing } from "../../hooks/usePricing";
 import type { GroupedCostItem } from "../../lib/pricing";
@@ -124,78 +125,110 @@ function GroupedSection({ title, icon, groups, showMargin, marginPct }: GroupedS
   );
 }
 
-// ── LedSection — edycja danych LED per element ────────────────────────────────
+// ── LedSection — projekt-poziom: wybór materiału LED + długość ───────────────
 
-function LedSection() {
-  const { elements, nodeOverrides, setNodeOverride } = useEditorStore();
-  if (elements.length === 0) return null;
+function isLedCategory(cat: { slug: string; name: string }) {
+  const hay = (cat.slug + " " + cat.name).toLowerCase();
+  return hay.includes("led");
+}
+
+function LedSection({ totalLed }: { totalLed: number }) {
+  const { ledConfig, setLedConfig } = useEditorStore();
+  const { categories, materials, refresh } = useMaterialsStore();
+
+  useEffect(() => { refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const ledMaterials = useMemo(() => {
+    const ledCats = categories.filter(isLedCategory);
+    if (ledCats.length > 0) {
+      const slugs = new Set(ledCats.map((c) => c.slug));
+      return materials.filter((m) => slugs.has(m.category));
+    }
+    return materials;
+  }, [categories, materials]);
+
+  const hasLed = !!ledConfig.materialId;
 
   return (
     <div>
-      <div className="flex items-center gap-1.5 mb-2">
-        <Zap className="w-3 h-3 text-gray-500" />
-        <span className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Taśma LED</span>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1.5">
+          <Zap className="w-3 h-3 text-gray-500" />
+          <span className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Taśma LED</span>
+        </div>
+        {hasLed && totalLed > 0 && (
+          <span className="text-gray-100 font-mono text-xs">{formatPln(totalLed)}</span>
+        )}
       </div>
-      <div className="space-y-2">
-        {elements.map((el) => {
-          const o = nodeOverrides[el.nodeId] ?? {};
-          return (
-            <div key={el.nodeId} className="bg-[#252525] rounded px-2.5 py-2 text-xs space-y-1.5">
-              <div className="text-gray-200 font-medium">{el.label}</div>
-              <div className="grid grid-cols-2 gap-1.5">
-                <div>
-                  <div className="text-gray-600 text-[10px] mb-0.5">Dł. (mb)</div>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={o.ledLengthM ?? ""}
-                    onChange={(e) => {
-                      const l = e.target.value === "" ? null : parseFloat(e.target.value);
-                      setNodeOverride(el.nodeId, { ledLengthM: l != null && isFinite(l) && l > 0 ? l : null });
-                    }}
-                    placeholder="0"
-                    className="w-full bg-[#161616] border border-gray-700 rounded px-2 py-1 text-gray-200 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </div>
-                <div>
-                  <div className="text-gray-600 text-[10px] mb-0.5">Cena zł/mb</div>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={o.ledPricePerM ?? ""}
-                    onChange={(e) => setNodeOverride(el.nodeId, { ledPricePerM: parseFloat(e.target.value) || null })}
-                    placeholder="0.00"
-                    className="w-full bg-[#161616] border border-gray-700 rounded px-2 py-1 text-gray-200 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="flex items-center gap-1.5 text-gray-400 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={o.hasPowerSupply ?? false}
-                    onChange={(e) => setNodeOverride(el.nodeId, { hasPowerSupply: e.target.checked })}
-                    className="rounded border-gray-600 bg-[#161616] text-blue-500 focus:ring-0"
-                  />
-                  <span className="text-xs">Zasilacz LED</span>
-                </label>
-                {o.hasPowerSupply && (
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={o.powerSupplyPrice ?? ""}
-                    onChange={(e) => setNodeOverride(el.nodeId, { powerSupplyPrice: parseFloat(e.target.value) || null })}
-                    placeholder="zł/szt."
-                    className="flex-1 bg-[#161616] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                )}
+
+      <div className="bg-[#252525] rounded px-2.5 py-2.5 space-y-2">
+        {/* Materiał LED */}
+        <div>
+          <div className="text-gray-400 text-[10px] mb-0.5">Materiał</div>
+          <select
+            value={ledConfig.materialId ?? ""}
+            onChange={(e) => setLedConfig({ materialId: e.target.value || null })}
+            className="w-full bg-[#161616] border border-gray-700 text-gray-200 text-xs rounded px-2 py-1.5 appearance-none focus:outline-none focus:border-blue-500"
+          >
+            <option value="">Brak LEDów</option>
+            {ledMaterials.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}{m.base_price != null ? ` — ${m.base_price.toFixed(2)} zł/mb` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {hasLed && (
+          <>
+            {/* Długość */}
+            <div>
+              <div className="text-gray-400 text-[10px] mb-0.5">Długość taśmy</div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={ledConfig.lengthM ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? null : parseFloat(e.target.value);
+                    setLedConfig({ lengthM: v != null && isFinite(v) && v > 0 ? v : null });
+                  }}
+                  placeholder="0"
+                  className="flex-1 bg-[#161616] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                />
+                <span className="text-gray-400 text-[10px] shrink-0">mb</span>
               </div>
             </div>
-          );
-        })}
+
+            {/* Zasilacz */}
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-1.5 text-gray-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={ledConfig.hasPowerSupply}
+                  onChange={(e) => setLedConfig({ hasPowerSupply: e.target.checked })}
+                  className="rounded border-gray-600 bg-[#161616] text-blue-500 focus:ring-0"
+                />
+                <span className="text-xs text-gray-400">Zasilacz LED</span>
+              </label>
+              {ledConfig.hasPowerSupply && (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={ledConfig.powerSupplyPrice ?? ""}
+                    onChange={(e) => setLedConfig({ powerSupplyPrice: parseFloat(e.target.value) || null })}
+                    placeholder="0.00"
+                    className="flex-1 bg-[#161616] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                  <span className="text-gray-400 text-[10px] shrink-0">zł/szt.</span>
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -214,7 +247,7 @@ export function CostPanelContent() {
 
   const materialGroups = pricing.groupedItems.filter((g) => g.lineType === "material");
   const dystansGroups = pricing.groupedItems.filter((g) => g.lineType === "dystans");
-  const ledCostGroups = pricing.groupedItems.filter((g) => g.lineType === "led");
+
 
   const hasAnyData = pricing.items.length > 0 || pricing.totalLed > 0;
 
@@ -289,16 +322,7 @@ export function CostPanelContent() {
               showMargin={false}
               marginPct={0}
             />
-            <LedSection />
-            {ledCostGroups.length > 0 && (
-              <GroupedSection
-                title="Koszty LED"
-                icon={<Zap className="w-3 h-3" />}
-                groups={ledCostGroups}
-                showMargin={false}
-                marginPct={0}
-              />
-            )}
+            <LedSection totalLed={pricing.totalLed} />
           </>
         )}
       </div>

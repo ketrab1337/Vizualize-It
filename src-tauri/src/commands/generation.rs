@@ -19,7 +19,6 @@ pub struct GoogleGenerateInput {
     pub material_images: Vec<MaterialImageInput>,
     pub background_image: Option<MaterialImageInput>,
     pub svg_image: Option<MaterialImageInput>,
-    pub user_prompt: Option<String>,
     pub reference_images: Vec<MaterialImageInput>,
 }
 
@@ -55,7 +54,6 @@ pub async fn generate_image(
 
     let config = GenerationConfig {
         prompt: input.prompt,
-        user_prompt: input.user_prompt,
         model: input.model.clone(),
         format,
         count: input.count,

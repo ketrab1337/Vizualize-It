@@ -73,14 +73,14 @@ function OptionBtn({
       className={`flex flex-col items-center gap-1.5 px-2 py-3 rounded-lg border transition-all ${
         active
           ? activeClass
-          : "border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300 hover:bg-[#222]"
+          : "border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200 hover:bg-[#222]"
       }`}
     >
       <Icon className={`w-5 h-5 ${active ? activeIcon : ""}`} />
       <span className="text-xs font-medium leading-none">{label}</span>
       <span
         className={`text-[10px] leading-tight text-center ${
-          active ? "opacity-75" : "text-gray-600"
+          active ? "opacity-75" : "text-gray-400"
         }`}
       >
         {description}

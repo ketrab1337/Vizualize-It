@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, Bookmark, BookmarkCheck, Loader2, Settings, Sparkles } from "lucide-react";
 import { useProjectStore } from "../../stores/projectStore";
 import { useEditorStore } from "../../stores/editorStore";
+import { useGenerationStore } from "../../stores/generationStore";
 import { useKeysStore } from "../../stores/keysStore";
 import { useGeneration } from "../../hooks/useGeneration";
 import { useProject } from "../../hooks/useProject";
@@ -11,6 +12,8 @@ import { ElementPanel } from "../editor/ElementPanel";
 import { LedPanel } from "../generation/LedPanel";
 import { CameraAngleSection } from "../generation/CameraAngleSection";
 import { PromptPanel } from "../generation/PromptPanel";
+import { ReferenceImagesPanel } from "../generation/ReferenceImagesPanel";
+import { PresetsKanban } from "../generation/PresetsKanban";
 import { ModelSelector } from "../generation/ModelSelector";
 import { TimeOfDayPanel } from "../generation/TimeOfDayPanel";
 import { ImageGrid } from "../gallery/ImageGrid";
@@ -62,7 +65,7 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
   const { projects, activeProjectId, setActiveProject } = useProjectStore();
   const { activeTab, svgContent, nodeOverrides, backgroundPath } = useEditorStore();
   const { generate, generating } = useGeneration();
-  const { saveEditorState, loadEditorState } = useProject();
+  const { saveEditorState, loadEditorState, saveGenerationState, loadGenerationState } = useProject();
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [applyTemplateOpen, setApplyTemplateOpen] = useState(false);
   const activeProject = projects.find((p) => p.id === activeProjectId);
@@ -70,24 +73,45 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
   const isLoadingRef = useRef(false);
   const prevProjectIdRef = useRef<string | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const genSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ref dla bieżącego projektu — odczytujemy w subskrypcji do generationStore bez
+  // re-rejestrowania subskrypcji za każdą zmianą activeProjectId.
+  const activeProjectIdRef = useRef<string | null>(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
 
-  // Przy zmianie projektu: zapisz poprzedni (natychmiastowo), załaduj nowy
+  // Przy zmianie projektu: zapisz poprzedni (await, żeby load widział świeże dane),
+  // załaduj nowy. Pomijamy `!isLoadingRef.current` w warunku save'a — gdy user szybko
+  // przeskakuje między projektami, lepiej zapisać niż zostawić nieuratowane.
   useEffect(() => {
     const prevId = prevProjectIdRef.current;
     prevProjectIdRef.current = activeProjectId;
 
-    if (prevId && prevId !== activeProjectId && !isLoadingRef.current) {
-      if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
-      saveEditorState(prevId);
-    }
+    let cancelled = false;
+    const run = async () => {
+      if (prevId && prevId !== activeProjectId) {
+        if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+        if (genSaveTimerRef.current) { clearTimeout(genSaveTimerRef.current); genSaveTimerRef.current = null; }
+        await Promise.all([saveEditorState(prevId), saveGenerationState(prevId)]);
+      }
+      if (cancelled) return;
+      if (activeProjectId) {
+        isLoadingRef.current = true;
+        try {
+          await Promise.all([
+            loadEditorState(activeProjectId),
+            loadGenerationState(activeProjectId),
+          ]);
+        } finally {
+          isLoadingRef.current = false;
+        }
+      }
+    };
 
-    if (activeProjectId) {
-      isLoadingRef.current = true;
-      loadEditorState(activeProjectId).finally(() => { isLoadingRef.current = false; });
-    }
+    run();
+    return () => { cancelled = true; };
   }, [activeProjectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-zapis po edycji (debounce 1.5s)
+  // Auto-zapis edytora po edycji (debounce 1.5s)
   useEffect(() => {
     if (!activeProjectId || isLoadingRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -96,6 +120,64 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
     }, 1500);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [svgContent, nodeOverrides, backgroundPath, activeProjectId, saveEditorState]);
+
+  // Auto-zapis stanu generowania — subskrybujemy się BEZPOŚREDNIO do zustandowego
+  // store, omijając ścieżkę React deps. Wczesna wersja używała useEffect z deps
+  // [generationState.X...] i okazywała się niestabilna: czasem cleanup czyścił
+  // timer zanim zdążył wystrzelić, a save-on-switch też wpadał w racing z load.
+  useEffect(() => {
+    const scheduleSave = () => {
+      if (isLoadingRef.current) return;
+      const pid = activeProjectIdRef.current;
+      if (!pid) return;
+      if (genSaveTimerRef.current) clearTimeout(genSaveTimerRef.current);
+      genSaveTimerRef.current = setTimeout(() => {
+        const fpid = activeProjectIdRef.current;
+        if (!isLoadingRef.current && fpid) {
+          saveGenerationState(fpid);
+        }
+      }, 1500);
+    };
+
+    const unsub = useGenerationStore.subscribe((state, prev) => {
+      if (
+        state.prompt === prev.prompt &&
+        state.activePresetIds === prev.activePresetIds &&
+        state.referenceImages === prev.referenceImages &&
+        state.led === prev.led &&
+        state.camera === prev.camera &&
+        state.cameraDirty === prev.cameraDirty &&
+        state.model === prev.model &&
+        state.format === prev.format &&
+        state.count === prev.count &&
+        state.timeOfDay === prev.timeOfDay
+      ) {
+        return;
+      }
+      scheduleSave();
+    });
+
+    return () => {
+      unsub();
+      if (genSaveTimerRef.current) clearTimeout(genSaveTimerRef.current);
+    };
+  }, [saveGenerationState]);
+
+  // Save on window close (Tauri close button / Ctrl+Q). Tauri nie wysyła
+  // beforeunload, ale w runtime tauri jest to OK — używamy zwykłego beforeunload
+  // który webview emituje przy zamykaniu / odświeżaniu (dev).
+  useEffect(() => {
+    const handler = () => {
+      const pid = activeProjectIdRef.current;
+      if (!pid) return;
+      // Synchronous fire-and-forget — JS nie ma czasu czekać, polegamy na tym, że
+      // Tauri SQL plugin queue zostanie zapisany przed zamknięciem procesu.
+      saveEditorState(pid);
+      saveGenerationState(pid);
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [saveEditorState, saveGenerationState]);
 
   if (!activeProject) {
     return <ProjectsGrid onNewProject={onNewProject} />;
@@ -113,7 +195,7 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
           <ArrowLeft className="w-4 h-4" />
         </button>
         <h2 className="text-white font-medium text-sm truncate">{activeProject.name}</h2>
-        <span className="ml-1 text-gray-600 text-xs shrink-0">
+        <span className="ml-1 text-gray-400 text-xs shrink-0">
           {(() => {
             const d = new Date(activeProject.updated_at);
             const day = d.toLocaleDateString("pl-PL", { day: "2-digit" });
@@ -131,13 +213,13 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
         <ElementPanel />
       </div>
 
-      {/* Zakładka: Generowanie */}
+      {/* Zakładka: Generowanie — 3 kolumny (środowisko | prompt | presety) */}
       {activeTab === "generowanie" && (
         <div className="tab-fade flex flex-col flex-1 overflow-hidden">
           <ApiKeysBanner onOpenSettings={onOpenSettings} />
 
           <div className="flex flex-1 overflow-hidden">
-            {/* Lewa kolumna — konfiguracja */}
+            {/* Kolumna lewa: konfiguracja środowiska / modeli / formatu */}
             <div className="w-80 shrink-0 border-r border-gray-800 overflow-y-auto p-4 space-y-4">
               <TimeOfDayPanel />
               <LedPanel />
@@ -145,14 +227,17 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
               <ModelSelector />
             </div>
 
-            {/* Prawa kolumna — podgląd promptu + generuj */}
+            {/* Kolumna środkowa: prompt → zdjęcia referencyjne → przyciski (szablony + generuj) */}
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
               <PromptPanel />
+              <ReferenceImagesPanel />
+
               {generating && (
                 <div className="shrink-0 h-1 rounded-full bg-blue-950 overflow-hidden relative mx-0.5">
                   <div className="progress-shimmer absolute inset-y-0 left-0 right-0 bg-blue-600 rounded-full" />
                 </div>
               )}
+
               <div className="shrink-0 flex gap-2">
                 <button
                   onClick={() => setApplyTemplateOpen(true)}
@@ -192,6 +277,11 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
                   )}
                 </button>
               </div>
+            </div>
+
+            {/* Kolumna prawa: presety w widoku kanban */}
+            <div className="w-72 shrink-0 border-l border-gray-800 p-4 flex flex-col overflow-hidden">
+              <PresetsKanban />
             </div>
 
             <SaveTemplateModal

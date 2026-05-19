@@ -25,6 +25,14 @@
       "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/ketrab1337/Vizualize-It/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJCQUNDN0ZBQjYxM0QzQzkKUldUSjB4TzIrc2VzSzlkRVlHNTZBbmN4Vm93dmc5L1lCc3VnaXRjdElTYTIrK1ZYdHdTV2FSUmYK"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

@@ -53,7 +53,6 @@ struct PayloadMaterialImage {
 struct StoredPayload {
     project_slug: String,
     prompt: String,
-    user_prompt: Option<String>,
     model: String,
     format: String,
     count: u8,
@@ -67,7 +66,6 @@ fn payload_to_config(p: StoredPayload) -> Result<GenerationConfig, String> {
     let format = parse_image_format(&p.format)?;
     Ok(GenerationConfig {
         prompt: p.prompt,
-        user_prompt: p.user_prompt,
         model: p.model,
         format,
         count: p.count,

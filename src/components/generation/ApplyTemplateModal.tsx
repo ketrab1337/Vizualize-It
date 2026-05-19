@@ -24,7 +24,7 @@ interface ApplyTemplateModalProps {
 export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
   const { loadTemplates } = useTemplates();
   const { loadPresets } = usePromptPresets();
-  const { setLedBacklit, setLedFrontlit, setModel, setFormat, togglePreset, activePresets } = useGenerationStore();
+  const { setLedBacklit, setLedFrontlit, setModel, setFormat, togglePresetId, activePresetIds } = useGenerationStore();
   const addToast = useToastStore((s) => s.addToast);
 
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -46,17 +46,14 @@ export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
       setModel(config.model);
       setFormat(config.format);
 
-      // Przywróć presety jeśli zapisane w szablonie
       if (config.activePresetIds && config.activePresetIds.length > 0) {
         const allPresets = await loadPresets();
+        const knownIds = new Set(allPresets.map((p) => p.id));
         // Wyczyść bieżące presety
-        for (const ap of activePresets) {
-          togglePreset(ap);
-        }
-        // Włącz presety z szablonu
+        for (const id of activePresetIds) togglePresetId(id);
+        // Włącz presety z szablonu (tylko te, które wciąż istnieją)
         for (const id of config.activePresetIds) {
-          const preset = allPresets.find((p) => p.id === id);
-          if (preset) togglePreset({ id: preset.id, text: preset.text });
+          if (knownIds.has(id)) togglePresetId(id);
         }
       }
 
@@ -71,13 +68,13 @@ export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
     <Modal title="Wybierz szablon" open={open} onClose={onClose} size="md">
       {loading ? (
         <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-5 h-5 text-gray-600 animate-spin" />
+          <Loader2 className="w-5 h-5 text-gray-500 animate-spin" />
         </div>
       ) : templates.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-10 text-center">
-          <BookmarkCheck className="w-8 h-8 text-gray-700 mb-3" />
-          <p className="text-sm text-gray-500">Brak zapisanych szablonów</p>
-          <p className="text-xs text-gray-600 mt-1">
+          <BookmarkCheck className="w-8 h-8 text-gray-500 mb-3" />
+          <p className="text-sm text-gray-300">Brak zapisanych szablonów</p>
+          <p className="text-xs text-gray-400 mt-1">
             Kliknij „Zapisz jako szablon" żeby utworzyć pierwszy szablon.
           </p>
         </div>
@@ -98,7 +95,7 @@ export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-200 truncate">{template.name}</p>
                   {config && (
-                    <p className="text-xs text-gray-600 mt-0.5">
+                    <p className="text-xs text-gray-400 mt-0.5">
                       {modelLabel(config.model)} · {config.format}
                       {config.led.backlit.enabled && " · Backlit"}
                       {config.led.frontlit.enabled && " · Front-lit"}

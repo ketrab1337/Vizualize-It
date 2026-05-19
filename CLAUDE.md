@@ -344,6 +344,43 @@ Warstwa "ui"   ← nakładki (hover highlight, rubber band), elementy locked=tru
 
 ## Adaptery AI
 
+### Co lata do AI z edytora — kompozyt bez etykiet wizualnych
+**`captureCanvas()` w `src/lib/paperCanvas.ts`** zwraca `{ pngBase64 }`:
+1. Off-screen canvas o wymiarach widocznego viewportu edytora
+2. Tło (jeśli jest) wypełnione algorytmem CSS `object-fit: cover` — wycięte/wycentrowane jak w UI
+3. Canvas Paper.js (SVG z aktualnym zoomem/panem) narysowany na wierzchu — daje **rzeczywistą pozycję i skalę szyldu na ścianie**
+
+**NIE rysujemy wizualnych etykiet** — wcześniejsza wersja rysowała żółte plakietki z `item.name`, ale Gemini dosłownie je renderował na szyldzie (np. `svg_item_0_4` jako tekst na czerwonej plexie). Identyfikatory elementów lecą tylko tekstem w prompt (`assemblePrompt`), nie wizualnie.
+
+**AI rozpoznaje elementy po kolorze hex z SVG.** Prompt zawiera: `"element koloru #FF0000 → Plexa czerwona z połyskiem"`. Kolory hex pochodzą z `override.fill` (`SignElement.colorHex`) i są wpisywane w prompcie zamiast etykiet tekstowych.
+
+**Nie modyfikuj `captureCanvasFnRef` żeby był synchronous** — wymaga rysowania DOM-image, robione synchronicznie z `<img>` ref. Tło ładuje się przy zmianie `backgroundDataUrl`, ref ustawiamy w JSX `<img ref={backgroundImgRef}>`.
+
+### Assembler promptu — co opisuje strukturę obrazów
+`assemblePrompt(config, visualInputs, options)` zaczyna od **bardzo silnego imperatywnego ZADANIA** (Google docs zalecają tekst PRZED obrazami). Trzy warianty zależnie od dołączonych obrazów:
+
+- **Kompozyt + tło** (typowy): `"TASK / ZADANIE: This is an IMAGE EDITING task — NOT image generation. Obraz 1 to PRAWDZIWE ZDJĘCIE wnętrza z nałożonym SCHEMATYCZNYM projektem SVG..."` + szczegółowa instrukcja "zachowaj PIXEL-PERFECT tło, sufit, podłogę, meble, oświetlenie". Bez tego silnego zakotwiczenia Nano Banana 2 generuje nową scenę.
+- **Sam SVG bez tła**: `"Obraz 1 to projekt szyldu — wygeneruj fotorealistyczny szyld zgodny z projektem."`
+- **Samo tło bez SVG**: `"TASK: Image editing. Obraz 1 to prawdziwe zdjęcie ściany. Zachowaj IDENTYCZNIE pixel-perfect..."`
+
+**Teksty z SVG** wyciągane przez `extractSvgTexts(svgContent)` w `useGeneration.ts` (parsuje `<text>` i `<tspan>`) → trafiają do `visualInputs.svgTexts` → prompt: `"TEKSTY NA SZYLDZIE (odwzoruj DOSŁOWNIE): 'Green-partners.pl'"`. Bez tego Gemini modyfikuje teksty (`"G&N partners"`, `"GREEN PARTNER INTERNATIONAL"`).
+
+**Materiały opisane po kolorze hex** z 3 trybami (`describeElementMaterial` w `promptAssembler.ts`):
+
+1. **Element ma zdjęcie referencyjne** → zdjęcie ma PRIORYTET. Kolor hex w prompcie służy tylko jako identyfikator regionu w SVG: `"the #FF0000 colored region in SVG → use the exact texture, color, and finish shown in Image 3 (reference photo of 'Plexa czerwona'). The hex color #FF0000 is only a region identifier, not the actual material color."`
+2. **Element bez zdjęcia, `material_type = "lustro"`** → kolor jako TINT (nie main color): `"...polished mirror-finish acrylic panel with a subtle #FFD700 tint, primarily reflecting the surrounding environment (#FFD700 is the tint hue, not the dominant surface color)..."`. Lustro odbija otoczenie, więc bez tego zastrzeżenia AI dostawała sprzeczne sygnały (`kolor #FFD700` vs `mirror reflects environment`).
+3. **Element bez zdjęcia, inne typy** → kolor jako własny kolor materiału (standard).
+
+Mapowanie `nodeId → "Image N"` buduje się w `assemblePrompt` podczas iteracji po elementach z `photo_path` (`elementToImageIdx`). Numer trafia do `describeElementMaterial`, AI dostaje konkretne odniesienie "Image 3" zamiast ogólnego "use material photo".
+
+Numeracja "Obraz N" musi być spójna z faktyczną kolejnością obrazów wysyłanych w `useGeneration.ts`.
+
+**Ważne — dublowanie tła:** `captureCanvas()` zwraca KOMPOZYT (tło + SVG) gdy jest tło. `useGeneration.ts` wysyła wtedy TYLKO kompozyt jako `svg_image` — NIE wysyła `background_image` osobno. Wysłanie obu (tło + kompozyt) myliło model (dwa obrazy z tłem — przed/po) i powodowało losowe generowanie nowej sceny. Wysyłaj tło OSOBNO tylko gdy NIE ma SVG.
+
+**Ostrzeżenie w UI dla NB 2 + tło**: `ModelSelector.tsx` pokazuje żółtą notatkę gdy `model === "nano-banana-2"` i `backgroundDataUrl` — z linkami do przełączenia na NB Pro lub GPT Image 2. Model flash często ignoruje tło mimo imperatywnego promptu.
+
+**`material_type` (matowa/mleczna/polysk/lustro)** — przekładany na opisową frazę przez `MATERIAL_TYPE_DESCRIPTIONS` w `promptAssembler.ts`. `lustro` → `"lustrzana, w pełni refleksyjna, odbija otoczenie"`. Bez tego AI nie wie czy plexa jest matowa czy z połyskiem.
+
 ### Jedna komenda `generate_image` z dispatcherem po modelu
 Frontend wywołuje **jedną** komendę niezależnie od dostawcy:
 
@@ -366,13 +403,33 @@ let provider: Box<dyn ImageGenerator> = match input.model.as_str() {
 ### Google AI (Nano Banana 2 / Pro)
 - Nano Banana 2: model `gemini-3.1-flash-image-preview`
 - Nano Banana Pro: model `gemini-3-pro-image-preview`
-- Endpoint: `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
+- Endpoint live: `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
+- Endpoint batch: `https://generativelanguage.googleapis.com/v1beta/models/{model}:batchGenerateContent` — 50% taniej z 24h SLA
+- Body batcha: camelCase pola (`displayName`, `inputConfig`, `inlinedResponses`)
+- `poll_batch` defensywnie obsługuje wiele wersji nazw stanów (`JOB_STATE_*` legacy i `BATCH_STATE_*` aktualne) oraz ścieżek do `inlinedResponses` (`response.output.inlinedResponses.inlinedResponses[]` aktualna, oraz starsze warianty)
+- **Krytyczne — count > 1**: image-preview modele NIE wspierają `candidateCount > 1` (`400: "Multiple candidates is not enabled for this model"`). `build_request` ZAWSZE ustawia `candidate_count: None`. Dla count > 1:
+  - Live (`generate`): `tokio::spawn` N równoległych wywołań `single_call_generate`, zbieramy wyniki
+  - Batch (`submit_batch`): N kopii żądania w `inputConfig.requests.requests[]` z różnymi `metadata.key` (`vizualize-it-1`, `-2`, ...). `poll_batch` zbiera obrazy ze wszystkich `inlinedResponses[]`
 - Zdjęcia próbek materiałów wysyłaj jako base64 w `parts` jako image reference
 
 ### OpenAI (GPT Image 2)
-- Model: `gpt-image-2`
-- Generowanie: `POST https://api.openai.com/v1/images/generations`
-- Edycja kąta: `POST https://api.openai.com/v1/images/edits`
+- Model: `gpt-image-2` (wydany 21 kwietnia 2026 — snapshot `gpt-image-2-2026-04-21`)
+- **Generowanie z obrazami wejściowymi** → `POST https://api.openai.com/v1/responses` (Responses API):
+  - `/v1/images/generations` **nie przyjmuje obrazów wejściowych** (tylko `prompt: string`) — tło, SVG, materiały byłyby ignorowane
+  - Routing w `OpenAiProvider::generate()`: są obrazy → `generate_via_responses` → Responses API. Brak obrazów → klasyczne `/v1/images/generations`
+  - Struktura: `tools: [{type: "image_generation", size: "..."}]`, `input: [developer_msg, user_msg]`
+  - Rozdzielenie promptów: `role: "developer"` dla głównego promptu technicznego (analog `systemInstruction` w Gemini), `role: "user"` dla swobodnego promptu użytkownika
+  - Obrazy w user message jako `{type: "input_image", image_url: "data:image/png;base64,..."}`
+  - Wynik wraca w `output[]` z elementami `type: "image_generation_call"` i polem `result` (base64 PNG)
+- Edycja kąta / inpainting: `POST https://api.openai.com/v1/images/edits` (multipart, obsługuje `image[]` wieloobrazowy + opcjonalna `mask`)
+- Batch API (`/v1/batches`) — analogiczny dispatcher do trybu live:
+  - Są obrazy → endpoint w JSONL: `/v1/responses` (multi-image + role)
+  - Brak obrazów → endpoint w JSONL: `/v1/images/generations` (text-only, parametr `n` natywnie obsługuje multi-output)
+  - **Ważne — count > 1 z Responses API:** `image_generation` tool w Responses zwraca 1 obraz na call. Dla `count > 1`:
+    - Live (`generate_via_responses`): spawnujemy N równoległych `tokio::spawn` wywołań `single_call_responses_api`, zbieramy wyniki
+    - Batch (`submit_batch`): N linii JSONL z różnymi `custom_id` (`vizualizeit-request-1`, `-2`, ...)
+  - `poll_batch` iteruje po liniach JSONL i zbiera obrazy z każdej. Rozpoznaje oba formaty wyniku: `body.data[].b64_json` (generations) lub `body.output[]` z `image_generation_call.result` (responses)
+- 50% zniżki działa automatycznie po stronie OpenAI dla każdego wspieranego endpointu w batchu, włącznie z `/v1/responses` z image_generation tool
 - Uwaga: wymaga weryfikacji organizacji w OpenAI Developer Console (`openai.rs` mapuje 403 na zrozumiały komunikat)
 
 ### Wspólny trait (src-tauri/src/providers/mod.rs)
@@ -442,12 +499,17 @@ UI: zakładka „Modele AI" w `SettingsView` → `ModelSettings.tsx` z reuzywaln
 Źródło: `https://huggingface.co/spaces/linoyts/Qwen-Image-Edit-Angles/raw/main/app.py`
 Przepisz sekcje `CAMERA_3D_HTML_TEMPLATE` i `CAMERA_3D_JS` z Pythona na TypeScript + Three.js.
 
-### Parametry snap (identyczne jak oryginał)
+### Parametry snap (rozszerzone vs oryginał Qwen)
 ```typescript
-const ROTATE_STEPS = [-90, -45, 0, 45, 90];     // stopnie
-const FORWARD_STEPS = [0, 5, 10];                // 0=daleko, 10=blisko
-const TILT_STEPS = [-1, 0, 1];                   // -1=ptasi, 1=żabi
+const ROTATE_STEPS = [-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90];  // co 15°
+const FORWARD_STEPS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];                         // co 1
+const TILT_STEPS = [-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1];        // co 0.2
 ```
+
+`buildCameraPrompt` w `promptAssembler.ts` produkuje **imperatywne komendy bilingwalne PL+ENG** (wzorowane na Qwen):
+- Rotacja: `"Obróć kamerę o 30° w lewo. Rotate the camera 30 degrees to the left."`
+- Forward (intensywność wg progów): `>=9` bardzo bliskie zbliżenie, `>=7` zbliżenie, `>=5` ujęcie z bliska, `>=3` średnia odległość, `>=1` szersze ujęcie, `<1` z daleka
+- Tilt: `>=0.7` mocno żabi, `>=0.3` lekko żabi, `<=-0.7` mocno ptasi, `<=-0.3` lekko ptasi
 
 ### Kolory uchwytów (identyczne jak oryginał)
 - Zielony `#4CAF50` — rotacja lewo/prawo
@@ -600,4 +662,4 @@ cutting_rates_global(id, category TEXT, thickness_mm REAL, price_per_m REAL, UNI
 
 ---
 
-*Ostatnia aktualizacja: 2026-05-15*
+*Ostatnia aktualizacja: 2026-05-16*

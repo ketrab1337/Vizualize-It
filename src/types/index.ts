@@ -193,5 +193,4 @@ export interface GenerationConfig {
   model: AiModel;
   format: ImageFormat;
   count: 1 | 2 | 3 | 4;
-  userPrompt: string;
 }

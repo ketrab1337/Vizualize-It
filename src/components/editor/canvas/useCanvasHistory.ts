@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react";
 import paper from "paper";
 import { exportSvgLayer, findItemByName } from "./paperUtils";
 import { updateSvgWithOverrides } from "../../../lib/svgHelpers";
+import { useEditorStore } from "../../../stores/editorStore";
 import type { NodeOverride } from "../../../types";
 
 interface HistoryEntry { svg: string; selection: string[]; }
@@ -18,6 +19,8 @@ interface UseCanvasHistoryParams {
   addToSelection: (item: paper.Item) => void;
   rebuildLayerItems: () => void;
   setContextMenu: (m: null) => void;
+  removeNodeOverride: (id: string) => void;
+  removeBoundsForElement: (id: string) => void;
 }
 
 interface UseCanvasHistoryResult {
@@ -43,6 +46,7 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef,
     selectedItemsRef, isSavingRef,
     setSvgContent, clearSelection, addToSelection, rebuildLayerItems, setContextMenu,
+    removeNodeOverride, removeBoundsForElement,
   } = params;
 
   const historyRef = useRef<HistoryEntry[]>([]);
@@ -58,7 +62,10 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     const content = svgContentRef.current;
     if (!layer || !content) return;
     const exported = exportSvgLayer(layer, paper.project, content, mmPerUnitRef.current);
-    const withOverrides = updateSvgWithOverrides(exported, nodeOverridesRef.current);
+    // Czytaj bezpośrednio ze store (synchroniczny Zustand), nie z ref — ref aktualizuje się
+    // dopiero po renderze, a pushHistory może być wołany z setTimeout(0) przed renderem.
+    const currentOverrides = useEditorStore.getState().nodeOverrides;
+    const withOverrides = updateSvgWithOverrides(exported, currentOverrides);
     const selection = selectedItemsRef.current.map((i) => i.name).filter(Boolean) as string[];
     historyRef.current.splice(historyIndexRef.current + 1);
     historyRef.current.push({ svg: withOverrides, selection });
@@ -139,13 +146,30 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
   const handleDelete = useCallback(() => {
     const items = [...selectedItemsRef.current];
     if (items.length === 0) return;
+
+    // Zbierz wszystkie nazwy usuwanych elementów (rekurencyjnie przez grupy)
+    function collectNames(item: paper.Item): string[] {
+      const names: string[] = [];
+      if (item.name) names.push(item.name);
+      const g = item as paper.Group;
+      if (g.children) g.children.forEach((c: paper.Item) => names.push(...collectNames(c)));
+      return names;
+    }
+    const deletedNames = items.flatMap(collectNames);
+
     items.forEach((item) => item.remove());
     clearSelection();
+
+    // Usuń wpisy usuniętych elementów ze store — wycena nie będzie ich już uwzględniać
+    deletedNames.forEach((name) => {
+      removeNodeOverride(name);
+      removeBoundsForElement(name);
+    });
+
     setTimeout(() => rebuildLayerItems(), 0);
     if (svgContentRef.current && svgLayerRef.current) {
       const exported = exportSvgLayer(svgLayerRef.current, paper.project, svgContentRef.current, mmPerUnitRef.current);
       const withOverrides = updateSvgWithOverrides(exported, nodeOverridesRef.current);
-      // Zapisz do historii przed aktualizacją store
       historyRef.current.splice(historyIndexRef.current + 1);
       historyRef.current.push({ svg: withOverrides, selection: [] });
       historyIndexRef.current = historyRef.current.length - 1;
@@ -154,7 +178,7 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
       setTimeout(() => { isSavingRef.current = false; }, 50);
     }
     setContextMenu(null);
-  }, [selectedItemsRef, svgContentRef, svgLayerRef, nodeOverridesRef, mmPerUnitRef, isSavingRef, clearSelection, rebuildLayerItems, setSvgContent, setContextMenu]);
+  }, [selectedItemsRef, svgContentRef, svgLayerRef, nodeOverridesRef, mmPerUnitRef, isSavingRef, clearSelection, rebuildLayerItems, setSvgContent, setContextMenu, removeNodeOverride, removeBoundsForElement]);
 
   return {
     historyRef, historyIndexRef, isUndoRedoRef, clipboardRef, isDraggingItemRef,

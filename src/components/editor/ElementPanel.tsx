@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback } from "react";
 import { MousePointer2, Loader2, Ruler } from "lucide-react";
 import { useEditorStore } from "../../stores/editorStore";
 import { useMaterialsStore } from "../../stores/materialsStore";
-import { saveCanvasToStore, resizeSelectedElement } from "../../lib/paperCanvas";
+import { saveCanvasToStore, resizeSelectedElement, pushCanvasHistory } from "../../lib/paperCanvas";
+import { applyFillByName, collectDescendantNames } from "./canvas/paperUtils";
 import { CostPanelContent } from "./CostPanel";
 
 // ── MaterialPicker ────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ function MaterialPicker({ label, selectedMaterialId, onChange }: MaterialPickerP
   if (isLoading) {
     return (
       <div className="space-y-1.5">
-        <label className="text-xs text-gray-500 font-medium block">{label}</label>
+        <label className="text-xs text-gray-400 font-medium block">{label}</label>
         <div className="flex items-center gap-2 text-gray-600 text-xs">
           <Loader2 className="w-3 h-3 animate-spin" />
           Ładowanie…
@@ -60,13 +61,13 @@ function MaterialPicker({ label, selectedMaterialId, onChange }: MaterialPickerP
 
   return (
     <div className="space-y-1.5">
-      <label className="text-xs text-gray-500 font-medium block">{label}</label>
+      <label className="text-xs text-gray-400 font-medium block">{label}</label>
 
       {categories.length > 1 && (
         <select
           value={categorySlug}
           onChange={(e) => handleCategoryChange(e.target.value)}
-          className="w-full bg-[#252525] border border-gray-700 text-gray-400 text-xs rounded px-2 py-1.5 appearance-none focus:outline-none focus:border-blue-500"
+          className="w-full bg-[#252525] border border-gray-700 text-gray-300 text-xs rounded px-2 py-1.5 appearance-none focus:outline-none focus:border-blue-500"
         >
           {categories.map((cat) => (
             <option key={cat.id} value={cat.slug}>{cat.name}</option>
@@ -97,8 +98,8 @@ function MaterialPicker({ label, selectedMaterialId, onChange }: MaterialPickerP
 // ── PropertiesTab ─────────────────────────────────────────────────────────────
 
 function PropertiesTab() {
-  const { selectedElementId, selectedItemBounds, nodeOverrides, setNodeOverride } = useEditorStore();
-  const { refresh, materials, cuttingRates } = useMaterialsStore();
+  const { selectedElementId, selectedElementIds, selectedItemBounds, nodeOverrides, setNodeOverride } = useEditorStore();
+  const { refresh, materials, globalCuttingRates } = useMaterialsStore();
 
   const [materialId, setMaterialId] = useState("");
   const [widthInput, setWidthInput] = useState("");
@@ -131,9 +132,9 @@ function PropertiesTab() {
   const override = selectedElementId ? nodeOverrides[selectedElementId] : null;
   const isDistans = selectedMaterial?.category === "dystans";
 
-  // Dostępne grubości dla wybranego materiału
-  const materialRates = selectedMaterial
-    ? cuttingRates.filter((r) => r.material_id === selectedMaterial.id)
+  // Globalne stawki cięcia dla kategorii wybranego materiału (zawsze, niezależnie od pricing_unit)
+  const categoryRates = selectedMaterial
+    ? globalCuttingRates.filter((r) => r.category === selectedMaterial.category)
     : [];
 
   const handleMaterialChange = useCallback(
@@ -143,12 +144,24 @@ function PropertiesTab() {
       const mat = materials.find((m) => m.id === id);
       const currentFill = nodeOverrides[selectedElementId]?.fill ?? "#ffffff";
       const color = mat?.color_hex ?? currentFill;
-      // Reset grubości do domyślnej materiału
-      const defaultThickness = mat?.default_thickness_mm ?? null;
-      setNodeOverride(selectedElementId, { materialId: id || null, fill: color, thicknessMm: defaultThickness });
+      // Auto-wybierz pierwszą grubość z globalnych stawek dla kategorii materiału
+      const rates = mat ? globalCuttingRates.filter((r) => r.category === mat.category) : [];
+      const defaultThickness = rates.length > 0 ? rates[0].thickness_mm : null;
+      const override = { materialId: id || null, fill: color, thicknessMm: defaultThickness };
+      setNodeOverride(selectedElementId, override);
+
+      // Kaskaduj materiał na wszystkich potomków grupy
+      const descendants = collectDescendantNames(selectedElementId);
+      for (const childName of descendants) {
+        setNodeOverride(childName, override);
+        applyFillByName(childName, color);
+      }
+
       saveCanvasToStore();
+      // Wypchnij wpis historii po renderze (nodeOverridesRef musi być świeży)
+      setTimeout(() => pushCanvasHistory(), 0);
     },
-    [selectedElementId, materials, nodeOverrides, setNodeOverride]
+    [selectedElementId, materials, nodeOverrides, setNodeOverride, globalCuttingRates]
   );
 
   const handleThicknessChange = useCallback(
@@ -156,6 +169,7 @@ function PropertiesTab() {
       if (!selectedElementId) return;
       const t = val === "" ? null : parseFloat(val);
       setNodeOverride(selectedElementId, { thicknessMm: t != null && isFinite(t) ? t : null });
+      setTimeout(() => pushCanvasHistory(), 0);
     },
     [selectedElementId, setNodeOverride]
   );
@@ -165,6 +179,7 @@ function PropertiesTab() {
       if (!selectedElementId) return;
       const q = parseInt(val);
       setNodeOverride(selectedElementId, { quantity: isFinite(q) && q > 0 ? q : null });
+      setTimeout(() => pushCanvasHistory(), 0);
     },
     [selectedElementId, setNodeOverride]
   );
@@ -194,6 +209,92 @@ function PropertiesTab() {
 
   const currentThickness = override?.thicknessMm ?? selectedMaterial?.default_thickness_mm ?? null;
 
+  // ── Multi-zaznaczenie ─────────────────────────────────────────────────────────
+  if (selectedElementIds.length > 1) {
+    const matIds = selectedElementIds.map((id) => nodeOverrides[id]?.materialId ?? null);
+    const allSame = matIds.every((id) => id === matIds[0]);
+    const sharedMat = allSame && matIds[0] ? materials.find((m) => m.id === matIds[0]) ?? null : null;
+
+    return (
+      <div className="p-4 space-y-4">
+        <div className="text-xs text-gray-500">
+          {selectedElementIds.length} elementy zaznaczone
+        </div>
+
+        {/* Info o materiale */}
+        <div className="space-y-1">
+          <div className="text-xs text-gray-400 font-medium">Materiał</div>
+          {sharedMat ? (
+            <div className="text-sm text-gray-200">{sharedMat.name}</div>
+          ) : (
+            <div className="text-sm text-gray-500 italic">Różne materiały</div>
+          )}
+        </div>
+
+        {/* Łączne wymiary */}
+        {selectedItemBounds && (
+          <div className="space-y-1.5 pt-1 border-t border-gray-800">
+            <label className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
+              <Ruler className="w-3 h-3" />
+              Łączne wymiary zaznaczenia
+            </label>
+            <div className="grid grid-cols-2 gap-1.5">
+              <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
+                <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Szerokość</div>
+                <div className="flex items-baseline gap-1">
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={widthInput}
+                    onChange={(e) => setWidthInput(e.target.value)}
+                    onBlur={commitResize}
+                    onKeyDown={handleDimensionKey}
+                    className="w-full bg-transparent text-gray-200 text-sm font-mono focus:outline-none focus:text-white [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <span className="text-gray-400 text-[10px] shrink-0">mm</span>
+                </div>
+              </div>
+              <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
+                <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Wysokość</div>
+                <div className="flex items-baseline gap-1">
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={heightInput}
+                    onChange={(e) => setHeightInput(e.target.value)}
+                    onBlur={commitResize}
+                    onKeyDown={handleDimensionKey}
+                    className="w-full bg-transparent text-gray-200 text-sm font-mono focus:outline-none focus:text-white [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <span className="text-gray-400 text-[10px] shrink-0">mm</span>
+                </div>
+              </div>
+            </div>
+            <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
+              <div className="text-gray-400 text-[10px] uppercase tracking-wider">Powierzchnia (łącznie)</div>
+              <div className="text-gray-200 text-sm font-mono">
+                {(selectedItemBounds.areaMm2 / 100).toFixed(2)} cm²
+              </div>
+            </div>
+            {selectedItemBounds.pathLengthMm > 0 && (
+              <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
+                <div className="text-gray-400 text-[10px] uppercase tracking-wider">Długość cięcia (łącznie)</div>
+                <div className="text-gray-200 text-sm font-mono">
+                  {selectedItemBounds.pathLengthMm >= 1000
+                    ? `${(selectedItemBounds.pathLengthMm / 1000).toFixed(3)} m`
+                    : `${selectedItemBounds.pathLengthMm.toFixed(1)} mm`}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Brak zaznaczenia ──────────────────────────────────────────────────────────
   if (!selectedElementId) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-6 text-center">
@@ -205,6 +306,7 @@ function PropertiesTab() {
     );
   }
 
+  // ── Pojedynczy element ────────────────────────────────────────────────────────
   return (
     <div className="p-4 space-y-5">
       {/* Materiał */}
@@ -214,41 +316,28 @@ function PropertiesTab() {
         onChange={handleMaterialChange}
       />
 
-      {/* Grubość — jeśli materiał ma stawki cięcia lub pricing_unit !== per_piece */}
-      {selectedMaterial && selectedMaterial.pricing_unit !== "per_piece" && (
+      {/* Grubość — dla każdego materiału który ma stawki w globalnych ustawieniach */}
+      {selectedMaterial && selectedMaterial.pricing_unit !== "per_piece" && categoryRates.length > 0 && (
         <div className="space-y-1.5">
-          <label className="text-xs text-gray-500 font-medium block">Grubość</label>
-          <div className="flex gap-2">
-            {materialRates.length > 0 ? (
-              <select
-                value={currentThickness != null ? String(currentThickness) : ""}
-                onChange={(e) => handleThicknessChange(e.target.value)}
-                className="flex-1 bg-[#252525] border border-gray-700 text-gray-200 text-sm rounded px-2 py-1.5 appearance-none focus:outline-none focus:border-blue-500"
-              >
-                <option value="">Domyślna</option>
-                {materialRates.map((r) => (
-                  <option key={r.id} value={String(r.thickness_mm)}>{r.thickness_mm} mm</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="number"
-                min="0.5"
-                step="0.5"
-                value={currentThickness != null ? String(currentThickness) : ""}
-                onChange={(e) => handleThicknessChange(e.target.value)}
-                placeholder="mm"
-                className="flex-1 bg-[#252525] border border-gray-700 text-gray-200 text-sm rounded px-2 py-1.5 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-              />
-            )}
-          </div>
+          <label className="text-xs text-gray-400 font-medium block">Grubość</label>
+          <select
+            value={currentThickness != null ? String(currentThickness) : ""}
+            onChange={(e) => handleThicknessChange(e.target.value)}
+            className="w-full bg-[#252525] border border-gray-700 text-gray-200 text-sm rounded px-2 py-1.5 appearance-none focus:outline-none focus:border-blue-500"
+          >
+            {categoryRates.map((r) => (
+              <option key={r.id} value={String(r.thickness_mm)}>
+                {r.thickness_mm} mm — {r.price_per_m.toFixed(2)} zł/mb
+              </option>
+            ))}
+          </select>
         </div>
       )}
 
       {/* Ilość sztuk — dla dystansów */}
       {isDistans && (
         <div className="space-y-1.5">
-          <label className="text-xs text-gray-500 font-medium block">Ilość sztuk</label>
+          <label className="text-xs text-gray-400 font-medium block">Ilość sztuk</label>
           <input
             type="number"
             min="1"
@@ -263,13 +352,13 @@ function PropertiesTab() {
       {/* Wymiary */}
       {selectedItemBounds && (
         <div className="space-y-1.5 pt-1 border-t border-gray-800">
-          <label className="text-xs text-gray-500 font-medium flex items-center gap-1.5">
+          <label className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
             <Ruler className="w-3 h-3" />
             Wymiary
           </label>
           <div className="grid grid-cols-2 gap-1.5">
             <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
-              <div className="text-gray-600 text-[10px] uppercase tracking-wider mb-0.5">Szerokość</div>
+              <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Szerokość</div>
               <div className="flex items-baseline gap-1">
                 <input
                   type="number"
@@ -281,11 +370,11 @@ function PropertiesTab() {
                   onKeyDown={handleDimensionKey}
                   className="w-full bg-transparent text-gray-200 text-sm font-mono focus:outline-none focus:text-white [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 />
-                <span className="text-gray-600 text-[10px] shrink-0">mm</span>
+                <span className="text-gray-400 text-[10px] shrink-0">mm</span>
               </div>
             </div>
             <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
-              <div className="text-gray-600 text-[10px] uppercase tracking-wider mb-0.5">Wysokość</div>
+              <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Wysokość</div>
               <div className="flex items-baseline gap-1">
                 <input
                   type="number"
@@ -297,19 +386,19 @@ function PropertiesTab() {
                   onKeyDown={handleDimensionKey}
                   className="w-full bg-transparent text-gray-200 text-sm font-mono focus:outline-none focus:text-white [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 />
-                <span className="text-gray-600 text-[10px] shrink-0">mm</span>
+                <span className="text-gray-400 text-[10px] shrink-0">mm</span>
               </div>
             </div>
           </div>
           <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
-            <div className="text-gray-600 text-[10px] uppercase tracking-wider">Powierzchnia</div>
+            <div className="text-gray-400 text-[10px] uppercase tracking-wider">Powierzchnia</div>
             <div className="text-gray-200 text-sm font-mono">
               {(selectedItemBounds.areaMm2 / 100).toFixed(2)} cm²
             </div>
           </div>
           {selectedItemBounds.pathLengthMm > 0 && (
             <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
-              <div className="text-gray-600 text-[10px] uppercase tracking-wider">Długość cięcia</div>
+              <div className="text-gray-400 text-[10px] uppercase tracking-wider">Długość cięcia</div>
               <div className="text-gray-200 text-sm font-mono">
                 {selectedItemBounds.pathLengthMm >= 1000
                   ? `${(selectedItemBounds.pathLengthMm / 1000).toFixed(3)} m`
@@ -339,7 +428,7 @@ export function ElementPanel() {
             className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
               activeTab === "wlasciwosci"
                 ? "text-white border-b-2 border-blue-500 -mb-px"
-                : "text-gray-500 hover:text-gray-300"
+                : "text-gray-400 hover:text-gray-200"
             }`}
           >
             Właściwości
@@ -349,7 +438,7 @@ export function ElementPanel() {
             className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
               activeTab === "wycena"
                 ? "text-white border-b-2 border-blue-500 -mb-px"
-                : "text-gray-500 hover:text-gray-300"
+                : "text-gray-400 hover:text-gray-200"
             }`}
           >
             Wycena

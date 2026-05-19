@@ -88,6 +88,18 @@ pub fn run() {
             sql: include_str!("db/migrations/013_unique_project_name.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 14,
+            description: "per_project_generation_state",
+            sql: include_str!("db/migrations/014_per_project_generation_state.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 15,
+            description: "led_config",
+            sql: include_str!("db/migrations/015_led_config.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -96,6 +108,8 @@ pub fn run() {
                 .add_migrations("sqlite:vizualizeit.db", migrations)
                 .build(),
         )
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {

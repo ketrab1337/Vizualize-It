@@ -19,14 +19,60 @@ function dataUrlToBase64(dataUrl: string): { data: string; mime_type: string } |
   return { data: match[2], mime_type: match[1] };
 }
 
+/**
+ * Wyciąga wszystkie teksty z SVG (z <text> i <tspan>). AI musi je odwzorować
+ * DOSŁOWNIE — bez tego Nano Banana 2/Pro modyfikują nazwy (np. "Green-partners.pl"
+ * → "G&N partners", "GREEN PARTNER INTERNATIONAL").
+ */
+function extractSvgTexts(svgContent: string | null): string[] {
+  if (!svgContent) return [];
+  try {
+    const doc = new DOMParser().parseFromString(svgContent, "image/svg+xml");
+    const texts: string[] = [];
+    doc.querySelectorAll("text, tspan").forEach((el) => {
+      const t = (el.textContent ?? "").trim();
+      if (t && !texts.includes(t)) texts.push(t);
+    });
+    return texts;
+  } catch {
+    return [];
+  }
+}
+
+async function loadPresetTexts(ids: string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const db = await getDb();
+  const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+  const rows = await db.select<{ id: string; text: string }[]>(
+    `SELECT id, text FROM prompt_presets WHERE id IN (${placeholders})`,
+    ids
+  );
+  // Zachowaj kolejność wg `ids` (toggle order), żeby zmiana kolejności kafelków
+  // przekładała się na kolejność doklejania w prompcie.
+  const byId = new Map(rows.map((r) => [r.id, r.text]));
+  return ids.map((id) => byId.get(id) ?? "").filter(Boolean);
+}
+
 export function useGeneration() {
   const [generating, setGenerating] = useState(false);
 
   const { projects, activeProjectId } = useProjectStore();
-  const { nodeOverrides, backgroundPath, backgroundDataUrl, setActiveTab } = useEditorStore();
+  const { nodeOverrides, backgroundPath, backgroundDataUrl, svgContent, setActiveTab } = useEditorStore();
   const { materials } = useMaterialsStore();
-  const { model, format, count, led, camera, cameraDirty, userPrompt, promptOverride, timeOfDay, referenceImages, activePresets, batchMode, setLastGeneratedImageIds } =
-    useGenerationStore();
+  const {
+    model,
+    format,
+    count,
+    led,
+    camera,
+    cameraDirty,
+    prompt,
+    timeOfDay,
+    referenceImages,
+    activePresetIds,
+    batchMode,
+    setLastGeneratedImageIds,
+  } = useGenerationStore();
   const addToast = useToastStore((s) => s.addToast);
 
   const generate = useCallback(async () => {
@@ -35,43 +81,71 @@ export function useGeneration() {
 
     setGenerating(true);
     try {
+      // Kompozyt canvas (tło + SVG bez etykiet — etykiety były dosłownie rysowane przez AI)
+      const capture = captureCanvas();
+
+      // buildElements używa nodeId jako label — te same identyfikatory trafiają do
+      // promptu, AI rozpoznaje elementy po kolorach hex (nie po wizualnych etykietach).
       const elements = buildElements(nodeOverrides, materials);
 
-      // Zbierz zdjęcia referencyjne materiałów
+      // Zbierz zdjęcia referencyjne materiałów — DEDUPLIKACJA per material_id.
+      // Wcześniej każdy element z tym samym materiałem wysyłał osobne zdjęcie,
+      // przez co dla szyldu z 7 literami plexy "Niebieska" AI dostawała 7 kopii tego
+      // samego obrazu. Teraz: jeden materiał = jeden Image, wszystkie elementy
+      // używające tego materiału referują do tego samego numeru.
       const materialImages: { data: string; mime_type: string }[] = [];
+      const materialIdToImageIdx: Record<string, number> = {};
+      const seenMaterialIds = new Set<string>();
       for (const el of elements) {
-        if (el.material?.photo_path) {
-          try {
-            const dataUrl = await invoke<string>("get_material_photo", {
-              path: el.material.photo_path,
-            });
-            const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
-            if (match) {
-              materialImages.push({ data: match[2], mime_type: match[1] });
-            }
-          } catch {
-            // brak zdjęcia nie blokuje generowania
+        const matId = el.material?.id;
+        if (!matId || !el.material?.photo_path) continue;
+        if (seenMaterialIds.has(matId)) continue;
+        seenMaterialIds.add(matId);
+        try {
+          const dataUrl = await invoke<string>("get_material_photo", {
+            path: el.material.photo_path,
+          });
+          const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
+          if (match) {
+            materialIdToImageIdx[matId] = materialImages.length; // relatywny indeks w tablicy
+            materialImages.push({ data: match[2], mime_type: match[1] });
           }
+        } catch {
+          // brak zdjęcia nie blokuje generowania
         }
       }
 
-      // Przygotuj obrazy wejściowe: tło i zrzut canvasu (SVG z nałożonymi kolorami materiałów)
+      // Przygotuj obrazy wejściowe.
+      // WAŻNE: captureCanvas() zwraca KOMPOZYT (tło + SVG + etykiety) gdy jest tło.
+      // Wysyłanie tła osobno DODATKOWO myli model (widzi 2 obrazy z tłem — przed/po)
+      // i powoduje że losowo bierze jedno lub miesza. Dlatego:
+      //   - jest kompozyt → wysyłamy TYLKO kompozyt (zawiera już tło)
+      //   - brak kompozytu, ale jest tło → wysyłamy samo tło
+      //   - brak obu → wysyłamy nic z edytora
       let backgroundImageInput: { data: string; mime_type: string } | null = null;
       let svgImageInput: { data: string; mime_type: string } | null = null;
 
-      if (backgroundDataUrl) {
+      if (capture) {
+        svgImageInput = { data: capture.pngBase64, mime_type: "image/png" };
+      } else if (backgroundDataUrl) {
         backgroundImageInput = dataUrlToBase64(backgroundDataUrl);
       }
 
-      const canvasPng = captureCanvas();
-      if (canvasPng) {
-        svgImageInput = { data: canvasPng, mime_type: "image/png" };
-      }
+      const referenceImageInputs = referenceImages
+        .map((img) => dataUrlToBase64(img.dataUrl))
+        .filter((x): x is { data: string; mime_type: string } => x !== null);
 
-      // Zbuduj prompt
+      // `hasBackground` mówi assemblerowi czy w scenie z edytora JEST tło — niezależnie
+      // od tego, w którym slocie (`background_image` / `svg_image` jako kompozyt). Daje to
+      // assemblerowi sygnał do gałęzi KOMPOZYT (tło + SVG nałożony) lub samo tło,
+      // zamiast "czysty SVG bez tła".
       const visualInputs: VisualInputs = {
-        hasBackground: !!backgroundImageInput,
+        hasBackground: !!backgroundDataUrl,
         hasSvg: !!svgImageInput,
+        materialImageCount: materialImages.length,
+        referenceImageCount: referenceImageInputs.length,
+        svgTexts: extractSvgTexts(svgContent),
+        materialIdToImageIdx,
       };
       const signConfig: SignConfig = {
         elements,
@@ -82,21 +156,16 @@ export function useGeneration() {
         background: backgroundPath ?? null,
         timeOfDay,
       };
-      // Presety lecą jako część assembled promptu (są też widoczne w podglądzie).
-      // User prompt zostaje osobny — to swobodny tekst od użytkownika.
-      const presetTexts = activePresets.map((p) => p.text).filter(Boolean);
-      const finalPrompt =
-        promptOverride ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presetTexts });
-      const finalUserPrompt = promptOverride ? null : (userPrompt.trim() || null);
 
-      const referenceImageInputs = referenceImages
-        .map((img) => dataUrlToBase64(img.dataUrl))
-        .filter((x): x is { data: string; mime_type: string } => x !== null);
+      // Jeden prompt = albo użytkownik nadpisał ręcznie (`prompt: string`), albo
+      // assembler składa z bieżącej konfiguracji + tekstów aktywnych presetów.
+      const presetTexts = await loadPresetTexts(activePresetIds);
+      const finalPrompt =
+        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presetTexts });
 
       const generationInput = {
         project_slug: project.slug,
         prompt: finalPrompt,
-        user_prompt: finalUserPrompt,
         model,
         format,
         count,
@@ -107,7 +176,6 @@ export function useGeneration() {
       };
 
       if (batchMode) {
-        // Tryb batch: zapisz payload na dysk + dodaj rekord do kolejki
         const jobId = crypto.randomUUID();
         await invoke("save_batch_payload", {
           projectSlug: project.slug,
@@ -126,7 +194,6 @@ export function useGeneration() {
         return;
       }
 
-      // Tryb normalny: wywołaj komendę Rust bezpośrednio
       const files = await invoke<GeneratedImageFile[]>("generate_image", {
         input: generationInput,
       });
@@ -136,7 +203,6 @@ export function useGeneration() {
         return;
       }
 
-      // Zapisz sesję i obrazy do SQLite
       const db = await getDb();
       const sessionId = crypto.randomUUID();
       const now = new Date().toISOString();
@@ -152,7 +218,8 @@ export function useGeneration() {
           sessionId,
           project.id,
           finalPrompt,
-          promptOverride ? null : userPrompt || null,
+          // `prompt_user` zostawiamy w schemacie (legacy) — zapisujemy null po unifikacji.
+          null,
           model,
           format,
           count,
@@ -198,17 +265,17 @@ export function useGeneration() {
     materials,
     backgroundPath,
     backgroundDataUrl,
+    svgContent,
     model,
     format,
     count,
     led,
     camera,
     cameraDirty,
-    userPrompt,
-    promptOverride,
+    prompt,
     timeOfDay,
     referenceImages,
-    activePresets,
+    activePresetIds,
     batchMode,
     addToast,
     setActiveTab,

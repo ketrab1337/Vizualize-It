@@ -1,4 +1,6 @@
+import { Info } from "lucide-react";
 import { useGenerationStore } from "../../stores/generationStore";
+import { useEditorStore } from "../../stores/editorStore";
 import type { AiModel, ImageFormat } from "../../types";
 
 const MODELS: { id: AiModel; label: string; desc: string; disabled?: boolean }[] = [
@@ -32,6 +34,10 @@ const COUNTS = [1, 2, 3, 4] as const;
 export function ModelSelector() {
   const { model, format, count, batchMode, setModel, setFormat, setCount, setBatchMode } =
     useGenerationStore();
+  const { backgroundDataUrl } = useEditorStore();
+
+  // Ostrzeżenie gdy NB 2 + tło — model często ignoruje tło, sugerujemy NB Pro/GPT-2
+  const showNb2Warning = model === "nano-banana-2" && !!backgroundDataUrl;
 
   return (
     <div className="bg-[#1a1a1a] rounded-lg p-4 space-y-5">
@@ -63,11 +69,36 @@ export function ModelSelector() {
             />
             <div>
               <p className="text-sm text-gray-200 leading-tight">{m.label}</p>
-              <p className="text-xs text-gray-500 mt-0.5">{m.desc}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{m.desc}</p>
             </div>
           </label>
         ))}
       </div>
+
+      {/* Ostrzeżenie dla NB 2 + tło */}
+      {showNb2Warning && (
+        <div className="flex items-start gap-2 bg-amber-950/40 border border-amber-800/50 rounded-md px-3 py-2">
+          <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-200/90 leading-relaxed">
+            Nano Banana 2 często nie zachowuje tła z edytora przy generowaniu z tłem.
+            Dla projektów z tłem lepszy efekt daje{" "}
+            <button
+              onClick={() => setModel("nano-banana-pro")}
+              className="underline font-medium hover:text-amber-100"
+            >
+              Nano Banana Pro
+            </button>
+            {" "}lub{" "}
+            <button
+              onClick={() => setModel("gpt-image-2")}
+              className="underline font-medium hover:text-amber-100"
+            >
+              GPT Image 2
+            </button>
+            .
+          </p>
+        </div>
+      )}
 
       {/* Tryb batch */}
       <div className="border-t border-gray-800 pt-4 flex items-center justify-between">

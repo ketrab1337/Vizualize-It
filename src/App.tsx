@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { Sidebar } from "./components/layout/Sidebar";
 import { MainArea } from "./components/layout/MainArea";
 import { SettingsView } from "./components/settings/SettingsView";
@@ -7,6 +9,7 @@ import { ToastContainer } from "./components/ui/Toast";
 import { useProject } from "./hooks/useProject";
 import { useKeysStore } from "./stores/keysStore";
 import { useSettingsStore } from "./stores/settingsStore";
+import { useToastStore } from "./stores/toastStore";
 
 export function App() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -14,12 +17,36 @@ export function App() {
   const { loadProjects } = useProject();
   const { refreshKeys } = useKeysStore();
   const loadSettings = useSettingsStore((s) => s.loadSettings);
+  const addToast = useToastStore((s) => s.addToast);
 
   useEffect(() => {
     loadProjects();
     refreshKeys();
     loadSettings();
-  }, [loadProjects, refreshKeys, loadSettings]);
+
+    const timer = setTimeout(async () => {
+      try {
+        const update = await check();
+        if (!update?.available) return;
+        addToast(
+          `Dostępna aktualizacja ${update.version} — kliknij by zainstalować`,
+          "info",
+          {
+            label: "Zainstaluj",
+            fn: async () => {
+              addToast("Pobieranie aktualizacji...", "info");
+              await update.downloadAndInstall();
+              await relaunch();
+            },
+          }
+        );
+      } catch {
+        // ignoruj błędy sprawdzania aktualizacji
+      }
+    }, 3000);
+
+    return () => clearTimeout(timer);
+  }, [loadProjects, refreshKeys, loadSettings, addToast]);
 
   return (
     <div className="flex h-full bg-[#0f0f0f] text-gray-200 overflow-hidden">

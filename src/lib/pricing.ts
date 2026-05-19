@@ -1,5 +1,5 @@
 import type { NodeOverride, Material, GlobalCuttingRate } from "../types";
-import type { SelectedItemBounds } from "../stores/editorStore";
+import type { SelectedItemBounds, LedProjectConfig } from "../stores/editorStore";
 
 export interface ElementCostItem {
   nodeId: string;
@@ -89,12 +89,36 @@ export function calculatePricing(
   boundsPerElement: Record<string, SelectedItemBounds>,
   materials: Material[],
   globalCuttingRates: GlobalCuttingRate[],
-  labels: Record<string, string>
+  labels: Record<string, string>,
+  ledConfig: LedProjectConfig
 ): PricingSummary {
   const items: ElementCostItem[] = [];
   let totalMaterial = 0;
   let totalCutting = 0;
   let totalLed = 0;
+
+  // ── LED (projekt-poziom) ──
+  if (ledConfig.materialId && ledConfig.lengthM && ledConfig.lengthM > 0) {
+    const ledMaterial = materials.find((m) => m.id === ledConfig.materialId);
+    if (ledMaterial) {
+      const ledCost = ledConfig.lengthM * (ledMaterial.base_price ?? 0);
+      const supplyCost = ledConfig.hasPowerSupply ? (ledConfig.powerSupplyPrice ?? 0) : 0;
+      const total = ledCost + supplyCost;
+      items.push({
+        nodeId: "__led__",
+        label: ledMaterial.name,
+        lineType: "led",
+        materialName: ledMaterial.name,
+        thicknessMm: null,
+        areaCm2: null,
+        pathLengthM: ledConfig.lengthM,
+        quantity: null,
+        unitCost: ledMaterial.base_price ?? 0,
+        totalCost: total,
+      });
+      totalLed += total;
+    }
+  }
 
   for (const [nodeId, override] of Object.entries(nodeOverrides)) {
     const material = override.materialId
@@ -102,26 +126,6 @@ export function calculatePricing(
       : null;
     const bounds = boundsPerElement[nodeId] ?? null;
     const label = labels[nodeId] ?? nodeId;
-
-    // ── LED ──
-    if (override.ledLengthM != null && override.ledLengthM > 0) {
-      const ledCost = override.ledLengthM * (override.ledPricePerM ?? 0);
-      const supplyCost = override.hasPowerSupply ? (override.powerSupplyPrice ?? 0) : 0;
-      const total = ledCost + supplyCost;
-      items.push({
-        nodeId,
-        label,
-        lineType: "led",
-        materialName: null,
-        thicknessMm: null,
-        areaCm2: null,
-        pathLengthM: override.ledLengthM,
-        quantity: null,
-        unitCost: override.ledPricePerM ?? 0,
-        totalCost: total,
-      });
-      totalLed += total;
-    }
 
     if (!material) continue;
 
@@ -167,6 +171,30 @@ export function calculatePricing(
         totalCost: total,
       });
       totalMaterial += total;
+
+      // Koszt cięcia z globalnych stawek — osobna linia jeśli wybrano grubość i istnieją stawki
+      const cuttingRate = thickness != null
+        ? findGlobalCuttingRate(material.category, thickness, globalCuttingRates)
+        : null;
+      if (cuttingRate != null && bounds) {
+        const pathLengthM = bounds.pathLengthMm / 1000;
+        if (pathLengthM > 0) {
+          const cuttingTotal = pathLengthM * cuttingRate;
+          items.push({
+            nodeId,
+            label,
+            lineType: "material",
+            materialName: `${material.name} — cięcie`,
+            thicknessMm: thickness,
+            areaCm2: null,
+            pathLengthM,
+            quantity: null,
+            unitCost: cuttingRate,
+            totalCost: cuttingTotal,
+          });
+          totalCutting += cuttingTotal;
+        }
+      }
       continue;
     }
 

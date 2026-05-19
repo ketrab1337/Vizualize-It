@@ -28,14 +28,17 @@ interface ChangeAngleModalProps {
 
 function buildEditPrompt(cam: CameraConfig): string {
   const camText = buildCameraPrompt(cam.rotateDeg, cam.moveForward, cam.verticalTilt);
+  // Pozytywne sformułowanie wzorowane na Google Cloud guide dla Nano Banana:
+  // "Keep X exactly as is. Change only Y." (zamiast list negacji "Don't change X")
   const base =
-    "Zmień WYŁĄCZNIE perspektywę kamery. Absolutnie nie wolno zmieniać: " +
-    "kolorów materiałów, tekstów, napisów, logo, układu elementów szyldu, oświetlenia ani tła. " +
-    "Zachowaj IDENTYCZNIE cały wygląd i treść szyldu.";
+    "Re-render this exact sign from a new camera angle. " +
+    "Keep the sign's materials, colors, surface finish, text content, fonts, logo design, " +
+    "element layout, lighting, and background exactly as visible in the input image. " +
+    "Change only the camera perspective.";
   if (camText) {
-    return `${base} Nowy kąt kamery: ${camText}.`;
+    return `${base} New camera angle: ${camText}.`;
   }
-  return `${base} Ustaw kamerę na widok frontalny ze średniej odległości.`;
+  return `${base} Set the camera to a frontal view at medium distance.`;
 }
 
 

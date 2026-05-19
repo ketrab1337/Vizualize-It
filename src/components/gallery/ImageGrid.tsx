@@ -266,8 +266,8 @@ function ImageCard({
 
       {/* Informacje */}
       <div className="px-3 py-2">
-        <p className="text-xs text-gray-400 truncate">{modelLabel(img.model)}</p>
-        <p className="text-xs text-gray-600 mt-0.5">
+        <p className="text-xs text-gray-200 truncate">{modelLabel(img.model)}</p>
+        <p className="text-xs text-gray-400 mt-0.5">
           {new Date(img.created_at).toLocaleDateString("pl-PL", {
             day: "2-digit",
             month: "2-digit",
@@ -335,7 +335,7 @@ function ImageViewModal({
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
           <div>
             <p className="text-sm text-white font-medium">{modelLabel(img.model)}</p>
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-gray-400">
               {new Date(img.created_at).toLocaleDateString("pl-PL", {
                 day: "2-digit",
                 month: "long",
@@ -444,7 +444,7 @@ export function ImageGrid({ projectId }: ImageGridProps) {
   const { projects, activeProjectId } = useProjectStore();
   const addToast = useToastStore((s) => s.addToast);
   const activeProject = projects.find((p) => p.id === activeProjectId);
-  const { jobs: batchJobs, cancelJob, loadJobs: reloadBatchJobs } = useBatchJobs(activeProjectId);
+  const { jobs: batchJobs, cancelJob, dismissJob, loadJobs: reloadBatchJobs } = useBatchJobs(activeProjectId);
 
   const [filter, setFilter] = useState<Filter>("wszystkie");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -645,7 +645,7 @@ export function ImageGrid({ projectId }: ImageGridProps) {
           ))}
         </div>
 
-        <span className="text-xs text-gray-600">
+        <span className="text-xs text-gray-400">
           {filtered.length} {filtered.length === 1 ? "obraz" : "obrazów"}
         </span>
 
@@ -687,7 +687,7 @@ export function ImageGrid({ projectId }: ImageGridProps) {
       </div>
 
       {/* Kolejka batch */}
-      <BatchQueuePanel jobs={batchJobs} onCancel={cancelJob} />
+      <BatchQueuePanel jobs={batchJobs} onCancel={cancelJob} onDismiss={dismissJob} />
 
       {/* Siatka */}
       <div className="flex-1 overflow-y-auto p-5">

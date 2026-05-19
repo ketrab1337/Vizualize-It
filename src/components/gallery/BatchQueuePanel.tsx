@@ -1,9 +1,10 @@
-import { CheckCircle2, Clock, Loader2, X, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, Loader2, Trash2, X, XCircle } from "lucide-react";
 import type { BatchJob } from "../../types";
 
 interface BatchQueuePanelProps {
   jobs: BatchJob[];
   onCancel: (job: BatchJob) => void;
+  onDismiss: (job: BatchJob) => void;
 }
 
 function modelLabel(model: string): string {
@@ -32,7 +33,7 @@ function statusLabel(status: BatchJob["status"]): string {
   return "Anulowano";
 }
 
-export function BatchQueuePanel({ jobs, onCancel }: BatchQueuePanelProps) {
+export function BatchQueuePanel({ jobs, onCancel, onDismiss }: BatchQueuePanelProps) {
   const active = jobs.filter(
     (j) => j.status === "pending" || j.status === "running" || j.status === "error"
   );
@@ -74,6 +75,15 @@ export function BatchQueuePanel({ jobs, onCancel }: BatchQueuePanelProps) {
                 title="Anuluj"
               >
                 <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {job.status === "error" && (
+              <button
+                onClick={() => onDismiss(job)}
+                className="p-1 rounded hover:bg-red-900/30 text-gray-500 hover:text-red-300 transition-colors shrink-0"
+                title="Usuń z kolejki"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>

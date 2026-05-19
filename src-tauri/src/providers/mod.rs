@@ -20,9 +20,11 @@ pub struct MaterialImage {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GenerationConfig {
+    /// Pojedynczy prompt do AI — łączy w sobie automatycznie złożoną część (materiały,
+    /// LED, kamera, tło, presety) i swobodny tekst użytkownika. Wcześniej rozdzielony
+    /// na `prompt` (system) i `user_prompt` — eksperymentalnie połączony, bo pojedyncza
+    /// instrukcja zdaje się lepiej trzymać kontekst sceny w generowaniu obrazu.
     pub prompt: String,
-    /// Prompt użytkownika przekazywany osobno jako system_instruction (Google) lub separator (OpenAI)
-    pub user_prompt: Option<String>,
     pub model: String,
     pub format: ImageFormat,
     pub count: u8,

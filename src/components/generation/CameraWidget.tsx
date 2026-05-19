@@ -25,11 +25,10 @@ function ensureThree(cb: () => void): void {
 }
 
 // ---------------------------------------------------------------------------
-// Snap constants
+// Snap constants — co 15° dla rotacji, co 5 dla forward, co 0.2 dla tilt
 // ---------------------------------------------------------------------------
-// Rotacja: każdy stopień od −90 do 90
+const ROTATE_STEPS = [-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90] as const;
 const FORWARD_STEPS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
-// Pochylenie: 11 pozycji od −1 do 1 co 0.2
 const TILT_STEPS = [-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1] as const;
 
 function snapNearest(val: number, steps: readonly number[]): number {
@@ -37,21 +36,41 @@ function snapNearest(val: number, steps: readonly number[]): number {
 }
 
 function snapRotation(deg: number): number {
-  return Math.round(Math.max(-90, Math.min(90, deg)));
+  const clamped = Math.max(-90, Math.min(90, deg));
+  return snapNearest(clamped, ROTATE_STEPS);
 }
 
-// Live overlay text (continuous values during drag)
+// Live overlay text (continuous values during drag) — synchronizowane z buildCameraPrompt.
 function liveText(rot: number, fwd: number, tilt: number): string {
   const parts: string[] = [];
-  if (Math.abs(rot) > 0.5) {
+
+  // Rotacja — granularne opisy co 15°
+  const absR = Math.abs(rot);
+  if (absR >= 0.5) {
     const dir = rot > 0 ? "lewo" : "prawo";
-    parts.push(`${dir} ${Math.round(Math.abs(rot))}°`);
+    let mag = "";
+    if (absR <= 20) mag = "lekko w";
+    else if (absR <= 40) mag = "umiarkowanie w";
+    else if (absR <= 60) mag = "mocno w";
+    else if (absR <= 80) mag = "bardzo mocno w";
+    else mag = "skrajnie w";
+    parts.push(`${mag} ${dir} ${Math.round(absR)}°`);
   }
-  if (fwd > 5) parts.push("zbliżenie");
-  else if (fwd >= 1) parts.push("średnia odl.");
-  else parts.push("z daleka");
-  if (tilt <= -0.7) parts.push("widok ptasi");
-  else if (tilt >= 0.7) parts.push("widok żabi");
+
+  // Forward — granularne opisy
+  if (fwd >= 9) parts.push("bardzo bliskie zbliżenie");
+  else if (fwd >= 7) parts.push("zbliżenie");
+  else if (fwd >= 5) parts.push("ujęcie z bliska");
+  else if (fwd >= 3) parts.push("średnia odległość");
+  else if (fwd >= 1) parts.push("z większej odległości");
+  else parts.push("z daleka, ujęcie uliczne");
+
+  // Tilt — granularne opisy
+  if (tilt <= -0.7) parts.push("widok ptasi (mocno z góry)");
+  else if (tilt <= -0.3) parts.push("widok lekko z góry");
+  else if (tilt >= 0.7) parts.push("widok żabi (mocno z dołu)");
+  else if (tilt >= 0.3) parts.push("widok lekko z dołu");
+
   return parts.join(" • ") || "widok frontalny";
 }
 
@@ -410,18 +429,18 @@ function SlidersTab({ camera, onChange }: SlidersTabProps) {
 
   return (
     <div className="p-4 space-y-6">
-      {/* Rotacja — ciągły suwak, krok 1° */}
+      {/* Rotacja — krok 15° */}
       <div className="space-y-2">
         <div className="flex justify-between text-xs">
           <span className="text-gray-400">Rotacja</span>
           <span className="text-gray-300 font-mono">{rotLabel}</span>
         </div>
         <input
-          type="range" min={-90} max={90} step={1} value={camera.rotateDeg}
+          type="range" min={-90} max={90} step={15} value={camera.rotateDeg}
           onChange={(e) => onChange({ ...camera, rotateDeg: +e.target.value })}
           className="w-full cursor-pointer accent-green-500"
         />
-        <div className="flex justify-between text-[10px] text-gray-600">
+        <div className="flex justify-between text-[10px] text-gray-400">
           <span>−90°</span><span>−45°</span><span>0°</span><span>+45°</span><span>+90°</span>
         </div>
       </div>
@@ -437,7 +456,7 @@ function SlidersTab({ camera, onChange }: SlidersTabProps) {
           onChange={(e) => onChange({ ...camera, moveForward: +e.target.value })}
           className="w-full cursor-pointer accent-orange-500"
         />
-        <div className="flex justify-between text-[10px] text-gray-600">
+        <div className="flex justify-between text-[10px] text-gray-400">
           <span>Daleko</span><span>Średnio</span><span>Blisko</span>
         </div>
       </div>
@@ -453,7 +472,7 @@ function SlidersTab({ camera, onChange }: SlidersTabProps) {
           onChange={(e) => onChange({ ...camera, verticalTilt: TILT_STEPS[+e.target.value] })}
           className="w-full cursor-pointer accent-pink-500"
         />
-        <div className="flex justify-between text-[10px] text-gray-600">
+        <div className="flex justify-between text-[10px] text-gray-400">
           <span>Ptasi</span><span>Poziomo</span><span>Żabi</span>
         </div>
       </div>
@@ -518,13 +537,13 @@ export function CameraWidget({ value, onChange }: CameraWidgetProps = {}) {
             className={`px-4 h-full text-xs font-medium transition-colors border-b-2 ${
               tab === t
                 ? "text-white border-blue-500"
-                : "text-gray-500 border-transparent hover:text-gray-300"
+                : "text-gray-400 border-transparent hover:text-gray-200"
             }`}
           >
             {t === "3d" ? "Widok 3D" : "Suwaki"}
           </button>
         ))}
-        <span className="ml-auto pr-3 text-[10px] text-gray-600 uppercase tracking-widest">
+        <span className="ml-auto pr-3 text-[10px] text-gray-400 uppercase tracking-widest">
           Kamera
         </span>
       </div>

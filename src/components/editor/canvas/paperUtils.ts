@@ -19,8 +19,8 @@ export function drawPageBackground(bgLayer: paper.Layer, hasBg = false): paper.S
     new paper.Rectangle(0, 0, CANVAS_SIZE_MM, CANVAS_SIZE_MM),
   );
   rect.fillColor = hasBg ? null : new paper.Color("white");
-  rect.strokeColor = new paper.Color(0.7, 0.71, 0.76, 1);
-  rect.strokeWidth = 1;
+  rect.strokeColor = hasBg ? null : new paper.Color(0.7, 0.71, 0.76, 1);
+  rect.strokeWidth = hasBg ? 0 : 1;
   rect.locked = true;
   prev.activate();
   return rect;
@@ -92,6 +92,25 @@ export function applyFillByName(name: string, fill: string): void {
     const item = findItemByName(layer, name);
     if (item) { applyFill(item, fill); return; }
   }
+}
+
+/** Zwraca nazwy wszystkich potomków elementu (rekurencyjnie, bez samego elementu). */
+function collectDescendants(item: paper.Item, out: string[]): void {
+  const g = item as paper.Group;
+  if (!g.children) return;
+  for (const c of g.children as paper.Item[]) {
+    if (c.name) out.push(c.name);
+    collectDescendants(c, out);
+  }
+}
+
+export function collectDescendantNames(name: string): string[] {
+  const result: string[] = [];
+  for (const layer of paper.project.layers as paper.Layer[]) {
+    const item = findItemByName(layer, name);
+    if (item) { collectDescendants(item, result); break; }
+  }
+  return result;
 }
 
 export function getItemType(item: paper.Item): LayerItem["type"] {

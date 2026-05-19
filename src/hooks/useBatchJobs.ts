@@ -187,6 +187,23 @@ export function useBatchJobs(projectId: string | null) {
     }
   }, []);
 
+  // ── Dismiss (usuń z kolejki — używane dla statusu error/cancelled) ────────
+
+  const dismissJob = useCallback(async (job: BatchJob) => {
+    const db = await getDb();
+    try {
+      // Sprzątanie ewentualnego payloadu na dysku (idempotentne)
+      await invoke("delete_batch_payload", {
+        projectSlug: job.project_slug,
+        jobId: job.id,
+      }).catch(() => {});
+      await db.execute(`DELETE FROM batch_jobs WHERE id=$1`, [job.id]);
+      setJobs((prev) => prev.filter((j) => j.id !== job.id));
+    } catch {
+      // ignoruj — następna iteracja loadJobs odświeży stan
+    }
+  }, []);
+
   // ── Cancel ─────────────────────────────────────────────────────────────────
 
   const cancelJob = useCallback(async (job: BatchJob) => {
@@ -250,5 +267,5 @@ export function useBatchJobs(projectId: string | null) {
     return () => clearInterval(interval);
   }, [jobs, pollJob, loadJobs]);
 
-  return { jobs, loadJobs, cancelJob };
+  return { jobs, loadJobs, cancelJob, dismissJob };
 }

@@ -10,27 +10,20 @@ const ENDPOINT_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 // ── Request structures ────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiRequest {
     contents: Vec<GeminiContent>,
     #[serde(rename = "generationConfig")]
     generation_config: GeminiGenConfig,
-    #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
-    system_instruction: Option<GeminiSystemInstruction>,
 }
 
-#[derive(Serialize)]
-struct GeminiSystemInstruction {
-    parts: Vec<GeminiPart>,
-}
-
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiContent {
     role: String,
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(untagged)]
 enum GeminiPart {
     Text { text: String },
@@ -40,14 +33,14 @@ enum GeminiPart {
     },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiInlineData {
     #[serde(rename = "mimeType")]
     mime_type: String,
     data: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiGenConfig {
     #[serde(rename = "responseModalities")]
     response_modalities: Vec<String>,
@@ -184,9 +177,19 @@ fn build_client() -> Result<reqwest::Client, String> {
 }
 
 /// Buduje wewnętrzne `GenerateContentRequest` (taki sam dla live i batch).
+///
+/// Kolejność parts: TEKST najpierw, potem obrazy w kolejności: kompozyt (lub czyste tło) →
+/// materiały → referencje. Tekst na początku daje modelowi kontekst zanim "zobaczy" obrazy,
+/// co stabilizuje wyniki (Google docs: "tekst instrukcji powinien poprzedzać obrazy
+/// referencyjne"). Numeracja "Obraz 1, 2, ..." w prompcie odpowiada kolejności w parts.
 fn build_request(config: &GenerationConfig) -> GeminiRequest {
     let mut parts: Vec<GeminiPart> = Vec::new();
 
+    // 1. TEKST PIERWSZY — opis zadania + opisy "Obraz 1, 2, 3..."
+    let full_prompt = format!("{} {}", config.prompt, config.format.to_prompt_suffix());
+    parts.push(GeminiPart::Text { text: full_prompt });
+
+    // 2. Obrazy w kolejności zgodnej z numeracją w prompcie
     if let Some(bg) = &config.background_image {
         parts.push(GeminiPart::Inline {
             inline_data: GeminiInlineData {
@@ -204,9 +207,6 @@ fn build_request(config: &GenerationConfig) -> GeminiRequest {
             },
         });
     }
-
-    let full_prompt = format!("{} {}", config.prompt, config.format.to_prompt_suffix());
-    parts.push(GeminiPart::Text { text: full_prompt });
 
     for img in &config.material_images {
         parts.push(GeminiPart::Inline {
@@ -226,24 +226,21 @@ fn build_request(config: &GenerationConfig) -> GeminiRequest {
         });
     }
 
-    let system_instruction = config
-        .user_prompt
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(|s| GeminiSystemInstruction {
-            parts: vec![GeminiPart::Text { text: s.to_string() }],
-        });
-
     GeminiRequest {
         contents: vec![GeminiContent {
             role: "user".to_string(),
             parts,
         }],
         generation_config: GeminiGenConfig {
-            response_modalities: vec!["IMAGE".to_string()],
-            candidate_count: if config.count > 1 { Some(config.count) } else { None },
+            // TEXT+IMAGE dla edycji — Gemini-3 wykorzystuje "thinking process" w tekście,
+            // co stabilizuje wynik wizualny. Tekst odpowiedzi ignorujemy (extract_images
+            // bierze tylko inline_data).
+            response_modalities: vec!["TEXT".to_string(), "IMAGE".to_string()],
+            // UWAGA: gemini-3.1-flash-image-preview i gemini-3-pro-image-preview NIE
+            // wspierają candidateCount > 1 ("Multiple candidates is not enabled for this
+            // model"). Dla count > 1 robimy N osobnych wywołań w `generate()` / submit_batch.
+            candidate_count: None,
         },
-        system_instruction,
     }
 }
 
@@ -292,35 +289,70 @@ fn extract_images_from_response(value: &serde_json::Value) -> Result<Vec<Generat
     Ok(images)
 }
 
+/// Pojedyncze wywołanie `:generateContent` zwracające 1 obraz.
+/// Gemini image-preview modele NIE wspierają candidateCount > 1, więc dla count > 1
+/// `generate()` spawnuje N równoległych wywołań tej funkcji.
+async fn single_call_generate(
+    client: reqwest::Client,
+    url: String,
+    request: GeminiRequest,
+) -> Result<GeneratedImage, String> {
+    let resp = client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| mask_key_in_error(&e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(map_api_error(status, &body));
+    }
+
+    let value: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Błąd parsowania odpowiedzi API: {e}"))?;
+
+    let images = extract_images_from_response(&value)?;
+    images
+        .into_iter()
+        .next()
+        .ok_or_else(|| "API zwróciło odpowiedź bez obrazów. Sprawdź prompt.".to_string())
+}
+
 #[async_trait::async_trait]
 impl ImageGenerator for GoogleAiProvider {
     async fn generate(&self, config: GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
         let key = read_key().await?;
         let request = build_request(&config);
-
         let url = format!("{}?key={}", self.generate_endpoint(), key);
         let client = build_client()?;
-        let resp = client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| mask_key_in_error(&e.to_string()))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(map_api_error(status, &body));
+        // Gemini image-preview modele zwracają 1 obraz na call (candidateCount > 1
+        // nie jest wspierany). Dla count > 1 spawnujemy N równoległych wywołań.
+        let n = config.count.max(1) as usize;
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            let client = client.clone();
+            let url = url.clone();
+            let req = request.clone();
+            handles.push(tokio::spawn(async move {
+                single_call_generate(client, url, req).await
+            }));
         }
 
-        let value: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("Błąd parsowania odpowiedzi API: {e}"))?;
+        let mut images: Vec<GeneratedImage> = Vec::with_capacity(n);
+        for h in handles {
+            let res = h
+                .await
+                .map_err(|e| format!("Błąd zadania równoległego: {e}"))?;
+            images.push(res?);
+        }
 
-        let images = extract_images_from_response(&value)?;
         if images.is_empty() {
-            return Err("API zwróciło odpowiedź bez obrazów. Sprawdź prompt.".to_string());
+            return Err("API nie zwróciło żadnego obrazu. Sprawdź prompt.".to_string());
         }
         Ok(images)
     }
@@ -344,14 +376,18 @@ impl ImageGenerator for GoogleAiProvider {
             "image/png"
         };
 
+        // Kolejność parts spójna z build_request (live generation):
+        // 1. TEKST najpierw — Google docs: "tekst instrukcji powinien poprzedzać obrazy"
+        // 2. Obraz źródłowy do edycji
+        // 3. Zdjęcia referencyjne (jeśli są)
         let mut parts: Vec<GeminiPart> = Vec::with_capacity(2 + references.len());
+        parts.push(GeminiPart::Text { text: prompt });
         parts.push(GeminiPart::Inline {
             inline_data: GeminiInlineData {
                 mime_type: mime_type.to_string(),
                 data: image_b64,
             },
         });
-        // Zdjęcia referencyjne — dołączane przed promptem jako dodatkowy kontekst.
         for r in references {
             parts.push(GeminiPart::Inline {
                 inline_data: GeminiInlineData {
@@ -360,7 +396,6 @@ impl ImageGenerator for GoogleAiProvider {
                 },
             });
         }
-        parts.push(GeminiPart::Text { text: prompt });
 
         let request = GeminiRequest {
             contents: vec![GeminiContent {
@@ -368,10 +403,10 @@ impl ImageGenerator for GoogleAiProvider {
                 parts,
             }],
             generation_config: GeminiGenConfig {
-                response_modalities: vec!["IMAGE".to_string()],
+                // TEXT+IMAGE — Gemini-3 "thinking process" w tekście stabilizuje edycję.
+                response_modalities: vec!["TEXT".to_string(), "IMAGE".to_string()],
                 candidate_count: None,
             },
-            system_instruction: None,
         };
 
         let url = format!("{}?key={}", self.generate_endpoint(), key);
@@ -406,19 +441,25 @@ impl ImageGenerator for GoogleAiProvider {
         let client = build_client()?;
         let request = build_request(&config);
 
-        // Inlined batch — pojedyncze żądanie wbudowane w wywołanie tworzenia batcha.
-        // Struktura: batch.inputConfig.requests.requests[].request
+        // Inlined batch z N żądaniami — Gemini image-preview NIE wspiera candidateCount > 1,
+        // więc dla count > 1 wstawiamy N kopii tego samego żądania z różnymi metadata.key.
+        // Każde żądanie zwróci 1 obraz; `poll_batch` zbierze wszystkie z inlinedResponses[].
+        let n = config.count.max(1) as usize;
+        let requests_array: Vec<serde_json::Value> = (0..n)
+            .map(|idx| {
+                serde_json::json!({
+                    "request": request.clone(),
+                    "metadata": { "key": format!("vizualize-it-{}", idx + 1) }
+                })
+            })
+            .collect();
+
         let body = serde_json::json!({
             "batch": {
                 "displayName": "vizualize-it-batch",
                 "inputConfig": {
                     "requests": {
-                        "requests": [
-                            {
-                                "request": request,
-                                "metadata": { "key": "vizualizeit-request" }
-                            }
-                        ]
+                        "requests": requests_array
                     }
                 }
             }
@@ -476,24 +517,39 @@ impl ImageGenerator for GoogleAiProvider {
             .await
             .map_err(|e| format!("Błąd parsowania statusu batcha: {e}"))?;
 
-        // Stan może być w metadata.state lub w innym miejscu — szukamy w obu.
-        let state = op
+        // Stan może być w metadata.state (starsze API) lub response.state (aktualne API).
+        // Sprawdzamy oba miejsca defensywnie.
+        let state_from_meta = op
             .metadata
             .as_ref()
             .and_then(|m| m.get("state"))
             .and_then(|s| s.as_str())
             .unwrap_or("");
+        let state_from_resp = op
+            .response
+            .as_ref()
+            .and_then(|r| r.get("state"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let state = if !state_from_meta.is_empty() {
+            state_from_meta
+        } else {
+            state_from_resp
+        };
 
+        // Aktualne API używa prefiksu BATCH_STATE_*, starsze JOB_STATE_* — akceptujemy oba.
         match state {
-            "JOB_STATE_QUEUED" | "JOB_STATE_PENDING" => return Ok(BatchPoll::Pending),
-            "JOB_STATE_RUNNING" => return Ok(BatchPoll::Running),
-            "JOB_STATE_CANCELLING" | "JOB_STATE_CANCELLED" => return Ok(BatchPoll::Cancelled),
-            "JOB_STATE_EXPIRED" => {
+            "JOB_STATE_QUEUED" | "JOB_STATE_PENDING"
+            | "BATCH_STATE_QUEUED" | "BATCH_STATE_PENDING" => return Ok(BatchPoll::Pending),
+            "JOB_STATE_RUNNING" | "BATCH_STATE_RUNNING" => return Ok(BatchPoll::Running),
+            "JOB_STATE_CANCELLING" | "JOB_STATE_CANCELLED"
+            | "BATCH_STATE_CANCELLING" | "BATCH_STATE_CANCELLED" => return Ok(BatchPoll::Cancelled),
+            "JOB_STATE_EXPIRED" | "BATCH_STATE_EXPIRED" => {
                 return Ok(BatchPoll::Failed {
                     error: "Zadanie wygasło (przekroczone okno 24h).".to_string(),
                 });
             }
-            "JOB_STATE_FAILED" => {
+            "JOB_STATE_FAILED" | "BATCH_STATE_FAILED" => {
                 let err_msg = op
                     .error
                     .as_ref()
@@ -504,9 +560,11 @@ impl ImageGenerator for GoogleAiProvider {
             _ => {}
         }
 
-        // Stany "SUCCEEDED" lub gdy operation.done=true z poprawną odpowiedzią
+        // Sukces: explicit state albo (done=true + jest response).
         let done = op.done.unwrap_or(false);
-        let is_succeeded = state == "JOB_STATE_SUCCEEDED" || (done && op.response.is_some());
+        let is_succeeded = state == "JOB_STATE_SUCCEEDED"
+            || state == "BATCH_STATE_SUCCEEDED"
+            || (done && op.response.is_some());
         if !is_succeeded {
             // Operation nieukończone, nieznany stan — traktujemy jako running
             return Ok(BatchPoll::Running);
@@ -516,13 +574,20 @@ impl ImageGenerator for GoogleAiProvider {
             .response
             .ok_or_else(|| "Brak pola response w ukończonym batchu.".to_string())?;
 
-        // Spróbuj wyciągnąć inlinedResponses z różnych możliwych ścieżek:
-        // - response.inlinedResponses.inlinedResponses[]
-        // - response.responses.inlinedResponses[]
-        // - response.inlinedResponses[]
+        // Wyciągamy inlinedResponses ze wszystkich możliwych ścieżek (aktualnie i historycznie):
+        // - response.output.inlinedResponses.inlinedResponses[]  (AKTUALNA struktura — maj 2026)
+        // - response.inlinedResponses.inlinedResponses[]         (starsza struktura)
+        // - response.responses.inlinedResponses[]                (jeszcze starsza)
+        // - response.inlinedResponses[]                          (fallback flat)
         let inlined = response
-            .get("inlinedResponses")
+            .get("output")
+            .and_then(|o| o.get("inlinedResponses"))
             .and_then(|v| v.get("inlinedResponses"))
+            .or_else(|| {
+                response
+                    .get("inlinedResponses")
+                    .and_then(|v| v.get("inlinedResponses"))
+            })
             .or_else(|| {
                 response
                     .get("responses")

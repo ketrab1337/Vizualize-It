@@ -14,9 +14,8 @@ interface FormState {
   material_type: "matowa" | "mleczna" | "polysk" | "lustro" | null;
   color_hex: string;
   photo_path: string | null;
-  pricing_unit: "per_piece" | "per_m2" | "per_mb_cut" | null;
+  pricing_unit: "per_piece" | "per_m2" | "per_mb_cut" | "none";
   base_price: string;
-  default_thickness_mm: string;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -27,15 +26,13 @@ const DEFAULT_FORM: FormState = {
   photo_path: null,
   pricing_unit: "per_m2",
   base_price: "",
-  default_thickness_mm: "",
 };
 
-const THICKNESS_OPTIONS = [2, 3, 4, 5, 6, 7, 8, 9, 10];
-
 const PRICING_UNIT_LABELS: Record<string, string> = {
-  per_piece: "za sztukę",
+  none: "Brak",
   per_m2: "za m² powierzchni",
   per_mb_cut: "za mb cięcia",
+  per_piece: "za sztukę",
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -161,11 +158,13 @@ interface CategoryManagerModalProps {
 }
 
 function CategoryManagerModal({ categories, onClose, onChanged }: CategoryManagerModalProps) {
-  const { createCategory, deleteCategory } = useCategories();
+  const { createCategory, updateCategory, deleteCategory } = useCategories();
   const addToast = useToastStore((s) => s.addToast);
   const [newName, setNewName] = useState("");
   const [isAdding, setIsAdding] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
 
   async function handleAdd() {
     const trimmed = newName.trim();
@@ -180,6 +179,27 @@ function CategoryManagerModal({ categories, onClose, onChanged }: CategoryManage
       addToast(`Błąd dodawania kategorii: ${e}`, "error");
     } finally {
       setIsAdding(false);
+    }
+  }
+
+  function startEdit(cat: MaterialCategory) {
+    setConfirmDeleteId(null);
+    setEditingId(cat.id);
+    setEditingName(cat.name);
+  }
+
+  async function commitRename() {
+    if (!editingId) return;
+    const trimmed = editingName.trim();
+    if (!trimmed) { setEditingId(null); return; }
+    try {
+      await updateCategory(editingId, trimmed);
+      addToast("Nazwa kategorii zaktualizowana", "success");
+      onChanged();
+    } catch (e) {
+      addToast(`Błąd zmiany nazwy: ${e}`, "error");
+    } finally {
+      setEditingId(null);
     }
   }
 
@@ -208,36 +228,69 @@ function CategoryManagerModal({ categories, onClose, onChanged }: CategoryManage
           {/* Lista kategorii */}
           <ul className="space-y-1.5">
             {categories.map((cat) => (
-              <li key={cat.id} className="flex items-center justify-between gap-2 py-1.5 px-3 rounded-md bg-[#161616]">
-                <div className="flex items-center gap-2 min-w-0">
-                  <Tag className="w-3.5 h-3.5 text-gray-600 shrink-0" />
-                  <span className="text-gray-200 text-sm truncate">{cat.name}</span>
-                </div>
-
-                {confirmDeleteId === cat.id ? (
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <span className="text-[11px] text-red-400">Usuń?</span>
-                      <button
-                        onClick={() => handleDelete(cat.id, cat.name)}
-                        className="px-2 py-1 rounded text-[11px] bg-red-700 hover:bg-red-600 text-white transition-colors"
-                      >
-                        Tak
-                      </button>
-                      <button
-                        onClick={() => setConfirmDeleteId(null)}
-                        className="px-2 py-1 rounded text-[11px] text-gray-400 hover:text-gray-200 transition-colors"
-                      >
-                        Nie
-                      </button>
-                    </div>
-                  ) : (
+              <li key={cat.id} className="flex items-center gap-2 py-1.5 px-3 rounded-md bg-[#161616]">
+                {editingId === cat.id ? (
+                  <>
+                    <input
+                      autoFocus
+                      value={editingName}
+                      onChange={(e) => setEditingName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitRename();
+                        if (e.key === "Escape") setEditingId(null);
+                      }}
+                      onBlur={commitRename}
+                      className="flex-1 bg-[#222] border border-blue-600 rounded px-2 py-0.5 text-sm text-gray-200 focus:outline-none"
+                    />
                     <button
-                      onClick={() => setConfirmDeleteId(cat.id)}
-                      className="text-gray-700 hover:text-red-400 transition-colors shrink-0"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => setEditingId(null)}
+                      className="text-gray-500 hover:text-gray-300 transition-colors shrink-0"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
-                  )}
+                  </>
+                ) : (
+                  <>
+                    <Tag className="w-3.5 h-3.5 text-gray-600 shrink-0" />
+                    <span className="flex-1 text-gray-200 text-sm truncate">{cat.name}</span>
+
+                    {confirmDeleteId === cat.id ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[11px] text-red-400">Usuń?</span>
+                        <button
+                          onClick={() => handleDelete(cat.id, cat.name)}
+                          className="px-2 py-1 rounded text-[11px] bg-red-700 hover:bg-red-600 text-white transition-colors"
+                        >
+                          Tak
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="px-2 py-1 rounded text-[11px] text-gray-400 hover:text-gray-200 transition-colors"
+                        >
+                          Nie
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => startEdit(cat)}
+                          className="text-gray-700 hover:text-gray-300 transition-colors"
+                          title="Zmień nazwę kategorii"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => { setEditingId(null); setConfirmDeleteId(cat.id); }}
+                          className="text-gray-700 hover:text-red-400 transition-colors"
+                          title="Usuń kategorię"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
               </li>
             ))}
           </ul>
@@ -305,9 +358,8 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
           material_type: material.material_type as FormState["material_type"],
           color_hex: material.color_hex ?? "#ffffff",
           photo_path: material.photo_path ?? null,
-          pricing_unit: material.pricing_unit ?? "per_m2",
+          pricing_unit: (material.pricing_unit ?? "none") as FormState["pricing_unit"],
           base_price: material.base_price != null ? String(material.base_price) : "",
-          default_thickness_mm: material.default_thickness_mm != null ? String(material.default_thickness_mm) : "",
         }
       : { ...DEFAULT_FORM, category: initialCategory }
   );
@@ -351,16 +403,16 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
     setIsSaving(true);
     try {
       const basePrice = form.base_price !== "" ? parseFloat(form.base_price) : null;
-      const defThickness = form.default_thickness_mm !== "" ? parseFloat(form.default_thickness_mm) : null;
+      const pricingUnit = form.pricing_unit === "none" ? null : form.pricing_unit;
       const input: MaterialInput = {
         name: form.name.trim(),
         category: form.category,
         material_type: form.category === "plexa" ? form.material_type : null,
         color_hex: form.color_hex || null,
         photo_path: form.photo_path,
-        pricing_unit: form.pricing_unit,
-        base_price: basePrice != null && isFinite(basePrice) ? basePrice : null,
-        default_thickness_mm: defThickness != null && isFinite(defThickness) ? defThickness : null,
+        pricing_unit: pricingUnit,
+        base_price: pricingUnit != null && basePrice != null && isFinite(basePrice) ? basePrice : null,
+        default_thickness_mm: null,
       };
       if (material) {
         await updateMaterial(material.id, input);
@@ -507,7 +559,7 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
             <div>
               <label className="block text-gray-400 text-xs mb-1.5">Rozliczanie</label>
               <select
-                value={form.pricing_unit ?? "per_m2"}
+                value={form.pricing_unit}
                 onChange={(e) => setField("pricing_unit", e.target.value as FormState["pricing_unit"])}
                 className="w-full bg-[#161616] border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
               >
@@ -517,10 +569,11 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
               </select>
             </div>
 
-            {/* Cena bazowa */}
+            {/* Cena bazowa — ukryte gdy Brak */}
+            {form.pricing_unit !== "none" && (
             <div>
               <label className="block text-gray-400 text-xs mb-1.5">
-                Cena (zł / {PRICING_UNIT_LABELS[form.pricing_unit ?? "per_m2"]})
+                Cena (zł / {PRICING_UNIT_LABELS[form.pricing_unit]})
               </label>
               <input
                 type="number"
@@ -532,41 +585,8 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
                 className="w-full bg-[#161616] border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
               />
             </div>
-
-            {/* Domyślna grubość */}
-            {form.pricing_unit !== "per_piece" && (
-              <div>
-                <label className="block text-gray-400 text-xs mb-1.5">Domyślna grubość (mm)</label>
-                <div className="flex gap-2">
-                  <select
-                    value={THICKNESS_OPTIONS.includes(Number(form.default_thickness_mm)) ? form.default_thickness_mm : ""}
-                    onChange={(e) => setField("default_thickness_mm", e.target.value)}
-                    className="flex-1 bg-[#161616] border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">— wybierz —</option>
-                    {THICKNESS_OPTIONS.map((t) => (
-                      <option key={t} value={String(t)}>{t} mm</option>
-                    ))}
-                  </select>
-                  <input
-                    type="number"
-                    min="0.5"
-                    step="0.5"
-                    value={form.default_thickness_mm}
-                    onChange={(e) => setField("default_thickness_mm", e.target.value)}
-                    placeholder="lub wpisz"
-                    className="w-24 bg-[#161616] border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </div>
-              </div>
             )}
 
-            {/* Stawki cięcia konfigurowane globalnie w Ustawieniach → Stawki cięcia */}
-            {form.pricing_unit === "per_mb_cut" && (
-              <p className="text-gray-600 text-xs italic">
-                Stawki cięcia per grubość konfigurowane globalnie w Ustawieniach → Stawki cięcia
-              </p>
-            )}
           </div>
         </div>
 

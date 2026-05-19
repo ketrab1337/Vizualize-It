@@ -18,7 +18,7 @@ export function SaveTemplateModal({ open, onClose, editId, defaultName }: SaveTe
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const { createTemplate, updateTemplate } = useTemplates();
-  const { led, model, format, activePresets } = useGenerationStore();
+  const { led, model, format, activePresetIds } = useGenerationStore();
   const { addToast } = useToastStore();
 
   useEffect(() => {
@@ -29,7 +29,7 @@ export function SaveTemplateModal({ open, onClose, editId, defaultName }: SaveTe
     const trimmed = name.trim();
     if (!trimmed) return;
     setSaving(true);
-    const config = { led, model, format, activePresetIds: activePresets.map((p) => p.id) };
+    const config = { led, model, format, activePresetIds };
     try {
       if (editId) {
         await updateTemplate(editId, trimmed, config);
@@ -76,7 +76,7 @@ export function SaveTemplateModal({ open, onClose, editId, defaultName }: SaveTe
         </div>
 
         <div className="bg-[#111] border border-gray-800 rounded-md px-3 py-2.5 space-y-1">
-          <p className="text-xs text-gray-500 font-medium mb-1.5">Zapisywana konfiguracja:</p>
+          <p className="text-xs text-gray-400 font-medium mb-1.5">Zapisywana konfiguracja:</p>
           <ConfigRow label="Model" value={modelLabel(model)} />
           <ConfigRow label="Format" value={format} />
           <ConfigRow
@@ -114,8 +114,8 @@ export function SaveTemplateModal({ open, onClose, editId, defaultName }: SaveTe
 function ConfigRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2 text-xs">
-      <span className="text-gray-600 w-20 shrink-0">{label}</span>
-      <span className="text-gray-400">{value}</span>
+      <span className="text-gray-400 w-20 shrink-0">{label}</span>
+      <span className="text-gray-300">{value}</span>
     </div>
   );
 }

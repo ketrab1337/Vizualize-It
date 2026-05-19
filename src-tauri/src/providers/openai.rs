@@ -9,6 +9,7 @@ use crate::commands::keyring::get_api_key;
 
 const GENERATIONS_ENDPOINT: &str = "https://api.openai.com/v1/images/generations";
 const EDITS_ENDPOINT: &str = "https://api.openai.com/v1/images/edits";
+const RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/responses";
 const FILES_ENDPOINT: &str = "https://api.openai.com/v1/files";
 const BATCHES_ENDPOINT: &str = "https://api.openai.com/v1/batches";
 const FILE_CONTENT_TEMPLATE: &str = "https://api.openai.com/v1/files/{id}/content";
@@ -169,13 +170,6 @@ fn decode_b64_image(
     })
 }
 
-fn build_combined_prompt(config: &GenerationConfig) -> String {
-    match config.user_prompt.as_deref().filter(|s| !s.is_empty()) {
-        Some(up) => format!("{}\n\n---\nDodatkowe wymagania:\n{}", config.prompt, up),
-        None => config.prompt.clone(),
-    }
-}
-
 fn build_size_str(config: &GenerationConfig) -> (String, u32, u32) {
     let (width, height) = config.format.to_openai_dimensions();
     (format!("{width}x{height}"), width, height)
@@ -184,13 +178,24 @@ fn build_size_str(config: &GenerationConfig) -> (String, u32, u32) {
 #[async_trait::async_trait]
 impl ImageGenerator for OpenAiProvider {
     async fn generate(&self, config: GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
+        // Routing: są obrazy wejściowe (tło/SVG/materiały/referencje) → Responses API
+        // (multi-image input + role developer/user). Inaczej → klasyczne /v1/images/generations
+        // (text-only — OpenAI generations nie przyjmuje obrazów wejściowych).
+        let has_inputs = config.background_image.is_some()
+            || config.svg_image.is_some()
+            || !config.material_images.is_empty()
+            || !config.reference_images.is_empty();
+
+        if has_inputs {
+            return generate_via_responses(&config).await;
+        }
+
         let key = read_key().await?;
         let (size, width, height) = build_size_str(&config);
-        let prompt = build_combined_prompt(&config);
 
         let request = GenerationsRequest {
             model: MODEL.to_string(),
-            prompt,
+            prompt: config.prompt.clone(),
             n: config.count,
             size,
             response_format: "b64_json".to_string(),
@@ -243,24 +248,58 @@ impl ImageGenerator for OpenAiProvider {
     async fn submit_batch(&self, config: GenerationConfig) -> Result<BatchSubmit, String> {
         let key = read_key().await?;
         let client = build_client()?;
-        let (size, _, _) = build_size_str(&config);
-        let prompt = build_combined_prompt(&config);
 
-        // Linia JSONL — pojedyncze żądanie generowania.
-        let line_body = serde_json::json!({
-            "model": MODEL,
-            "prompt": prompt,
-            "n": config.count,
-            "size": size,
-            "response_format": "b64_json",
-        });
-        let line = serde_json::json!({
-            "custom_id": "vizualizeit-request",
-            "method": "POST",
-            "url": "/v1/images/generations",
-            "body": line_body,
-        });
-        let jsonl = format!("{}\n", serde_json::to_string(&line).unwrap_or_default());
+        // Dispatcher analogiczny do generate(): są obrazy wejściowe → batch przez /v1/responses
+        // (multi-image + role developer/user). Brak → klasyczne /v1/images/generations.
+        let has_inputs = config.background_image.is_some()
+            || config.svg_image.is_some()
+            || !config.material_images.is_empty()
+            || !config.reference_images.is_empty();
+
+        // /v1/responses zwraca 1 obraz na call, więc dla count>1 musimy N linii JSONL.
+        // /v1/images/generations obsługuje natywnie `n` (1 linia = N obrazów).
+        let lines: Vec<serde_json::Value> = if has_inputs {
+            let (body, _, _) = build_responses_body(&config);
+            (0..config.count.max(1))
+                .map(|idx| {
+                    serde_json::json!({
+                        "custom_id": format!("vizualizeit-request-{}", idx + 1),
+                        "method": "POST",
+                        "url": "/v1/responses",
+                        "body": body,
+                    })
+                })
+                .collect()
+        } else {
+            let (size, _, _) = build_size_str(&config);
+            let body = serde_json::json!({
+                "model": MODEL,
+                "prompt": config.prompt.clone(),
+                "n": config.count,
+                "size": size,
+                "response_format": "b64_json",
+            });
+            vec![serde_json::json!({
+                "custom_id": "vizualizeit-request",
+                "method": "POST",
+                "url": "/v1/images/generations",
+                "body": body,
+            })]
+        };
+
+        let batch_endpoint = if has_inputs {
+            "/v1/responses".to_string()
+        } else {
+            "/v1/images/generations".to_string()
+        };
+
+        // Każda linia w osobnej linii pliku (JSONL).
+        let jsonl = lines
+            .iter()
+            .map(|l| serde_json::to_string(l).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
 
         // 1. Upload pliku JSONL (multipart, purpose=batch)
         let file_part = reqwest::multipart::Part::bytes(jsonl.into_bytes())
@@ -290,10 +329,10 @@ impl ImageGenerator for OpenAiProvider {
             .await
             .map_err(|e| format!("Błąd parsowania odpowiedzi uploadu: {e}"))?;
 
-        // 2. Utwórz batch
+        // 2. Utwórz batch — endpoint zgodny z tym co dali w JSONL linii
         let batch_req = BatchCreateRequest {
             input_file_id: file.id.clone(),
-            endpoint: "/v1/images/generations".to_string(),
+            endpoint: batch_endpoint.clone(),
             completion_window: "24h".to_string(),
         };
         let resp = client
@@ -420,13 +459,12 @@ impl ImageGenerator for OpenAiProvider {
                     }
                 }
 
-                // Parsuj linie JSONL i wyciągnij obrazy
+                // Parsuj linie JSONL i wyciągnij obrazy.
+                // Dwa możliwe formaty body (zależne od endpointu w submit_batch):
+                // - /v1/images/generations → body.data[].b64_json
+                // - /v1/responses → body.output[] z type="image_generation_call" i polem result
                 let mut images = Vec::new();
-                let (_, width, height) = (
-                    "",
-                    0u32, // rozmiary nieznane z output — gpt-image-2 zwraca PNG, decode dalej zaktualizuje
-                    0u32,
-                );
+                let (width, height) = (0u32, 0u32); // wymiary nieznane z batcha; obraz dekoduje PNG
 
                 for line in text.lines() {
                     if line.trim().is_empty() {
@@ -455,6 +493,15 @@ impl ImageGenerator for OpenAiProvider {
                             ),
                         });
                     }
+
+                    // Wariant Responses API: body.output[] z image_generation_call.result
+                    if let Some(output) = response.body.get("output") {
+                        let imgs = extract_responses_images(output, width, height, usize::MAX)?;
+                        images.extend(imgs);
+                        continue;
+                    }
+
+                    // Wariant /v1/images/generations: body.data[].b64_json
                     let data = response
                         .body
                         .get("data")
@@ -591,4 +638,234 @@ impl OpenAiProvider {
 
         decode_b64_image(item.b64_json, 0, 0)
     }
+}
+
+// ── Responses API (multi-image input dla gpt-image-2) ───────────────────────
+//
+// Endpoint /v1/responses akceptuje wieloobrazowy input. Wcześniej rozdzielaliśmy
+// na role developer (techniczny) + user (swobodny). Teraz wszystko w jednej
+// wiadomości user — pojedyncza, spójna instrukcja okazuje się stabilniejsza dla
+// edycji obrazu.
+//
+// Obrazy są dołączane do tej wiadomości w polach `content`:
+// - input_image z image_url=data URL base64 (obecny w naszym schemacie MaterialImage)
+//
+// Wynik wraca w `output[]` z elementem `type="image_generation_call"` i wynikiem
+// w polu `result` (base64 PNG).
+
+#[derive(Serialize)]
+struct ResponsesRequest {
+    model: String,
+    input: Vec<ResponsesMessage>,
+    tools: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct ResponsesMessage {
+    role: String, // "user" — jedna rola dla całego promptu (techniczne + tekst użytkownika)
+    content: Vec<ResponsesContent>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ResponsesContent {
+    Text {
+        #[serde(rename = "type")]
+        kind: &'static str, // "input_text"
+        text: String,
+    },
+    Image {
+        #[serde(rename = "type")]
+        kind: &'static str, // "input_image"
+        image_url: String, // pełny data URL: "data:image/png;base64,..."
+    },
+}
+
+#[derive(Deserialize)]
+struct ResponsesResponse {
+    output: Option<Vec<ResponsesOutputItem>>,
+    error: Option<OpenAiError>,
+}
+
+#[derive(Deserialize)]
+struct ResponsesOutputItem {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    /// Dla type="image_generation_call" — base64 PNG wynikowego obrazu.
+    result: Option<String>,
+}
+
+fn material_to_data_url(m: &super::MaterialImage) -> String {
+    format!("data:{};base64,{}", m.mime_type, m.data)
+}
+
+/// Buduje body JSON dla Responses API — używane przez live (`generate_via_responses`)
+/// i przez batch (`submit_batch` gdy są obrazy). Zwraca też (width, height) bo wymiary
+/// wynikowego obrazu są potrzebne przy dekodowaniu base64.
+///
+/// Jeden prompt = jedna wiadomość użytkownika z tekstem + obrazami. Wcześniej rozdzielenie
+/// na role developer (techniczny) i user (swobodny) było eksperymentem — okazało się, że
+/// scalenie do jednej wiadomości lepiej trzyma kontekst sceny przy edycji obrazu.
+fn build_responses_body(config: &GenerationConfig) -> (serde_json::Value, u32, u32) {
+    let format_suffix = config.format.to_prompt_suffix();
+    let full_text = format!("{} {}", config.prompt, format_suffix);
+    let mut user_content: Vec<ResponsesContent> = Vec::new();
+    user_content.push(ResponsesContent::Text { kind: "input_text", text: full_text });
+
+    if let Some(bg) = &config.background_image {
+        user_content.push(ResponsesContent::Image {
+            kind: "input_image",
+            image_url: material_to_data_url(bg),
+        });
+    }
+    if let Some(svg) = &config.svg_image {
+        user_content.push(ResponsesContent::Image {
+            kind: "input_image",
+            image_url: material_to_data_url(svg),
+        });
+    }
+    for m in &config.material_images {
+        user_content.push(ResponsesContent::Image {
+            kind: "input_image",
+            image_url: material_to_data_url(m),
+        });
+    }
+    for r in &config.reference_images {
+        user_content.push(ResponsesContent::Image {
+            kind: "input_image",
+            image_url: material_to_data_url(r),
+        });
+    }
+
+    let user_msg = ResponsesMessage { role: "user".to_string(), content: user_content };
+
+    let (size_str, width, height) = build_size_str(config);
+    let tool_config = serde_json::json!({
+        "type": "image_generation",
+        "size": size_str,
+    });
+
+    let request = ResponsesRequest {
+        model: MODEL.to_string(),
+        input: vec![user_msg],
+        tools: vec![tool_config],
+    };
+
+    let body = serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
+    (body, width, height)
+}
+
+/// Wyciąga obrazy z `output[]` Responses API (filtruje po type=image_generation_call,
+/// dekoduje base64 z pola result). Honoruje `max_count` — bierze maksymalnie tyle obrazów.
+fn extract_responses_images(
+    output: &serde_json::Value,
+    width: u32,
+    height: u32,
+    max_count: usize,
+) -> Result<Vec<GeneratedImage>, String> {
+    let arr = output
+        .as_array()
+        .ok_or_else(|| "Pole output nie jest tablicą.".to_string())?;
+
+    let mut images: Vec<GeneratedImage> = Vec::new();
+    for item in arr {
+        let is_image_call = item
+            .get("type")
+            .and_then(|t| t.as_str())
+            .map(|s| s == "image_generation_call")
+            .unwrap_or(false);
+        if !is_image_call {
+            continue;
+        }
+        if let Some(b64) = item.get("result").and_then(|r| r.as_str()) {
+            images.push(decode_b64_image(Some(b64.to_string()), width, height)?);
+        }
+        if images.len() >= max_count {
+            break;
+        }
+    }
+    Ok(images)
+}
+
+/// Wykonuje pojedyncze wywołanie Responses API i zwraca dokładnie jeden obraz.
+/// Responses API z image_generation tool zwraca 1 obraz na call (parametr `n` nie istnieje
+/// dla tego toola — `n` działa tylko w /v1/images/generations).
+async fn single_call_responses_api(
+    client: reqwest::Client,
+    key: String,
+    body: serde_json::Value,
+    width: u32,
+    height: u32,
+) -> Result<GeneratedImage, String> {
+    let resp = client
+        .post(RESPONSES_ENDPOINT)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Błąd sieci: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(map_api_error(status, &body));
+    }
+
+    let parsed: ResponsesResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Błąd parsowania odpowiedzi Responses API: {e}"))?;
+
+    if let Some(err) = parsed.error {
+        return Err(format!("Błąd API OpenAI: {}", err.message));
+    }
+
+    let output = parsed
+        .output
+        .ok_or_else(|| "API zwróciło odpowiedź bez pola output.".to_string())?;
+
+    for item in output {
+        if item.kind.as_deref() != Some("image_generation_call") {
+            continue;
+        }
+        if let Some(b64) = item.result {
+            return decode_b64_image(Some(b64), width, height);
+        }
+    }
+
+    Err("API nie zwróciło obrazu w output[].".to_string())
+}
+
+async fn generate_via_responses(config: &GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
+    let key = read_key().await?;
+    let client = build_client()?;
+    let (body, width, height) = build_responses_body(config);
+
+    // Responses API zwraca 1 obraz na wywołanie — żeby spełnić config.count, spawn N
+    // wywołań równolegle. Każde wraca z jednym obrazem.
+    let n = config.count.max(1) as usize;
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let client = client.clone();
+        let key = key.clone();
+        let body = body.clone();
+        handles.push(tokio::spawn(async move {
+            single_call_responses_api(client, key, body, width, height).await
+        }));
+    }
+
+    let mut images: Vec<GeneratedImage> = Vec::with_capacity(n);
+    for h in handles {
+        let res = h
+            .await
+            .map_err(|e| format!("Błąd zadania równoległego: {e}"))?;
+        images.push(res?);
+    }
+
+    if images.is_empty() {
+        return Err(
+            "API nie zwróciło obrazu. Sprawdź czy gpt-image-2 obsługuje multimodalny input dla Twojego konta.".to_string(),
+        );
+    }
+    Ok(images)
 }

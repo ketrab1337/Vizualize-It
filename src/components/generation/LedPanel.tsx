@@ -3,6 +3,7 @@ import { Trash2, Pencil, Check, X } from "lucide-react";
 import { useGenerationStore } from "../../stores/generationStore";
 import { useLedPresets } from "../../hooks/useLedPresets";
 import type { LedPreset } from "../../types";
+import { ConfirmModal } from "../ui/ConfirmModal";
 
 interface ChannelProps {
   channelId: string;
@@ -45,6 +46,7 @@ function LedChannel({
   const [showNewForm, setShowNewForm] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const newLabelRef = useRef<HTMLInputElement>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
 
   function handleSelectPreset(p: LedPreset) {
     setSelectedId(p.id);
@@ -97,9 +99,15 @@ function LedChannel({
   }
 
   function handleDelete(id: string) {
-    if (selectedId === id) setSelectedId(null);
-    if (editingId === id) setEditingId(null);
-    onDeletePreset(id);
+    setConfirmId(id);
+  }
+
+  function handleDeleteConfirm() {
+    if (!confirmId) return;
+    if (selectedId === confirmId) setSelectedId(null);
+    if (editingId === confirmId) setEditingId(null);
+    onDeletePreset(confirmId);
+    setConfirmId(null);
   }
 
   function commitKelvin(raw: string) {
@@ -289,6 +297,13 @@ function LedChannel({
           )}
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmId !== null}
+        message={`Usunąć preset „${presets.find((p) => p.id === confirmId)?.label ?? ""}"?`}
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => setConfirmId(null)}
+      />
     </div>
   );
 }

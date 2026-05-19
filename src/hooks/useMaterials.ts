@@ -39,12 +39,17 @@ export function useCategories() {
     return { id, name: name.trim(), slug, is_system: 0, sort_order: nextOrder, created_at: now };
   }, []);
 
+  const updateCategory = useCallback(async (id: string, name: string): Promise<void> => {
+    const db = await getDb();
+    await db.execute("UPDATE material_categories SET name=$1 WHERE id=$2", [name.trim(), id]);
+  }, []);
+
   const deleteCategory = useCallback(async (id: string): Promise<void> => {
     const db = await getDb();
     await db.execute("DELETE FROM material_categories WHERE id=$1", [id]);
   }, []);
 
-  return { loadCategories, createCategory, deleteCategory };
+  return { loadCategories, createCategory, updateCategory, deleteCategory };
 }
 
 export function useMaterials() {

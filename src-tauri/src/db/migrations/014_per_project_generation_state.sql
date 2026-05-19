@@ -1,0 +1,18 @@
+-- Stan generowania (prompt, presety aktywne, kamera, LED, model, format, tło, zdjęcia
+-- referencyjne, pora dnia, count) trzymany per-projekt jako JSON. Pozwala każdemu projektowi
+-- mieć własną, czystą kartę — wybór presetów i prompt nie wyciekają między projektami.
+--
+-- Format JSON (TypeScript):
+--   {
+--     prompt: string | null,            // null = auto-assemble z konfiguracji
+--     activePresetIds: string[],
+--     referenceImages: { dataUrl: string, name: string }[],
+--     led: LedConfig,
+--     camera: CameraConfig,
+--     cameraDirty: boolean,
+--     model: AiModel,
+--     format: ImageFormat,
+--     count: 1 | 2 | 3 | 4,
+--     timeOfDay: TimeOfDay
+--   }
+ALTER TABLE projects ADD COLUMN generation_state_json TEXT;

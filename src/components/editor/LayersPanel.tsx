@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
-import { Eye, EyeOff, Lock, Unlock, Layers2, FolderOpen, Square } from "lucide-react";
+import { Eye, EyeOff, Lock, Unlock, Layers2, FolderOpen, Square, ChevronRight, ChevronDown } from "lucide-react";
 
 export type LayerItemType = "path" | "compound" | "group" | "shape" | "other";
 
@@ -9,6 +9,7 @@ export interface LayerItem {
   type: LayerItemType;
   locked: boolean;
   visible: boolean;
+  children?: LayerItem[];
 }
 
 interface Props {
@@ -45,10 +46,21 @@ function computePreview(
   return [...rest.slice(0, at), dragged, ...rest.slice(at)];
 }
 
+function collectAllItems(items: LayerItem[]): LayerItem[] {
+  const result: LayerItem[] = [];
+  for (const item of items) {
+    result.push(item);
+    if (item.children) result.push(...collectAllItems(item.children));
+  }
+  return result;
+}
+
 // Kolor tła edytora — musi być zgodny z BG_COLOR w Canvas.tsx
 const PANEL_BG = "#e8e9ed";
 const HEADER_BG = "#d8d9de";
 const BORDER_COLOR = "#c4c5ce";
+
+const DRAG_THRESHOLD = 5;
 
 export function LayersPanel({
   items, selectedIds, onSelect, onRename, onToggleLock, onToggleVisible, onReorder, getThumbnail,
@@ -65,11 +77,21 @@ export function LayersPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  // Mapa miniaturek wierszy: generowana gdy zmienia się lista obiektów
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Mapa miniaturek — obejmuje też dzieci grup
   const [thumbMap, setThumbMap] = useState<Record<string, string>>({});
   useEffect(() => {
     const map: Record<string, string> = {};
-    items.forEach((item) => {
+    collectAllItems(items).forEach((item) => {
       const url = getThumbnail(item.id);
       if (url) map[item.id] = url;
     });
@@ -85,6 +107,7 @@ export function LayersPanel({
   const [ghostPos,     setGhostPos]     = useState<{ x: number; y: number } | null>(null);
   const dragIdRef       = useRef<string | null>(null);
   const dropTargetIdRef = useRef<string | null>(null);
+  const pendingDragRef  = useRef<string | null>(null);
 
   const displayItems = useMemo(
     () => computePreview(items, dragId, dropTargetId),
@@ -116,31 +139,42 @@ export function LayersPanel({
     const rr = el.getBoundingClientRect();
     const pr = panelRef.current?.getBoundingClientRect();
     const x  = (pr?.right ?? rr.right) + POPUP_GAP;
-    // Wyśrodkuj popup względem środka wiersza; przytnij do granic ekranu
     const rowCenterY = rr.top + rr.height / 2;
     const rawY = rowCenterY - POPUP_H / 2;
     const y    = Math.max(POPUP_GAP, Math.min(rawY, window.innerHeight - POPUP_H - POPUP_GAP));
     setPreview({ url, x, y });
   };
 
-  // ── Mouse drag (zamiast HTML5 DnD — Tauri blokuje dragDropEnabled) ──────────
+  // ── Mouse drag z progiem ruchu (bez efektu "wgniatania" przy zwykłym kliknięciu) ──
 
   const handleRowMouseDown = (e: React.MouseEvent, id: string) => {
     if ((e.target as HTMLElement).closest("button, input")) return;
     if (e.button !== 0) return;
     e.preventDefault();
 
-    dragIdRef.current       = id;
-    dropTargetIdRef.current = id;
-    setDragId(id);
-    setDropTargetId(id);
-    setGhostPos({ x: e.clientX, y: e.clientY });
+    pendingDragRef.current = id;
     setPreview(null);
-
-    document.body.style.cursor     = "grabbing";
     document.body.style.userSelect = "none";
 
+    const startX = e.clientX;
+    const startY = e.clientY;
+
     const onMove = (me: MouseEvent) => {
+      if (!dragIdRef.current) {
+        const dx = me.clientX - startX;
+        const dy = me.clientY - startY;
+        if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return;
+
+        const pending = pendingDragRef.current;
+        if (!pending) return;
+        dragIdRef.current       = pending;
+        dropTargetIdRef.current = pending;
+        setDragId(pending);
+        setDropTargetId(pending);
+        setGhostPos({ x: me.clientX, y: me.clientY });
+        document.body.style.cursor = "grabbing";
+      }
+
       setGhostPos({ x: me.clientX, y: me.clientY });
       const current = itemsRef.current;
       let target: string | null = null;
@@ -162,6 +196,7 @@ export function LayersPanel({
       window.removeEventListener("mouseup",   onUp);
       document.body.style.cursor     = "";
       document.body.style.userSelect = "";
+      pendingDragRef.current = null;
 
       const did = dragIdRef.current;
       const dtd = dropTargetIdRef.current;
@@ -187,6 +222,136 @@ export function LayersPanel({
     document.body.style.userSelect = "";
   }, []);
 
+  // ── Render jednego wiersza (rekurencyjnie dla dzieci) ───────────────────────
+
+  const renderItem = (item: LayerItem, level: number): React.ReactNode => {
+    const sel            = selectedIds.includes(item.id);
+    const isTopLevel     = level === 0;
+    const isBeingDragged = isTopLevel && item.id === dragId;
+    const thumb          = thumbMap[item.id];
+    const hasChildren    = Boolean(item.children && item.children.length > 0);
+    const isExpanded     = expandedIds.has(item.id);
+
+    return (
+      <div key={item.id}>
+        <div
+          ref={isTopLevel ? (el) => { if (el) rowRefs.current.set(item.id, el); else rowRefs.current.delete(item.id); } : undefined}
+          onMouseDown={isTopLevel ? (e) => handleRowMouseDown(e, item.id) : undefined}
+          onMouseEnter={(e) => handleRowEnter(item.id, e.currentTarget)}
+          onMouseLeave={() => setPreview(null)}
+          onClick={(e) => { if (!dragId && editingId !== item.id) onSelect(item.id, e.shiftKey); }}
+          className={[
+            "group flex items-center gap-1.5 pr-2 py-1.5 select-none border-l-2 transition-colors",
+            isBeingDragged
+              ? "opacity-40 border-l-blue-400"
+              : sel
+                ? "border-l-blue-500"
+                : "border-l-transparent",
+            !item.visible && !isBeingDragged ? "opacity-40" : "",
+            isTopLevel ? "cursor-grab" : "cursor-pointer",
+          ].join(" ")}
+          style={{
+            paddingLeft: level > 0 ? level * 16 + 8 : 8,
+            background: isBeingDragged
+              ? "rgba(59,130,246,0.08)"
+              : sel
+                ? "rgba(59,130,246,0.12)"
+                : undefined,
+          }}
+          onMouseOver={(e) => {
+            if (!sel && !isBeingDragged)
+              (e.currentTarget as HTMLDivElement).style.background = "rgba(0,0,0,0.05)";
+          }}
+          onMouseOut={(e) => {
+            if (!sel && !isBeingDragged)
+              (e.currentTarget as HTMLDivElement).style.background = "";
+          }}
+        >
+          {/* Chevron dla grup z dziećmi, spacer dla reszty */}
+          {hasChildren ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleExpand(item.id); }}
+              className="shrink-0 p-0.5 rounded transition-colors hover:bg-black/10"
+              title={isExpanded ? "Zwiń grupę" : "Rozwiń grupę"}
+            >
+              {isExpanded
+                ? <ChevronDown  className="w-3 h-3 text-gray-500" />
+                : <ChevronRight className="w-3 h-3 text-gray-500" />}
+            </button>
+          ) : (
+            <div className="w-4 shrink-0" />
+          )}
+
+          {/* Miniaturka */}
+          <div
+            className="shrink-0 rounded overflow-hidden flex items-center justify-center bg-white"
+            style={{ width: 32, height: 24, border: `1px solid ${BORDER_COLOR}` }}
+          >
+            {thumb ? (
+              <img src={thumb} alt="" className="max-w-full max-h-full object-contain" />
+            ) : (
+              <TypeIcon type={item.type} />
+            )}
+          </div>
+
+          {/* Nazwa */}
+          {editingId === item.id ? (
+            <input
+              ref={inputRef}
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onBlur={commitEdit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitEdit();
+                else if (e.key === "Escape") setEditingId(null);
+                e.stopPropagation();
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="flex-1 min-w-0 rounded px-1.5 py-0.5 text-xs text-gray-800 outline-none cursor-text"
+              style={{ background: "white", border: `1px solid #3b82f6` }}
+            />
+          ) : (
+            <span
+              className="flex-1 min-w-0 truncate text-xs text-gray-800"
+              title={item.name}
+              onDoubleClick={(e) => startEdit(item, e)}
+            >
+              {item.name}
+            </span>
+          )}
+
+          {/* Lock / Visibility */}
+          <div className={[
+            "flex items-center gap-0.5 shrink-0 transition-opacity",
+            (item.locked || !item.visible) ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          ].join(" ")}>
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleLock(item.id); }}
+              className="p-0.5 rounded transition-colors hover:bg-black/10"
+              title={item.locked ? "Odblokuj" : "Zablokuj"}
+            >
+              {item.locked
+                ? <Lock   className="w-3 h-3 text-orange-500" />
+                : <Unlock className="w-3 h-3 text-gray-500" />}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleVisible(item.id); }}
+              className="p-0.5 rounded transition-colors hover:bg-black/10"
+              title={item.visible ? "Ukryj" : "Pokaż"}
+            >
+              {item.visible
+                ? <Eye    className="w-3 h-3 text-gray-500" />
+                : <EyeOff className="w-3 h-3 text-gray-600" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Dzieci grupy — renderowane gdy rozwinięta */}
+        {hasChildren && isExpanded && item.children!.map((child) => renderItem(child, level + 1))}
+      </div>
+    );
+  };
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -205,8 +370,7 @@ export function LayersPanel({
         </span>
       </div>
 
-      {/* Lista — min-h-0 jest KLUCZOWE: bez tego flex-1 nie pozwala overflow-y-auto
-          działać i lista urywa się na maxHeight panelu zamiast scrollować. */}
+      {/* Lista */}
       <div
         className="overflow-y-auto flex-1 min-h-0 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-[#e8e9ed] [&::-webkit-scrollbar-thumb]:bg-[#b4b5be] [&::-webkit-scrollbar-thumb]:rounded-full"
         style={{ scrollbarWidth: "thin", scrollbarColor: `#b4b5be ${PANEL_BG}` }}
@@ -214,109 +378,7 @@ export function LayersPanel({
         {items.length === 0 ? (
           <div className="py-8 text-center text-gray-400 text-xs">Brak obiektów</div>
         ) : (
-          displayItems.map((item) => {
-            const sel            = selectedIds.includes(item.id);
-            const isBeingDragged = item.id === dragId;
-            const thumb          = thumbMap[item.id];
-
-            return (
-              <div
-                key={item.id}
-                ref={(el) => { if (el) rowRefs.current.set(item.id, el); else rowRefs.current.delete(item.id); }}
-                onMouseDown={(e) => handleRowMouseDown(e, item.id)}
-                onMouseEnter={(e) => handleRowEnter(item.id, e.currentTarget)}
-                onMouseLeave={() => setPreview(null)}
-                onClick={(e) => { if (!dragId && editingId !== item.id) onSelect(item.id, e.shiftKey); }}
-                className={[
-                  "group flex items-center gap-2 px-2 py-1.5 select-none border-l-2 transition-all duration-100",
-                  isBeingDragged
-                    ? "opacity-40 border-l-blue-400 scale-[0.98]"
-                    : sel
-                      ? "border-l-blue-500 cursor-grab"
-                      : "border-l-transparent cursor-grab",
-                  !item.visible && !isBeingDragged ? "opacity-40" : "",
-                ].join(" ")}
-                style={{
-                  background: isBeingDragged
-                    ? "rgba(59,130,246,0.08)"
-                    : sel
-                      ? "rgba(59,130,246,0.12)"
-                      : undefined,
-                }}
-                onMouseOver={(e) => {
-                  if (!sel && !isBeingDragged)
-                    (e.currentTarget as HTMLDivElement).style.background = "rgba(0,0,0,0.05)";
-                }}
-                onMouseOut={(e) => {
-                  if (!sel && !isBeingDragged)
-                    (e.currentTarget as HTMLDivElement).style.background = "";
-                }}
-              >
-                {/* Miniaturka wbudowana w wiersz */}
-                <div
-                  className="shrink-0 rounded overflow-hidden flex items-center justify-center bg-white"
-                  style={{ width: 32, height: 24, border: `1px solid ${BORDER_COLOR}` }}
-                >
-                  {thumb ? (
-                    <img src={thumb} alt="" className="max-w-full max-h-full object-contain" />
-                  ) : (
-                    <TypeIcon type={item.type} />
-                  )}
-                </div>
-
-                {/* Nazwa */}
-                {editingId === item.id ? (
-                  <input
-                    ref={inputRef}
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onBlur={commitEdit}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitEdit();
-                      else if (e.key === "Escape") setEditingId(null);
-                      e.stopPropagation();
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex-1 min-w-0 rounded px-1.5 py-0.5 text-xs text-gray-800 outline-none cursor-text"
-                    style={{ background: "white", border: `1px solid #3b82f6` }}
-                  />
-                ) : (
-                  <span
-                    className="flex-1 min-w-0 truncate text-xs text-gray-800"
-                    title={item.name}
-                    onDoubleClick={(e) => startEdit(item, e)}
-                  >
-                    {item.name}
-                  </span>
-                )}
-
-                {/* Lock / Visibility */}
-                <div className={[
-                  "flex items-center gap-0.5 shrink-0 transition-opacity",
-                  (item.locked || !item.visible) ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-                ].join(" ")}>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onToggleLock(item.id); }}
-                    className="p-0.5 rounded transition-colors hover:bg-black/10"
-                    title={item.locked ? "Odblokuj" : "Zablokuj"}
-                  >
-                    {item.locked
-                      ? <Lock   className="w-3 h-3 text-orange-500" />
-                      : <Unlock className="w-3 h-3 text-gray-500" />}
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onToggleVisible(item.id); }}
-                    className="p-0.5 rounded transition-colors hover:bg-black/10"
-                    title={item.visible ? "Ukryj" : "Pokaż"}
-                  >
-                    {item.visible
-                      ? <Eye    className="w-3 h-3 text-gray-500" />
-                      : <EyeOff className="w-3 h-3 text-gray-600" />}
-                  </button>
-                </div>
-              </div>
-            );
-          })
+          displayItems.map((item) => renderItem(item, 0))
         )}
       </div>
 
