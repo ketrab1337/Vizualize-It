@@ -4,6 +4,11 @@ use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 mod commands;
 mod providers;
 
+#[tauri::command]
+fn open_devtools(window: tauri::WebviewWindow) {
+    window.open_devtools();
+}
+
 pub struct AppState {
     pub data_dir: std::path::PathBuf,
 }
@@ -123,6 +128,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            open_devtools,
             commands::export::export_offer_pdf,
             commands::export::export_costs_pdf,
             commands::export::copy_image_to_path,

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Sidebar } from "./components/layout/Sidebar";
@@ -18,6 +19,14 @@ export function App() {
   const { refreshKeys } = useKeysStore();
   const loadSettings = useSettingsStore((s) => s.loadSettings);
   const addToast = useToastStore((s) => s.addToast);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "F12") invoke("open_devtools").catch(() => {});
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     loadProjects();
