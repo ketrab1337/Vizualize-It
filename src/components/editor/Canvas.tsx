@@ -27,7 +27,41 @@ import { DragOverlay, type DragOverKind } from "./canvas/DragOverlay";
 import { useCanvasHistory } from "./canvas/useCanvasHistory";
 import { useZoomActions } from "./canvas/useZoomActions";
 import type { LayerItem } from "./LayersPanel";
-import type { NodeOverride, Project } from "../../types";
+import type { NodeOverride, Project, ElementRole } from "../../types";
+
+function setBoundsRecursive(
+  item: paper.Item,
+  mm: number,
+  setter: (name: string, b: { widthMm: number; heightMm: number; pathLengthMm: number; areaMm2: number }) => void
+): void {
+  if (item.name) {
+    const b = item.bounds;
+    setter(item.name, {
+      widthMm: b.width * mm,
+      heightMm: b.height * mm,
+      pathLengthMm: calcTotalLength(item) * mm,
+      areaMm2: calcTotalArea(item) * mm * mm,
+    });
+  }
+  const g = item as paper.Group;
+  if (g.children) {
+    (g.children as paper.Item[]).forEach((child) => setBoundsRecursive(child, mm, setter));
+  }
+}
+
+/** Buduje mapę child→parent dla całego drzewa elementów (do wykrywania duplikatów w wycenie). */
+function buildParentMapFromItems(items: paper.Item[]): Record<string, string> {
+  const map: Record<string, string> = {};
+  function walk(item: paper.Item, parentName: string | null) {
+    if (parentName && item.name) map[item.name] = parentName;
+    const g = item as paper.Group;
+    if (g.children) {
+      (g.children as paper.Item[]).forEach((c) => walk(c, item.name || parentName));
+    }
+  }
+  items.forEach((item) => walk(item, null));
+  return map;
+}
 
 function computeCombinedBounds(items: paper.Item[], mm: number) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -84,9 +118,6 @@ let _addingSvg = false;
 let _lastAddedPath: string | null = null;
 let _lastAddedTime = 0;
 const ADD_DEDUP_MS = 5000;
-// Jeden globalny listener drag&drop — zapobiega nakładaniu się wielu rejestracji
-let _dropUnlisten: (() => void) | null = null;
-let _dropListenerGen = 0; // numer generacji — unieważnia spóźnione .then()
 let _dropHandling = false; // blokada drop handlera — niezależna od listenerów
 let _lastDropPaths = ""; // deduplication na poziomie eventu
 let _lastDropTime = 0;
@@ -163,6 +194,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     svgContent, setSvgContent,
     setSelectedElement, setSelectedItemBounds,
     setBoundsForElement, removeBoundsForElement, clearBoundsPerElement,
+    setParentMap, setChildParent, removeFromParentMap,
     selectedElementIds: _sel, setSelectedElementIds,
     backgroundDataUrl, backgroundPath, setBackground, clearBackground,
     nodeOverrides, setNodeOverride, renameNodeOverride, removeNodeOverride, clearNodeOverrides,
@@ -173,11 +205,19 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   svgContentRef.current = svgContent;
   nodeOverridesRef.current = nodeOverrides;
 
-  // Synchronizuj wypełnienie prostokąta strony z obecnością tła
+  // Synchronizuj wypełnienie i obramowanie prostokąta strony z obecnością tła
   useEffect(() => {
     const rect = pageRectRef.current;
     if (!rect) return;
-    rect.fillColor = backgroundDataUrl ? null : new paper.Color("white");
+    if (backgroundDataUrl) {
+      rect.fillColor = null;
+      rect.strokeColor = null;
+      rect.strokeWidth = 0;
+    } else {
+      rect.fillColor = new paper.Color("white");
+      rect.strokeColor = new paper.Color(0.7, 0.71, 0.76, 1);
+      rect.strokeWidth = 1;
+    }
   }, [backgroundDataUrl]);
 
   // ── Callbacki (stabilne — używane w Tool) ─────────────────────────────────
@@ -354,7 +394,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
   const {
     historyRef, historyIndexRef, isUndoRedoRef, clipboardRef, isDraggingItemRef,
-    pushHistory, handleUndo, handleRedo, handleCopy, handlePaste, handleDelete,
+    pushHistory, pushHistoryDirect, handleUndo, handleRedo, handleCopy, handlePaste, handleDelete,
   } = useCanvasHistory({
     svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef,
     selectedItemsRef, isSavingRef,
@@ -448,16 +488,14 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const next = mapDeepLayerItems(prev, id, (i) => ({ ...i, locked: !i.locked }));
       const content = svgContentRef.current;
       if (content) {
-        isSavingRef.current = true;
         const patched = patchSvgLayerState(content, flattenLayerItems(next).map((i) => ({ id: i.id, locked: i.locked, visible: i.visible })));
-        setTimeout(() => {
-          setSvgContent(patched);
-          setTimeout(() => { isSavingRef.current = false; }, 50);
-        }, 0);
+        const withOverrides = updateSvgWithOverrides(patched, useEditorStore.getState().nodeOverrides);
+        // Zapisz do historii — blokada/odblokowanie to osobna zmiana cofalna przez Ctrl+Z
+        setTimeout(() => { pushHistoryDirect(withOverrides); }, 0);
       }
       return next;
     });
-  }, [setSvgContent, setSelectedElementIds]);
+  }, [setSelectedElementIds, pushHistoryDirect]);
 
   const handleLayerToggleVisible = useCallback((id: string) => {
     const layer = svgLayerRef.current;
@@ -471,16 +509,13 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const next = mapDeepLayerItems(prev, id, (i) => ({ ...i, visible: !i.visible }));
       const content = svgContentRef.current;
       if (content) {
-        isSavingRef.current = true;
         const patched = patchSvgLayerState(content, flattenLayerItems(next).map((i) => ({ id: i.id, locked: i.locked, visible: i.visible })));
-        setTimeout(() => {
-          setSvgContent(patched);
-          setTimeout(() => { isSavingRef.current = false; }, 50);
-        }, 0);
+        const withOverrides = updateSvgWithOverrides(patched, useEditorStore.getState().nodeOverrides);
+        setTimeout(() => { pushHistoryDirect(withOverrides); }, 0);
       }
       return next;
     });
-  }, [setSvgContent]);
+  }, [pushHistoryDirect]);
 
   const handleLayerReorder = useCallback((fromIdx: number, toIdx: number) => {
     let didReorder = false;
@@ -1104,6 +1139,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       thicknessMm: number | null; quantity: number | null;
       ledLengthM: number | null; ledPricePerM: number | null;
       hasPowerSupply: boolean | null; powerSupplyPrice: number | null;
+      role: ElementRole | null;
+      ledBacklit: boolean | null;
+      ledFrontlit: boolean | null;
+      cutoutBackingId: string | null;
     }>();
     doc.querySelectorAll("[id]").forEach((el) => {
       const id = el.getAttribute("id")!;
@@ -1115,7 +1154,11 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const ledPStr = el.getAttribute("data-led-price-per-m");
       const hasPSStr = el.getAttribute("data-has-power-supply");
       const psPriceStr = el.getAttribute("data-power-supply-price");
-      if (fill || materialId || tStr || qStr || ledLStr) {
+      const roleStr = el.getAttribute("data-role");
+      const ledBacklitStr = el.getAttribute("data-led-backlit");
+      const ledFrontlitStr = el.getAttribute("data-led-frontlit");
+      const cutoutBackingStr = el.getAttribute("data-cutout-backing");
+      if (fill || materialId || tStr || qStr || ledLStr || roleStr || ledBacklitStr || ledFrontlitStr || cutoutBackingStr) {
         savedAttrs.set(id, {
           fill: fill ?? "",
           materialId,
@@ -1125,6 +1168,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
           ledPricePerM: ledPStr ? parseFloat(ledPStr) : null,
           hasPowerSupply: hasPSStr === "1" ? true : null,
           powerSupplyPrice: psPriceStr ? parseFloat(psPriceStr) : null,
+          role: (roleStr as ElementRole | null) || null,
+          ledBacklit: ledBacklitStr === "1" ? true : null,
+          ledFrontlit: ledFrontlitStr === "1" ? true : null,
+          cutoutBackingId: cutoutBackingStr || null,
         });
       }
     });
@@ -1200,19 +1247,17 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     const mm = mmPerUnitRef.current;
     const svgLyr = svgLayerRef.current;
     if (svgLyr) {
-      (svgLyr.children as paper.Item[]).forEach((item) => {
-        if (!item.name) return;
-        const b = item.bounds;
-        setBoundsForElement(item.name, {
-          widthMm: b.width * mm,
-          heightMm: b.height * mm,
-          pathLengthMm: calcTotalLength(item) * mm,
-          areaMm2: calcTotalArea(item) * mm * mm,
-        });
-        const ls = savedLayerState.get(item.name);
-        if (ls) {
-          item.locked = ls.locked;
-          item.visible = !ls.hidden;
+      const topLevel = svgLyr.children as paper.Item[];
+      setParentMap(buildParentMapFromItems(topLevel));
+      topLevel.forEach((item) => {
+        // Rekurencyjnie — ustawia bounds dla elementu ORAZ wszystkich zagnieżdżonych dzieci grup
+        setBoundsRecursive(item, mm, setBoundsForElement);
+        if (item.name) {
+          const ls = savedLayerState.get(item.name);
+          if (ls) {
+            item.locked = ls.locked;
+            item.visible = !ls.hidden;
+          }
         }
       });
     }
@@ -1228,6 +1273,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         ledPricePerM: attrs.ledPricePerM,
         hasPowerSupply: attrs.hasPowerSupply,
         powerSupplyPrice: attrs.powerSupplyPrice,
+        role: attrs.role,
+        ledBacklit: attrs.ledBacklit,
+        ledFrontlit: attrs.ledFrontlit,
+        cutoutBackingId: attrs.cutoutBackingId,
       });
       if (attrs.fill) applyFillByName(id, attrs.fill);
     });
@@ -1298,6 +1347,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     if (items.length < 2 || !svgLayerRef.current) return;
     const group = new paper.Group(items);
     group.name = `group_${Date.now()}`;
+    // Aktualizuj parentMap: każde dziecko (z całego poddrzewa) → nowa grupa
+    items.forEach((it) => {
+      if (it.name) setChildParent(it.name, group.name);
+    });
     clearSelection();
     addToSelection(group);
     setTimeout(() => rebuildLayerItems(), 0);
@@ -1342,6 +1395,15 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       if (groupName) removeNodeOverride(groupName);
     }
 
+    // Aktualizuj parentMap: dzieci przechodzą na poziom rodzica grupy (lub top-level)
+    const groupParentName = groupName ? useEditorStore.getState().parentMap[groupName] : undefined;
+    children.forEach((c) => {
+      if (!c.name) return;
+      if (groupParentName) setChildParent(c.name, groupParentName);
+      else removeFromParentMap(c.name);
+    });
+    if (groupName) removeFromParentMap(groupName);
+
     parent.insertChildren(idx, children);
     item.remove();
     clearSelection();
@@ -1354,7 +1416,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     }
     pushHistory();
     setContextMenu(null);
-  }, [clearSelection, addToSelection, setSvgContent, rebuildLayerItems, pushHistory, setNodeOverride, removeNodeOverride]);
+  }, [clearSelection, addToSelection, setSvgContent, rebuildLayerItems, pushHistory, setNodeOverride, removeNodeOverride, setChildParent, removeFromParentMap]);
 
   // ── Skróty klawiszowe ─────────────────────────────────────────────────────
   // Blok musi być po handleGroup/handleUngroup (zdefiniowanych wyżej przez useCallback),
@@ -1409,12 +1471,17 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     if (_addingSvg) return;
     if (providedPath && providedPath === _lastAddedPath && Date.now() - _lastAddedTime < ADD_DEDUP_MS) return;
     _addingSvg = true;
+    // KRYTYCZNE: blokada useEffect importu — bez tego główny useEffect (line ~1070)
+    // może rerunować podczas handleAddSvg jeśli svgContent się zmieni (np. przez
+    // auto-save lub pushHistory) i wyczyścić layer, gubiąc właśnie dodane elementy.
+    isAddingSvgRef.current = true;
 
     let filePath: string | null = providedPath ?? null;
     if (!filePath) {
       const picked = await open({ multiple: false, filters: [{ name: "SVG", extensions: ["svg"] }] });
       if (!picked || typeof picked !== "string") {
         _addingSvg = false;
+        isAddingSvgRef.current = false;
         return;
       }
       filePath = picked;
@@ -1423,7 +1490,11 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     if (filePath) { _lastAddedPath = filePath; _lastAddedTime = Date.now(); }
 
     const layer = svgLayerRef.current;
-    if (!layer) { _addingSvg = false; return; }
+    if (!layer) {
+      _addingSvg = false;
+      isAddingSvgRef.current = false;
+      return;
+    }
     setIsImportingSvg(true);
     try {
       const result = await invoke<SvgImportResult>("import_svg", { slug: project.slug, sourcePath: filePath });
@@ -1465,6 +1536,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         thicknessMm: number | null; quantity: number | null;
         ledLengthM: number | null; ledPricePerM: number | null;
         hasPowerSupply: boolean | null; powerSupplyPrice: number | null;
+        role: ElementRole | null;
       }>();
       doc.querySelectorAll("[id]").forEach((el) => {
         const id = el.getAttribute("id")!;
@@ -1476,7 +1548,8 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         const ledPStr = el.getAttribute("data-led-price-per-m");
         const hasPSStr = el.getAttribute("data-has-power-supply");
         const psPriceStr = el.getAttribute("data-power-supply-price");
-        if (fill || materialId || tStr || qStr || ledLStr) {
+        const roleStr = el.getAttribute("data-role");
+        if (fill || materialId || tStr || qStr || ledLStr || roleStr) {
           savedAttrs.set(id, {
             fill: fill ?? "",
             materialId,
@@ -1486,6 +1559,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
             ledPricePerM: ledPStr ? parseFloat(ledPStr) : null,
             hasPowerSupply: hasPSStr === "1" ? true : null,
             powerSupplyPrice: psPriceStr ? parseFloat(psPriceStr) : null,
+            role: (roleStr as ElementRole | null) || null,
           });
         }
       });
@@ -1577,21 +1651,13 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
           ledPricePerM: attrs.ledPricePerM,
           hasPowerSupply: attrs.hasPowerSupply,
           powerSupplyPrice: attrs.powerSupplyPrice,
+          role: attrs.role,
         });
         if (attrs.fill) applyFillByName(id, attrs.fill);
       });
 
-      // Przelicz wymiary nowych elementów
-      newKids.forEach((item) => {
-        if (!item.name) return;
-        const b = item.bounds;
-        setBoundsForElement(item.name, {
-          widthMm: b.width * mm,
-          heightMm: b.height * mm,
-          pathLengthMm: calcTotalLength(item) * mm,
-          areaMm2: calcTotalArea(item) * mm * mm,
-        });
-      });
+      // Przelicz wymiary nowych elementów (rekurencyjnie — łącznie z dziećmi grup)
+      newKids.forEach((item) => { setBoundsRecursive(item, mm, setBoundsForElement); });
 
       setHasSvg(true);
       setTimeout(() => rebuildLayerItems(), 0);
@@ -1607,27 +1673,47 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   }, [project.slug, addToast, setNodeOverride, setBoundsForElement, rebuildLayerItems, pushHistory]);
 
   // ── Import SVG (dialog) ────────────────────────────────────────────────────
+  //
+  // "Importuj SVG" (przycisk) — ZASTĘPUJE bieżący projekt nowym plikiem.
+  // Gdy hasSvg=true, pokazuje modal "Zastąp / Dodaj / Anuluj" zamiast cichego mergowania.
+  // Powód: wcześniej przycisk cicho mergował, co user interpretował jako "usunięte
+  // rzeczy wróciły" — bo bieżąca zawartość zostawała widoczna obok nowego SVG.
 
-  const handleImportSvg = useCallback(async () => {
-    // Gdy jest już SVG na kanwie — dodaj nowy plik zamiast zastępować
-    if (hasSvg) { handleAddSvg(); return; }
+  // Path do pliku wybranego przez user, czekający na rozstrzygnięcie zastąp/dodaj.
+  const [pendingImportPath, setPendingImportPath] = useState<string | null>(null);
 
-    const filePath = await open({ multiple: false, filters: [{ name: "SVG", extensions: ["svg"] }] });
-    if (!filePath || typeof filePath !== "string") return;
+  /** Faktyczny replace — czyści bieżący SVG i ładuje nowy z filePath. */
+  const handleReplaceSvg = useCallback(async (filePath: string) => {
     setIsImportingSvg(true);
     try {
       const result = await invoke<SvgImportResult>("import_svg", { slug: project.slug, sourcePath: filePath });
-      // Zapisz pusty stan przed pierwszym importem — Ctrl+Z wróci do pustego kanwasu
+      // Zapisz pusty stan przed importem — Ctrl+Z wróci do pustego kanwasu
       historyRef.current.splice(historyIndexRef.current + 1);
       historyRef.current.push({ svg: "", selection: [] });
       historyIndexRef.current = historyRef.current.length - 1;
+      // setSvgContent triggeruje główny useEffect który czyści paper.project,
+      // clearNodeOverrides (line ~1256), i reimportuje nowy SVG. Stare overrides znikają.
       setSvgContent(result.content);
     } catch (e) {
       addToast(`Błąd importu SVG: ${e}`, "error");
     } finally {
       setIsImportingSvg(false);
     }
-  }, [hasSvg, project.slug, setSvgContent, addToast, handleAddSvg]);
+  }, [project.slug, setSvgContent, addToast]);
+
+  const handleImportSvg = useCallback(async () => {
+    const filePath = await open({ multiple: false, filters: [{ name: "SVG", extensions: ["svg"] }] });
+    if (!filePath || typeof filePath !== "string") return;
+
+    if (hasSvg) {
+      // Pokaż modal z wyborem — user świadomie decyduje co zrobić
+      setPendingImportPath(filePath);
+      return;
+    }
+
+    // Brak istniejącego SVG — bezpośredni import
+    await handleReplaceSvg(filePath);
+  }, [hasSvg, handleReplaceSvg]);
 
   // ── Import tła ─────────────────────────────────────────────────────────────
 
@@ -1739,23 +1825,29 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   };
 
   useEffect(() => {
-    // Wyrejestruj poprzedni listener i unieważnij spóźnione .then()
-    if (_dropUnlisten) { _dropUnlisten(); _dropUnlisten = null; }
-    const myGen = ++_dropListenerGen;
+    // Tauri onDragDropEvent — obsługuje dropa pliku z systemu operacyjnego (Explorer itp.).
+    // dragDropEnabled: true w tauri.conf.json → Tauri rejestruje IDropTarget i dostaje
+    // ścieżki plików bezpośrednio od OS (nie przez file.path jak w Electron/Chromium).
+    // Wewnętrzny HTML5 DnD presetów (bez ścieżek pliku) nie wpływa na ten handler —
+    // preset drag używa pointerup jako fallback (patrz PromptPanel.tsx).
+    let unlisten: (() => void) | null = null;
 
     getCurrentWindow().onDragDropEvent((event) => {
-      const payload = event.payload;
+      const { type } = event.payload;
 
-      if (payload.type === "enter") {
-        const first = (payload.paths as string[])[0] ?? "";
+      if (type === "enter") {
+        const paths = (event.payload as { paths?: string[] }).paths ?? [];
+        const first = paths[0] ?? "";
         if (/\.svg$/i.test(first)) setIsDragOver("svg");
         else if (/\.(jpg|jpeg|png|webp)$/i.test(first)) setIsDragOver("image");
-        else setIsDragOver("unknown");
-      } else if (payload.type === "leave") {
+        else if (first) setIsDragOver("unknown");
+        // Brak ścieżek = wewnętrzny HTML5 DnD (preset) — ignoruj
+      } else if (type === "leave") {
         setIsDragOver(null);
-      } else if (payload.type === "drop") {
+      } else if (type === "drop") {
         setIsDragOver(null);
-        const paths = payload.paths as string[];
+        const paths = (event.payload as { paths?: string[] }).paths ?? [];
+        if (!paths.length) return; // wewnętrzny DnD bez pliku — ignoruj
         const pathsKey = paths.join("|");
         const now = Date.now();
         if (pathsKey === _lastDropPaths && now - _lastDropTime < 3000) return;
@@ -1763,15 +1855,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         _lastDropTime = now;
         dropHandlerRef.current?.(paths);
       }
-    }).then((fn) => {
-      if (myGen !== _dropListenerGen) { fn(); return; } // unieważniony — od razu wyrejestruj
-      _dropUnlisten = fn;
-    });
+    }).then((fn) => { unlisten = fn; });
 
-    return () => {
-      _dropListenerGen++; // unieważnij spóźnione .then()
-      if (_dropUnlisten) { _dropUnlisten(); _dropUnlisten = null; }
-    };
+    return () => { unlisten?.(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const bgFilename = backgroundPath?.split(/[/\\]/).pop() ?? "";
@@ -1910,6 +1996,61 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
           onToggleLock={handleLayerToggleLock}
           onDelete={handleDelete}
         />
+      )}
+
+      {/* Modal wyboru zachowania importu gdy projekt już ma SVG.
+          Trzy opcje: Zastąp (clear + load), Dodaj (merge), Anuluj. */}
+      {pendingImportPath && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="bg-[#1e1e1e] rounded-lg shadow-xl w-full max-w-md p-5 flex flex-col gap-4">
+            <div>
+              <h3 className="text-gray-100 text-base font-semibold mb-1">
+                Projekt zawiera już SVG
+              </h3>
+              <p className="text-gray-400 text-sm">
+                Co chcesz zrobić z plikiem{" "}
+                <span className="text-gray-200">
+                  {pendingImportPath.split(/[\\/]/).pop()}
+                </span>
+                ?
+              </p>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  const path = pendingImportPath;
+                  setPendingImportPath(null);
+                  handleReplaceSvg(path);
+                }}
+                className="px-3 py-2 rounded text-sm text-white bg-red-700 hover:bg-red-600 transition-colors text-left"
+              >
+                <span className="font-medium">Zastąp</span>
+                <span className="block text-[11px] text-red-100/80 mt-0.5">
+                  Usuwa bieżący projekt i ładuje nowy SVG.
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  const path = pendingImportPath;
+                  setPendingImportPath(null);
+                  handleAddSvg(path);
+                }}
+                className="px-3 py-2 rounded text-sm text-white bg-blue-700 hover:bg-blue-600 transition-colors text-left"
+              >
+                <span className="font-medium">Dodaj do projektu</span>
+                <span className="block text-[11px] text-blue-100/80 mt-0.5">
+                  Scala nowy plik z istniejącym SVG.
+                </span>
+              </button>
+              <button
+                onClick={() => setPendingImportPath(null)}
+                className="px-3 py-2 rounded text-sm text-gray-300 bg-[#2a2a2a] hover:bg-[#333] transition-colors"
+              >
+                Anuluj
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

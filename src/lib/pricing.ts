@@ -56,6 +56,20 @@ function findGlobalCuttingRate(
   return catRates[0].price_per_m;
 }
 
+/** Zwraca true gdy którykolwiek przodek nodeId ma przypisany materiał. */
+function hasAncestorWithMaterial(
+  nodeId: string,
+  parentMap: Record<string, string>,
+  overrides: Record<string, NodeOverride>
+): boolean {
+  let current = parentMap[nodeId];
+  while (current) {
+    if (overrides[current]?.materialId) return true;
+    current = parentMap[current];
+  }
+  return false;
+}
+
 function buildGroupedItems(items: ElementCostItem[]): GroupedCostItem[] {
   const groups = new Map<string, GroupedCostItem>();
   for (const item of items) {
@@ -90,7 +104,8 @@ export function calculatePricing(
   materials: Material[],
   globalCuttingRates: GlobalCuttingRate[],
   labels: Record<string, string>,
-  ledConfig: LedProjectConfig
+  ledConfig: LedProjectConfig,
+  parentMap: Record<string, string> = {}
 ): PricingSummary {
   const items: ElementCostItem[] = [];
   let totalMaterial = 0;
@@ -121,6 +136,10 @@ export function calculatePricing(
   }
 
   for (const [nodeId, override] of Object.entries(nodeOverrides)) {
+    // Pomiń element jeśli którykolwiek jego przodek ma już przypisany materiał —
+    // zapobiega podwójnemu liczeniu gdy grupa i jej dzieci mają override jednocześnie.
+    if (hasAncestorWithMaterial(nodeId, parentMap, nodeOverrides)) continue;
+
     const material = override.materialId
       ? (materials.find((m) => m.id === override.materialId) ?? null)
       : null;

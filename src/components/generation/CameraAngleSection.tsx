@@ -10,7 +10,7 @@ import { useProjectStore } from "../../stores/projectStore";
 import { useToastStore } from "../../stores/toastStore";
 
 export function CameraAngleSection() {
-  const { camera, angleEditMode, setAngleEditMode } = useGenerationStore();
+  const { camera, angleEditMode, setAngleEditMode, resetCamera } = useGenerationStore();
   const { backgroundPath, setActiveTab } = useEditorStore();
   const { projects, activeProjectId } = useProjectStore();
   const addToast = useToastStore((s) => s.addToast);
@@ -85,7 +85,10 @@ export function CameraAngleSection() {
             type="checkbox"
             className="sr-only"
             checked={angleEditMode}
-            onChange={(e) => setAngleEditMode(e.target.checked)}
+            onChange={(e) => {
+              setAngleEditMode(e.target.checked);
+              if (!e.target.checked) resetCamera();
+            }}
           />
           <div
             className={`w-10 h-5 rounded-full transition-colors ${

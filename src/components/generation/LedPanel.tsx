@@ -13,11 +13,13 @@ interface ChannelProps {
   colorName: string;
   lumens: number | null;
   kelvin: number | null;
+  selectedPresetId: string | null;
   presets: LedPreset[];
   onToggle: (enabled: boolean) => void;
   onColor: (hex: string, colorName: string) => void;
   onLumens: (lumens: number | null) => void;
   onKelvin: (kelvin: number | null) => void;
+  onSelectPreset: (presetId: string | null) => void;
   onAddPreset: (label: string, hex: string, colorName: string, lumens: number | null, kelvin: number | null) => Promise<LedPreset>;
   onUpdatePreset: (id: string, label: string, hex: string, colorName: string, lumens: number | null, kelvin: number | null) => Promise<void>;
   onDeletePreset: (id: string) => Promise<void>;
@@ -25,11 +27,13 @@ interface ChannelProps {
 
 function LedChannel({
   channelId, title, enabled, color, colorName, lumens, kelvin,
-  presets, onToggle, onColor, onLumens, onKelvin,
+  selectedPresetId, presets, onToggle, onColor, onLumens, onKelvin, onSelectPreset,
   onAddPreset, onUpdatePreset, onDeletePreset,
 }: ChannelProps) {
-  // Zaznaczony preset śledzony przez ID (nie przez hex — duplikaty hexów powodowały błąd)
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Zaznaczony preset przychodzi z propa (storowane w generationStore) — dzięki
+  // czemu przeżywa unmount LedPanel przy zmianie zakładki Edytor/Galeria/Ustawienia.
+  const selectedId = selectedPresetId;
+  const setSelectedId = onSelectPreset;
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const editingPreset = editingId ? presets.find((p) => p.id === editingId) ?? null : null;
@@ -347,11 +351,13 @@ export function LedPanel() {
         colorName={led.backlit.colorName}
         lumens={led.backlit.lumens}
         kelvin={led.backlit.kelvin}
+        selectedPresetId={led.backlit.presetId}
         presets={presets}
         onToggle={(enabled) => setLedBacklit({ enabled })}
         onColor={(color, colorName) => setLedBacklit({ color, colorName })}
         onLumens={(lumens) => setLedBacklit({ lumens })}
         onKelvin={(kelvin) => setLedBacklit({ kelvin })}
+        onSelectPreset={(presetId) => setLedBacklit({ presetId })}
         onAddPreset={handleAddPreset}
         onUpdatePreset={handleUpdatePreset}
         onDeletePreset={handleDeletePreset}
@@ -367,11 +373,13 @@ export function LedPanel() {
         colorName={led.frontlit.colorName}
         lumens={led.frontlit.lumens}
         kelvin={led.frontlit.kelvin}
+        selectedPresetId={led.frontlit.presetId}
         presets={presets}
         onToggle={(enabled) => setLedFrontlit({ enabled })}
         onColor={(color, colorName) => setLedFrontlit({ color, colorName })}
         onLumens={(lumens) => setLedFrontlit({ lumens })}
         onKelvin={(kelvin) => setLedFrontlit({ kelvin })}
+        onSelectPreset={(presetId) => setLedFrontlit({ presetId })}
         onAddPreset={handleAddPreset}
         onUpdatePreset={handleUpdatePreset}
         onDeletePreset={handleDeletePreset}

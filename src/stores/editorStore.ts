@@ -29,6 +29,9 @@ interface EditorStore {
   selectedElementId: string | null;
   selectedItemBounds: SelectedItemBounds | null;
   boundsPerElement: Record<string, SelectedItemBounds>;
+  /** Mapa child nodeId → parent nodeId. Używana w wycenie do pominięcia dzieci
+   *  gdy przodek ma już przypisany materiał (unikanie podwójnego liczenia). */
+  parentMap: Record<string, string>;
   activeTab: ProjectTab;
   svgContent: string | null;
   backgroundDataUrl: string | null;
@@ -41,6 +44,9 @@ interface EditorStore {
   setBoundsForElement: (nodeId: string, bounds: SelectedItemBounds) => void;
   removeBoundsForElement: (nodeId: string) => void;
   clearBoundsPerElement: () => void;
+  setParentMap: (map: Record<string, string>) => void;
+  setChildParent: (childId: string, parentId: string) => void;
+  removeFromParentMap: (childId: string) => void;
   selectedElementIds: string[];
   setSelectedElementIds: (ids: string[]) => void;
   setActiveTab: (tab: ProjectTab) => void;
@@ -60,6 +66,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
   selectedElementId: null,
   selectedItemBounds: null,
   boundsPerElement: {},
+  parentMap: {},
   activeTab: "edytor",
   svgContent: null,
   backgroundDataUrl: null,
@@ -83,6 +90,16 @@ export const useEditorStore = create<EditorStore>((set) => ({
       return { boundsPerElement: next };
     }),
   clearBoundsPerElement: () => set({ boundsPerElement: {} }),
+  setParentMap: (map) => set({ parentMap: map }),
+  setChildParent: (childId, parentId) =>
+    set((state) => ({ parentMap: { ...state.parentMap, [childId]: parentId } })),
+  removeFromParentMap: (childId) =>
+    set((state) => {
+      if (!(childId in state.parentMap)) return state;
+      const next = { ...state.parentMap };
+      delete next[childId];
+      return { parentMap: next };
+    }),
   setActiveTab: (tab) => set({ activeTab: tab }),
   setSvgContent: (content) => set({ svgContent: content }),
   setBackground: (dataUrl, path) =>
@@ -132,6 +149,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       selectedElementId: null,
       selectedItemBounds: null,
       boundsPerElement: {},
+      parentMap: {},
       selectedElementIds: [],
       svgContent: null,
       backgroundDataUrl: null,

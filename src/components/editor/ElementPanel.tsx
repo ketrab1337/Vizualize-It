@@ -5,6 +5,22 @@ import { useMaterialsStore } from "../../stores/materialsStore";
 import { saveCanvasToStore, resizeSelectedElement, pushCanvasHistory } from "../../lib/paperCanvas";
 import { applyFillByName, collectDescendantNames } from "./canvas/paperUtils";
 import { CostPanelContent } from "./CostPanel";
+import type { ElementRole } from "../../types";
+
+/**
+ * Etykiety ról elementów — pokazywane w dropdownie. "Dystans" jest też
+ * implikowany automatycznie z kategorii materiału (dystans), ale user może
+ * dodatkowo ustawić rolę ręcznie dla elementu który NIE ma kategorii dystans
+ * (np. cienki łącznik z plexy traktowany jako dystans w prompcie).
+ */
+const ROLE_OPTIONS: Array<{ value: ElementRole; label: string }> = [
+  { value: "backplate", label: "Tło szyldu" },
+  { value: "text", label: "Napis" },
+  { value: "logo", label: "Logo" },
+  { value: "decoration", label: "Dekoracja" },
+  { value: "cutout", label: "Warstwa z wycięciem" },
+  { value: "distance", label: "Dystans" },
+];
 
 // ── MaterialPicker ────────────────────────────────────────────────────────────
 
@@ -174,6 +190,47 @@ function PropertiesTab() {
     [selectedElementId, setNodeOverride]
   );
 
+  const handleRoleChange = useCallback(
+    (val: string) => {
+      if (!selectedElementId) return;
+      const role = (val || null) as ElementRole | null;
+      setNodeOverride(selectedElementId, { role });
+      saveCanvasToStore();
+      setTimeout(() => pushCanvasHistory(), 0);
+    },
+    [selectedElementId, setNodeOverride]
+  );
+
+  const handleLedBacklitChange = useCallback(
+    (checked: boolean) => {
+      if (!selectedElementId) return;
+      setNodeOverride(selectedElementId, { ledBacklit: checked ? true : null });
+      saveCanvasToStore();
+      setTimeout(() => pushCanvasHistory(), 0);
+    },
+    [selectedElementId, setNodeOverride]
+  );
+
+  const handleLedFrontlitChange = useCallback(
+    (checked: boolean) => {
+      if (!selectedElementId) return;
+      setNodeOverride(selectedElementId, { ledFrontlit: checked ? true : null });
+      saveCanvasToStore();
+      setTimeout(() => pushCanvasHistory(), 0);
+    },
+    [selectedElementId, setNodeOverride]
+  );
+
+  const handleCutoutBackingChange = useCallback(
+    (val: string) => {
+      if (!selectedElementId) return;
+      setNodeOverride(selectedElementId, { cutoutBackingId: val || null });
+      saveCanvasToStore();
+      setTimeout(() => pushCanvasHistory(), 0);
+    },
+    [selectedElementId, setNodeOverride]
+  );
+
   const handleQuantityChange = useCallback(
     (val: string) => {
       if (!selectedElementId) return;
@@ -333,6 +390,93 @@ function PropertiesTab() {
           </select>
         </div>
       )}
+
+      {/* Rola w prompcie AI — zawsze widoczna. Dla elementu z materiałem kategorii
+          „dystans" rola „Dystans" jest auto-domyślna (gdy `override.role` jest null),
+          ale user może też wybrać inną wartość ręcznie. */}
+      <div className="space-y-1.5">
+        <label className="text-xs text-gray-400 font-medium block">
+          Rola w prompcie AI
+          <span className="ml-1 text-[10px] text-gray-600 font-normal">(warstwowość)</span>
+        </label>
+        <select
+          value={override?.role ?? ""}
+          onChange={(e) => handleRoleChange(e.target.value)}
+          className="w-full bg-[#252525] border border-gray-700 text-gray-200 text-sm rounded px-2 py-1.5 appearance-none focus:outline-none focus:border-blue-500"
+        >
+          <option value="">
+            {isDistans ? "— Auto: Dystans (z kategorii materiału) —" : "— Nie określono —"}
+          </option>
+          {ROLE_OPTIONS.map((r) => (
+            <option key={r.value} value={r.value}>{r.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Warstwa z wycięciem — widoczna tylko dla roli "cutout". User wybiera
+          który INNY element pokazuje się przez wycięcia (np. plexa pod spodem). */}
+      {override?.role === "cutout" && (
+        <div className="space-y-1.5">
+          <label className="text-xs text-gray-400 font-medium block">
+            Co widoczne przez wycięcia
+            <span className="ml-1 text-[10px] text-gray-600 font-normal">(warstwa pod spodem)</span>
+          </label>
+          <select
+            value={override?.cutoutBackingId ?? ""}
+            onChange={(e) => handleCutoutBackingChange(e.target.value)}
+            className="w-full bg-[#252525] border border-gray-700 text-gray-200 text-sm rounded px-2 py-1.5 appearance-none focus:outline-none focus:border-blue-500"
+          >
+            <option value="">— Wybierz warstwę pod spodem —</option>
+            {Object.entries(nodeOverrides)
+              .filter(([id]) => id !== selectedElementId)
+              .map(([id, ov]) => {
+                const matName = materials.find((m) => m.id === ov.materialId)?.name;
+                const colorHex = ov.fill || "—";
+                return (
+                  <option key={id} value={id}>
+                    {colorHex}
+                    {matName ? ` · ${matName}` : ""}
+                    {ov.role ? ` (${ov.role})` : ""}
+                  </option>
+                );
+              })}
+          </select>
+        </div>
+      )}
+
+      {/* Podświetlenie LED per element — kolor/temperatura/lumeny brane z globalnego
+          LedConfig w panelu Generowanie. Gdy żaden element nie ma flagi, działa
+          globalny toggle backlit/frontlit. */}
+      <div className="space-y-1.5">
+        <label className="text-xs text-gray-400 font-medium block">
+          Podświetlenie LED
+          <span className="ml-1 text-[10px] text-gray-600 font-normal">(per element)</span>
+        </label>
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-2 cursor-pointer group">
+            <input
+              type="checkbox"
+              checked={override?.ledBacklit === true}
+              onChange={(e) => handleLedBacklitChange(e.target.checked)}
+              className="w-3.5 h-3.5 accent-blue-600 cursor-pointer"
+            />
+            <span className="text-xs text-gray-300 group-hover:text-gray-100">
+              Backlit (świeci od tyłu)
+            </span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer group">
+            <input
+              type="checkbox"
+              checked={override?.ledFrontlit === true}
+              onChange={(e) => handleLedFrontlitChange(e.target.checked)}
+              className="w-3.5 h-3.5 accent-blue-600 cursor-pointer"
+            />
+            <span className="text-xs text-gray-300 group-hover:text-gray-100">
+              Front-lit (świeci od przodu)
+            </span>
+          </label>
+        </div>
+      </div>
 
       {/* Ilość sztuk — dla dystansów */}
       {isDistans && (

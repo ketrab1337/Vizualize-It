@@ -24,7 +24,12 @@ interface ApplyTemplateModalProps {
 export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
   const { loadTemplates } = useTemplates();
   const { loadPresets } = usePromptPresets();
-  const { setLedBacklit, setLedFrontlit, setModel, setFormat, togglePresetId, activePresetIds } = useGenerationStore();
+  const {
+    setLedBacklit, setLedFrontlit, setModel, setFormat,
+    togglePresetId, activePresetIds,
+    setPrompt, setCamera, resetCamera, setTimeOfDay,
+    setPresetAnchor, setPresetTextOverride,
+  } = useGenerationStore();
   const addToast = useToastStore((s) => s.addToast);
 
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -46,15 +51,50 @@ export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
       setModel(config.model);
       setFormat(config.format);
 
-      if (config.activePresetIds && config.activePresetIds.length > 0) {
-        const allPresets = await loadPresets();
-        const knownIds = new Set(allPresets.map((p) => p.id));
-        // Wyczyść bieżące presety
-        for (const id of activePresetIds) togglePresetId(id);
-        // Włącz presety z szablonu (tylko te, które wciąż istnieją)
-        for (const id of config.activePresetIds) {
-          if (knownIds.has(id)) togglePresetId(id);
+      // Pora dnia (opcjonalna — stare szablony bez tego pola zachowają obecną wartość)
+      if (config.timeOfDay !== undefined) {
+        setTimeOfDay(config.timeOfDay);
+      }
+
+      // Kamera — gdy szablon ma `cameraDirty=true`, zastosuj setCamera (oznacza dirty
+      // w storze). Inaczej resetCamera (default + dirty=false → assembler pominie kąt).
+      if (config.camera && config.cameraDirty) {
+        setCamera(config.camera);
+      } else if (config.cameraDirty === false) {
+        resetCamera();
+      }
+
+      // Presety: zsynchronizuj aktywne (zachowując kolejność z szablonu) + zastosuj
+      // per-instancyjne anchory i overrides. Wszystko per template — nie merge'uje
+      // z bieżącym stanem, tylko zastępuje.
+      const targetActiveIds = config.activePresetIds ?? [];
+      const allPresets = await loadPresets();
+      const knownIds = new Set(allPresets.map((p) => p.id));
+      // Wyczyść bieżące presety
+      for (const id of [...activePresetIds]) togglePresetId(id);
+      // Włącz presety z szablonu (zachowując kolejność z config)
+      for (const id of targetActiveIds) {
+        if (knownIds.has(id)) togglePresetId(id);
+      }
+
+      // Anchory presetów (gdzie wstawić w prompcie)
+      if (config.presetAnchors) {
+        for (const [presetId, anchor] of Object.entries(config.presetAnchors)) {
+          if (knownIds.has(presetId)) setPresetAnchor(presetId, anchor);
         }
+      }
+
+      // Per-instancyjne edycje tekstu badge'ów
+      if (config.presetTextOverrides) {
+        for (const [presetId, text] of Object.entries(config.presetTextOverrides)) {
+          if (knownIds.has(presetId)) setPresetTextOverride(presetId, text);
+        }
+      }
+
+      // Override prompta (tryb ręcznej edycji)
+      // null/undefined → tryb auto, string → manual edit text
+      if (config.prompt !== undefined) {
+        setPrompt(config.prompt);
       }
 
       addToast(`Zastosowano szablon „${template.name}".`, "success");
@@ -99,6 +139,9 @@ export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
                       {modelLabel(config.model)} · {config.format}
                       {config.led.backlit.enabled && " · Backlit"}
                       {config.led.frontlit.enabled && " · Front-lit"}
+                      {config.prompt != null && " · własny prompt"}
+                      {config.presetTextOverrides && Object.keys(config.presetTextOverrides).length > 0
+                        && ` · ${Object.keys(config.presetTextOverrides).length} edycji presetów`}
                     </p>
                   )}
                 </div>

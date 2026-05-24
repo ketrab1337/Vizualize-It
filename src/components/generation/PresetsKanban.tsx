@@ -52,7 +52,7 @@ export function PresetsKanban() {
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col flex-1 min-h-0">
       <div className="flex items-center justify-between mb-2 shrink-0">
         <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide">
           Presety
@@ -83,7 +83,8 @@ export function PresetsKanban() {
                 <button
                   key={preset.id}
                   onClick={() => togglePresetId(preset.id)}
-                  className={`group w-full text-left rounded-md border p-2.5 transition-colors ${
+                  title={isActive ? "Kliknij by usunąć z promptu" : "Kliknij by dodać do promptu"}
+                  className={`group w-full text-left rounded-md border p-2.5 transition-colors cursor-pointer ${
                     isActive
                       ? "bg-blue-950/40 border-blue-700 hover:border-blue-600"
                       : "bg-[#1a1a1a] border-gray-800 hover:border-gray-700"

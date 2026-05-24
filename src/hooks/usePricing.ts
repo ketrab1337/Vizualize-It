@@ -5,7 +5,7 @@ import { calculatePricing, type PricingSummary } from "../lib/pricing";
 import { buildElements } from "../lib/buildElements";
 
 export function usePricing(): PricingSummary {
-  const { nodeOverrides, boundsPerElement, ledConfig } = useEditorStore();
+  const { nodeOverrides, boundsPerElement, ledConfig, parentMap } = useEditorStore();
   const { materials, globalCuttingRates } = useMaterialsStore();
 
   const labels = useMemo(() => {
@@ -14,7 +14,7 @@ export function usePricing(): PricingSummary {
   }, [nodeOverrides, materials]);
 
   return useMemo(
-    () => calculatePricing(nodeOverrides, boundsPerElement, materials, globalCuttingRates, labels, ledConfig),
-    [nodeOverrides, boundsPerElement, materials, globalCuttingRates, labels, ledConfig]
+    () => calculatePricing(nodeOverrides, boundsPerElement, materials, globalCuttingRates, labels, ledConfig, parentMap),
+    [nodeOverrides, boundsPerElement, materials, globalCuttingRates, labels, ledConfig, parentMap]
   );
 }

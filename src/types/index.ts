@@ -4,7 +4,37 @@ export interface Project {
   slug: string;
   created_at: string;
   updated_at: string;
+  /**
+   * Typ produktu — identyfikator z `PRODUCT_TYPE_PRESETS` (np. "tabliczka_informacyjna")
+   * LUB dowolny tekst (gdy user wybrał "Inne" i wpisał własny opis).
+   * NULL = domyślnie "szyld" (kompat-wstecz; istniejące projekty bez ustawionego typu).
+   */
+  product_type: string | null;
 }
+
+/**
+ * Predefiniowane typy produktów — dropdown w ustawieniach projektu. `id` zapisywany
+ * w `projects.product_type`, `noun*` używane w promptAssembler do polskiej odmiany.
+ * Wartość "inne" obsługiwana specjalnie: w UI pokazuje pole tekstowe na własny opis,
+ * a w DB zapisywany jest sam tekst (bez prefiksu "inne:").
+ */
+export interface ProductTypePreset {
+  id: string;
+  label: string;
+  /** Mianownik (np. "szyld"). */
+  nounNominative: string;
+  /** Dopełniacz (np. "szyldu"). */
+  nounGenitive: string;
+}
+
+export const PRODUCT_TYPE_PRESETS: ProductTypePreset[] = [
+  { id: "szyld",                 label: "Szyld",                 nounNominative: "szyld",                 nounGenitive: "szyldu" },
+  { id: "tabliczka_informacyjna", label: "Tabliczka informacyjna", nounNominative: "tabliczka informacyjna", nounGenitive: "tabliczki informacyjnej" },
+  { id: "numer_na_dom",          label: "Numer na dom",          nounNominative: "numer na dom",          nounGenitive: "numeru na dom" },
+  { id: "tablica_weselna",       label: "Tablica weselna",       nounNominative: "tablica weselna",       nounGenitive: "tablicy weselnej" },
+  { id: "dekoracja_scienna",     label: "Dekoracja ścienna",     nounNominative: "dekoracja ścienna",     nounGenitive: "dekoracji ściennej" },
+  { id: "litery_3d",             label: "Litery 3D",             nounNominative: "litery 3D",             nounGenitive: "liter 3D" },
+];
 
 /** Wynik zapisu obrazu przez backend (generate_image, edit_image_angle, edit_background_angle). */
 export interface GeneratedImageFile {
@@ -94,7 +124,33 @@ export interface NodeOverride {
   ledPricePerM: number | null;
   hasPowerSupply: boolean | null;
   powerSupplyPrice: number | null;
+  /** Rola elementu w prompcie AI (backplate/napis/logo/dekoracja/dystans). */
+  role: ElementRole | null;
+  /**
+   * Per-element flag czy element ma podświetlenie LED od TYŁU (backlit).
+   * Kolor/temperatura/lumeny brane z globalnej konfiguracji `LedConfig.backlit`.
+   * null/false → element nie świeci. Gdy ŻADEN element nie ma flag (cały szyld
+   * bez per-element ustawień), globalny toggle `LedConfig.backlit.enabled`
+   * decyduje czy cały produkt jest opisany jako podświetlony (backward-compat).
+   */
+  ledBacklit: boolean | null;
+  /** Per-element flag dla podświetlenia FRONTOWEGO (front-lit, litery od przodu). */
+  ledFrontlit: boolean | null;
+  /**
+   * Dla roli "cutout" — nodeId elementu który widoczny jest PRZEZ wycięcia.
+   * Np. plexa z wyciętymi literami pokazuje plexę pod spodem (`cutoutBackingId`
+   * = nodeId tej dolnej plexy). Prompt opisuje: "regiony X to plexa NAD plexą Y
+   * z fizycznie wyciętymi otworami — przez wycięcia widać kolor Y".
+   */
+  cutoutBackingId: string | null;
 }
+
+/**
+ * Rola elementu w hierarchii szyldu — używana w promptach AI do opisu warstwowości.
+ * Bez tego AI dostaje płaską mapę kolorów i nie wie czy napis jest NA backplate'cie
+ * czy w jednej płaszczyźnie z nim.
+ */
+export type ElementRole = "backplate" | "text" | "logo" | "decoration" | "distance" | "cutout";
 
 export interface SignElement {
   id: string;
@@ -105,6 +161,16 @@ export interface SignElement {
   colorName: string | null;
   hasDistances: boolean;
   distanceMaterial: Material | null;
+  /** Grubość materiału w mm — używana w prompcie AI do opisu głębokości. */
+  thicknessMm: number | null;
+  /** Rola elementu (backplate/napis/logo/...) — używana w prompcie AI do opisu warstwowości. */
+  role: ElementRole | null;
+  /** Czy element świeci backlit (per-element override globalnego LED toggle). */
+  ledBacklit: boolean;
+  /** Czy element świeci front-lit. */
+  ledFrontlit: boolean;
+  /** Dla roli "cutout" — nodeId elementu pokazującego się przez wycięcia. */
+  cutoutBackingId: string | null;
 }
 
 export interface LedConfig {
@@ -114,6 +180,8 @@ export interface LedConfig {
     colorName: string;
     lumens: number | null;
     kelvin: number | null;
+    /** ID wybranego presetu (zachowywane między zakładkami i sesjami). null = custom. */
+    presetId: string | null;
   };
   frontlit: {
     enabled: boolean;
@@ -121,6 +189,7 @@ export interface LedConfig {
     colorName: string;
     lumens: number | null;
     kelvin: number | null;
+    presetId: string | null;
   };
 }
 
@@ -148,6 +217,8 @@ export interface SignConfig {
   camera: CameraConfig;
   background: string | null;
   timeOfDay: TimeOfDay;
+  /** Typ produktu — z `projects.product_type`. null/undefined = domyślnie "szyld". */
+  productType?: string | null;
 }
 
 export type AiModel = "nano-banana-2" | "nano-banana-pro" | "gpt-image-2";

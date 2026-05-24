@@ -6,8 +6,8 @@ import { useEditorStore } from "../stores/editorStore";
 import { useGenerationStore } from "../stores/generationStore";
 import { useToastStore } from "../stores/toastStore";
 import { useMaterialsStore } from "../stores/materialsStore";
-import { assemblePrompt } from "../lib/promptAssembler";
-import type { VisualInputs } from "../lib/promptAssembler";
+import { assemblePrompt, getProductNoun, buildTimeOfDayPrompt } from "../lib/promptAssembler";
+import type { VisualInputs, PresetEntry } from "../lib/promptAssembler";
 import { buildElements } from "../lib/buildElements";
 import { captureCanvas } from "../lib/paperCanvas";
 import type { SignConfig, GeneratedImageFile } from "../types";
@@ -39,18 +39,36 @@ function extractSvgTexts(svgContent: string | null): string[] {
   }
 }
 
-async function loadPresetTexts(ids: string[]): Promise<string[]> {
+/**
+ * Wczytuje pełne dane aktywnych presetów (id, label, text), wzbogaca o anchory
+ * i nakłada `textOverrides` (per-instancyjne edycje z PromptPanel). Zachowuje
+ * kolejność wg `ids` (toggle order, po reorderowaniu w activePresetIds).
+ */
+async function loadPresetEntries(
+  ids: string[],
+  anchors: Record<string, string>,
+  textOverrides: Record<string, string>
+): Promise<PresetEntry[]> {
   if (ids.length === 0) return [];
   const db = await getDb();
   const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
-  const rows = await db.select<{ id: string; text: string }[]>(
-    `SELECT id, text FROM prompt_presets WHERE id IN (${placeholders})`,
+  const rows = await db.select<{ id: string; label: string; text: string }[]>(
+    `SELECT id, label, text FROM prompt_presets WHERE id IN (${placeholders})`,
     ids
   );
-  // Zachowaj kolejność wg `ids` (toggle order), żeby zmiana kolejności kafelków
-  // przekładała się na kolejność doklejania w prompcie.
-  const byId = new Map(rows.map((r) => [r.id, r.text]));
-  return ids.map((id) => byId.get(id) ?? "").filter(Boolean);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids
+    .map((id): PresetEntry | null => {
+      const row = byId.get(id);
+      if (!row) return null;
+      return {
+        id: row.id,
+        label: row.label,
+        text: textOverrides[id] ?? row.text,
+        anchor: anchors[id] ?? "__end__",
+      };
+    })
+    .filter((x): x is PresetEntry => x !== null);
 }
 
 export function useGeneration() {
@@ -68,8 +86,12 @@ export function useGeneration() {
     cameraDirty,
     prompt,
     timeOfDay,
+    timeOfDayTextOverride,
+    timeOfDayAnchor,
     referenceImages,
     activePresetIds,
+    presetAnchors,
+    presetTextOverrides,
     batchMode,
     setLastGeneratedImageIds,
   } = useGenerationStore();
@@ -144,6 +166,7 @@ export function useGeneration() {
         hasSvg: !!svgImageInput,
         materialImageCount: materialImages.length,
         referenceImageCount: referenceImageInputs.length,
+        referenceDescriptions: referenceImages.map((img) => img.description ?? ""),
         svgTexts: extractSvgTexts(svgContent),
         materialIdToImageIdx,
       };
@@ -155,13 +178,25 @@ export function useGeneration() {
         camera,
         background: backgroundPath ?? null,
         timeOfDay,
+        productType: project.product_type,
       };
 
       // Jeden prompt = albo użytkownik nadpisał ręcznie (`prompt: string`), albo
-      // assembler składa z bieżącej konfiguracji + tekstów aktywnych presetów.
-      const presetTexts = await loadPresetTexts(activePresetIds);
+      // assembler składa z bieżącej konfiguracji + presetów na ich anchorach.
+      const presetEntries = await loadPresetEntries(activePresetIds, presetAnchors, presetTextOverrides);
+
+      const productNoun = getProductNoun(project.product_type ?? null);
+      const ledActive = led.backlit.enabled || led.frontlit.enabled;
+      const hasBg = !!backgroundDataUrl;
+      const todAutoText = buildTimeOfDayPrompt(timeOfDay, ledActive, hasBg, productNoun);
+      const todText = timeOfDayTextOverride ?? todAutoText;
+      const timeOfDayPreset =
+        timeOfDay !== "brak" && todText
+          ? { text: todText, anchor: timeOfDayAnchor }
+          : null;
+
       const finalPrompt =
-        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presetTexts });
+        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presets: presetEntries, timeOfDayPreset });
 
       const generationInput = {
         project_slug: project.slug,
@@ -274,8 +309,12 @@ export function useGeneration() {
     cameraDirty,
     prompt,
     timeOfDay,
+    timeOfDayTextOverride,
+    timeOfDayAnchor,
     referenceImages,
     activePresetIds,
+    presetAnchors,
+    presetTextOverrides,
     batchMode,
     addToast,
     setActiveTab,

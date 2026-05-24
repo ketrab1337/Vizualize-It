@@ -10,6 +10,7 @@ import { ProjectsGrid } from "./ProjectsGrid";
 import { Canvas } from "../editor/Canvas";
 import { ElementPanel } from "../editor/ElementPanel";
 import { LedPanel } from "../generation/LedPanel";
+import { ProductTypeSelector } from "../generation/ProductTypeSelector";
 import { CameraAngleSection } from "../generation/CameraAngleSection";
 import { PromptPanel } from "../generation/PromptPanel";
 import { ReferenceImagesPanel } from "../generation/ReferenceImagesPanel";
@@ -150,7 +151,9 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
         state.model === prev.model &&
         state.format === prev.format &&
         state.count === prev.count &&
-        state.timeOfDay === prev.timeOfDay
+        state.timeOfDay === prev.timeOfDay &&
+        state.timeOfDayTextOverride === prev.timeOfDayTextOverride &&
+        state.timeOfDayAnchor === prev.timeOfDayAnchor
       ) {
         return;
       }
@@ -219,12 +222,12 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
           <ApiKeysBanner onOpenSettings={onOpenSettings} />
 
           <div className="flex flex-1 overflow-hidden">
-            {/* Kolumna lewa: konfiguracja środowiska / modeli / formatu */}
+            {/* Kolumna lewa: typ produktu / model AI / LED / kamera */}
             <div className="w-80 shrink-0 border-r border-gray-800 overflow-y-auto p-4 space-y-4">
-              <TimeOfDayPanel />
+              <ProductTypeSelector />
               <LedPanel />
-              <CameraAngleSection />
               <ModelSelector />
+              <CameraAngleSection />
             </div>
 
             {/* Kolumna środkowa: prompt → zdjęcia referencyjne → przyciski (szablony + generuj) */}
@@ -279,8 +282,11 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
               </div>
             </div>
 
-            {/* Kolumna prawa: presety w widoku kanban */}
-            <div className="w-72 shrink-0 border-l border-gray-800 p-4 flex flex-col overflow-hidden">
+            {/* Kolumna prawa: środowisko (nad presetami) + presety */}
+            <div className="w-72 shrink-0 border-l border-gray-800 p-4 flex flex-col gap-4 overflow-hidden">
+              <div className="shrink-0">
+                <TimeOfDayPanel />
+              </div>
               <PresetsKanban />
             </div>
 

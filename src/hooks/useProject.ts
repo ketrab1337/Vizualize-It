@@ -205,6 +205,36 @@ export function useProject() {
     [projects, setProjects, addToast]
   );
 
+  /**
+   * Aktualizuje typ produktu projektu (np. "szyld", "tabliczka_informacyjna" lub
+   * dowolny tekst dla wartości "Inne"). Trafia do `projects.product_type` i
+   * wykorzystywane jest w promptAssembler do odmiany "szyld → tabliczka → numer"
+   * w opisach dla AI.
+   */
+  const updateProductType = useCallback(
+    async (id: string, productType: string | null): Promise<boolean> => {
+      try {
+        const db = await getDb();
+        const value = productType?.trim() || null;
+        const now = new Date().toISOString();
+        await db.execute(
+          "UPDATE projects SET product_type = $1, updated_at = $2 WHERE id = $3",
+          [value, now, id]
+        );
+        setProjects(
+          projects.map((p) =>
+            p.id === id ? { ...p, product_type: value, updated_at: now } : p
+          )
+        );
+        return true;
+      } catch (e) {
+        addToast(`Błąd zapisu typu produktu: ${e}`, "error");
+        return false;
+      }
+    },
+    [projects, setProjects, addToast]
+  );
+
   // ── Per-projekt stan generowania (prompt + presety + ustawienia panelu) ─────
   // JSON w `projects.generation_state_json` — patrz migracja 014. Powód: bez tego
   // wybór presetów i prompt wyciekały między projektami (cały generationStore był
@@ -259,6 +289,7 @@ export function useProject() {
     createProject,
     deleteProject,
     renameProject,
+    updateProductType,
     saveEditorState,
     loadEditorState,
     saveGenerationState,

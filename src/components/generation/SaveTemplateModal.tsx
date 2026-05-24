@@ -18,7 +18,11 @@ export function SaveTemplateModal({ open, onClose, editId, defaultName }: SaveTe
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const { createTemplate, updateTemplate } = useTemplates();
-  const { led, model, format, activePresetIds } = useGenerationStore();
+  const {
+    led, model, format, activePresetIds,
+    prompt, presetAnchors, presetTextOverrides,
+    camera, cameraDirty, timeOfDay,
+  } = useGenerationStore();
   const { addToast } = useToastStore();
 
   useEffect(() => {
@@ -29,7 +33,14 @@ export function SaveTemplateModal({ open, onClose, editId, defaultName }: SaveTe
     const trimmed = name.trim();
     if (!trimmed) return;
     setSaving(true);
-    const config = { led, model, format, activePresetIds };
+    // Pełniejszy snapshot — szablon zapisuje też prompt override, per-instancyjne
+    // edycje badges, pozycje (anchors), kąt kamery i porę dnia. Wcześniej szablony
+    // gubiły tę cześć — user wracał do template i tracił ręczne zmiany.
+    const config = {
+      led, model, format, activePresetIds,
+      prompt, presetAnchors, presetTextOverrides,
+      camera, cameraDirty, timeOfDay,
+    };
     try {
       if (editId) {
         await updateTemplate(editId, trimmed, config);
@@ -86,6 +97,23 @@ export function SaveTemplateModal({ open, onClose, editId, defaultName }: SaveTe
           <ConfigRow
             label="Front-lit"
             value={led.frontlit.enabled ? `${led.frontlit.colorName} (${led.frontlit.color})` : "wyłączony"}
+          />
+          <ConfigRow label="Pora dnia" value={timeOfDay === "brak" ? "—" : timeOfDay} />
+          <ConfigRow label="Kąt kamery" value={cameraDirty ? "zmieniony" : "domyślny"} />
+          <ConfigRow
+            label="Presety"
+            value={
+              activePresetIds.length === 0
+                ? "brak"
+                : `${activePresetIds.length} aktywne` +
+                  (Object.keys(presetTextOverrides).length > 0
+                    ? ` (${Object.keys(presetTextOverrides).length} z własnym tekstem)`
+                    : "")
+            }
+          />
+          <ConfigRow
+            label="Prompt"
+            value={prompt !== null ? "ręcznie edytowany (zapisany)" : "tryb automatyczny"}
           />
         </div>
 

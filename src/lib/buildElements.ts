@@ -16,6 +16,12 @@ export function buildElements(
     const material = override.materialId
       ? (materials.find((m) => m.id === override.materialId) ?? null)
       : null;
+    // Rola "distance" jest implikowana przez kategorię materiału — user nie musi
+    // jej wybierać ręcznie dla dystansów. Pozostałe role wybiera w ElementPanel.
+    const effectiveRole = override.role
+      ?? (material?.category === "dystans" ? "distance" : null);
+    // Grubość: override > default_thickness_mm materiału > null.
+    const thicknessMm = override.thicknessMm ?? material?.default_thickness_mm ?? null;
     return {
       id: nodeId,
       label: labels?.[nodeId] ?? nodeId,
@@ -25,6 +31,11 @@ export function buildElements(
       colorName: override.fill || null,
       hasDistances: material?.category === "dystans",
       distanceMaterial: null,
+      thicknessMm,
+      role: effectiveRole,
+      ledBacklit: override.ledBacklit === true,
+      ledFrontlit: override.ledFrontlit === true,
+      cutoutBackingId: override.cutoutBackingId ?? null,
     };
   });
 }

@@ -35,9 +35,6 @@ pub async fn create_project(
     }
     let projects_root = state.data_dir.join("projects");
     let project_dir = projects_root.join(&slug);
-    if project_dir.exists() {
-        return Err(format!("Projekt o nazwie „{trimmed_name}” już istnieje."));
-    }
 
     let now = chrono::Utc::now().to_rfc3339();
 

@@ -45,6 +45,10 @@ export function updateSvgWithOverrides(
     el.attr("data-led-price-per-m", override.ledPricePerM != null ? String(override.ledPricePerM) : null);
     el.attr("data-has-power-supply", override.hasPowerSupply ? "1" : null);
     el.attr("data-power-supply-price", override.powerSupplyPrice != null ? String(override.powerSupplyPrice) : null);
+    el.attr("data-role", override.role || null);
+    el.attr("data-led-backlit", override.ledBacklit ? "1" : null);
+    el.attr("data-led-frontlit", override.ledFrontlit ? "1" : null);
+    el.attr("data-cutout-backing", override.cutoutBackingId || null);
   });
 
   return new XMLSerializer().serializeToString(doc.documentElement);

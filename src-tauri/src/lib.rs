@@ -105,6 +105,12 @@ pub fn run() {
             sql: include_str!("db/migrations/015_led_config.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 16,
+            description: "project_product_type",
+            sql: include_str!("db/migrations/016_project_product_type.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

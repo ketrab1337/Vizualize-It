@@ -2,8 +2,17 @@ import { useEffect, useMemo } from "react";
 import { useEditorStore } from "../stores/editorStore";
 import { useGenerationStore } from "../stores/generationStore";
 import { useMaterialsStore } from "../stores/materialsStore";
+import { useProjectStore } from "../stores/projectStore";
 import { usePromptPresets } from "./usePromptPresets";
-import { assemblePrompt, type VisualInputs } from "../lib/promptAssembler";
+import {
+  assemblePrompt,
+  assemblePromptItems,
+  getProductNoun,
+  buildTimeOfDayPrompt,
+  type VisualInputs,
+  type PromptItem,
+  type PresetEntry,
+} from "../lib/promptAssembler";
 import { buildElements } from "../lib/buildElements";
 import type { SignConfig } from "../types";
 
@@ -16,10 +25,20 @@ import type { SignConfig } from "../types";
  * stan — ładujemy presety także tutaj, żeby podgląd działał niezależnie od tego,
  * czy `PresetsKanban` zdążył je już doczytać.
  */
-export function useAssembledPrompt(): string {
+/**
+ * Wewnętrzny helper — buduje config + visualInputs + listę presetów z anchorami
+ * z aktualnego stanu stores. Używany przez oba hooki niżej (string + items).
+ */
+function useAssembleArgs() {
   const { nodeOverrides, backgroundPath, svgContent } = useEditorStore();
   const { materials } = useMaterialsStore();
-  const { led, camera, cameraDirty, timeOfDay, referenceImages, activePresetIds } = useGenerationStore();
+  const {
+    led, camera, cameraDirty, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
+    referenceImages, activePresetIds, presetAnchors, presetTextOverrides,
+  } = useGenerationStore();
+  // productType pochodzi z aktywnego projektu (per projekt, nie per generowanie).
+  const { projects, activeProjectId } = useProjectStore();
+  const productType = projects.find((p) => p.id === activeProjectId)?.product_type ?? null;
   const { presets, loadPresets } = usePromptPresets();
   useEffect(() => {
     loadPresets();
@@ -35,9 +54,9 @@ export function useAssembledPrompt(): string {
       camera,
       background: backgroundPath ?? null,
       timeOfDay,
+      productType,
     };
 
-    // Wyciągnij teksty z SVG (z <text>/<tspan>) — AI ma je odwzorować dosłownie.
     const svgTexts: string[] = [];
     if (svgContent) {
       try {
@@ -51,32 +70,84 @@ export function useAssembledPrompt(): string {
       }
     }
 
-    // Podgląd nie wykonuje captureCanvas — zaznaczamy tylko czy SVG jest obecny.
-    const materialImageCount = elements.filter((el) => el.material?.photo_path).length;
+    // Deduplikacja identyczna jak w useGeneration.ts — jeden obraz per unikalne material_id.
+    // Bez tego podgląd promptu miał inną numerację "Obraz N" niż faktyczne żądanie do AI.
+    const materialIdToImageIdx: Record<string, number> = {};
+    let matIdx = 0;
+    for (const el of elements) {
+      const matId = el.material?.id;
+      if (matId && el.material?.photo_path && !(matId in materialIdToImageIdx)) {
+        materialIdToImageIdx[matId] = matIdx++;
+      }
+    }
+    const materialImageCount = matIdx; // liczba unikalnych materiałów ze zdjęciem
+
     const visualInputs: VisualInputs = {
       hasBackground: !!backgroundPath,
       hasSvg: !!svgContent,
       materialImageCount,
+      materialIdToImageIdx,
       referenceImageCount: referenceImages.length,
+      referenceDescriptions: referenceImages.map((img) => img.description ?? ""),
       svgTexts,
     };
 
-    // Teksty presetów — zachowaj kolejność wg activePresetIds (toggle order).
-    const byId = new Map(presets.map((p) => [p.id, p.text]));
-    const presetTexts = activePresetIds.map((id) => byId.get(id) ?? "").filter(Boolean);
+    // Buduj presety z anchorami — zachowaj kolejność wg activePresetIds.
+    // Tekst: override (z PromptPanel inline edit) > oryginalny preset.text.
+    const byId = new Map(presets.map((p) => [p.id, p]));
+    const presetEntries: PresetEntry[] = activePresetIds
+      .map((id): PresetEntry | null => {
+        const p = byId.get(id);
+        if (!p) return null;
+        return {
+          id: p.id,
+          label: p.label,
+          text: presetTextOverrides[id] ?? p.text,
+          anchor: presetAnchors[id] ?? "__end__",
+        };
+      })
+      .filter((x): x is PresetEntry => x !== null);
 
-    return assemblePrompt(signConfig, visualInputs, { cameraDirty, presetTexts });
+    // Pseudo-preset "Środowisko" — auto-tekst lub ręczny override.
+    const productNoun = getProductNoun(productType);
+    const ledActive = led.backlit.enabled || led.frontlit.enabled;
+    const hasBg2 = !!backgroundPath;
+    const todAutoText = buildTimeOfDayPrompt(timeOfDay, ledActive, hasBg2, productNoun);
+    const todText = timeOfDayTextOverride ?? todAutoText;
+    const timeOfDayPreset: { text: string; anchor?: string } | null =
+      timeOfDay !== "brak" && todText
+        ? { text: todText, anchor: timeOfDayAnchor }
+        : null;
+
+    return {
+      signConfig,
+      visualInputs,
+      options: { cameraDirty, presets: presetEntries, timeOfDayPreset },
+    };
   }, [
-    nodeOverrides,
-    materials,
-    led,
-    camera,
-    cameraDirty,
-    backgroundPath,
-    svgContent,
-    timeOfDay,
-    referenceImages.length,
-    activePresetIds,
-    presets,
+    nodeOverrides, materials, led, camera, cameraDirty, backgroundPath,
+    svgContent, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
+    referenceImages, activePresetIds, presetAnchors, presetTextOverrides, presets, productType,
   ]);
+}
+
+export function useAssembledPrompt(): string {
+  const args = useAssembleArgs();
+  return useMemo(
+    () => assemblePrompt(args.signConfig, args.visualInputs, args.options),
+    [args]
+  );
+}
+
+/**
+ * Zwraca strukturalną listę elementów promptu (fragmenty + presety inline).
+ * UI w PromptPanel używa tej funkcji do renderowania badges presetów między
+ * auto-fragmentami z możliwością drag&drop, usuwania i edycji.
+ */
+export function useAssembledPromptItems(): PromptItem[] {
+  const args = useAssembleArgs();
+  return useMemo(
+    () => assemblePromptItems(args.signConfig, args.visualInputs, args.options),
+    [args]
+  );
 }

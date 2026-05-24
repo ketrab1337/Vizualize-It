@@ -30,6 +30,8 @@ interface UseCanvasHistoryResult {
   clipboardRef: React.MutableRefObject<{ item: paper.Item; name: string }[]>;
   isDraggingItemRef: React.MutableRefObject<boolean>;
   pushHistory: () => void;
+  /** Zapisuje gotowy SVG-string bezpośrednio do historii (używane np. przy lock/visible). */
+  pushHistoryDirect: (svg: string) => void;
   handleUndo: () => void;
   handleRedo: () => void;
   handleCopy: () => void;
@@ -75,6 +77,17 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     setSvgContent(withOverrides);
     setTimeout(() => { isSavingRef.current = false; }, 50);
   }, [svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef, selectedItemsRef, isSavingRef, setSvgContent]);
+
+  const pushHistoryDirect = useCallback((svg: string) => {
+    if (isUndoRedoRef.current) return;
+    const selection = selectedItemsRef.current.map((i) => i.name).filter(Boolean) as string[];
+    historyRef.current.splice(historyIndexRef.current + 1);
+    historyRef.current.push({ svg, selection });
+    historyIndexRef.current = historyRef.current.length - 1;
+    isSavingRef.current = true;
+    setSvgContent(svg);
+    setTimeout(() => { isSavingRef.current = false; }, 50);
+  }, [isUndoRedoRef, selectedItemsRef, historyRef, historyIndexRef, isSavingRef, setSvgContent]);
 
   const restoreSelectionAfterUndoRedo = useCallback((names: string[]) => {
     const layer = svgLayerRef.current;
@@ -182,6 +195,6 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
 
   return {
     historyRef, historyIndexRef, isUndoRedoRef, clipboardRef, isDraggingItemRef,
-    pushHistory, handleUndo, handleRedo, handleCopy, handlePaste, handleDelete,
+    pushHistory, pushHistoryDirect, handleUndo, handleRedo, handleCopy, handlePaste, handleDelete,
   };
 }

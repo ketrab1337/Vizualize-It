@@ -57,12 +57,12 @@ export function BatchQueuePanel({ jobs, onCancel, onDismiss }: BatchQueuePanelPr
                 {modelLabel(job.model)} · {job.format} · {job.count}{" "}
                 {job.count === 1 ? "obraz" : "obrazy"}
               </p>
-              <p className="text-xs text-gray-600 mt-0.5">{statusLabel(job.status)}</p>
+              <p className="text-xs text-gray-400 mt-0.5 font-medium">{statusLabel(job.status)}</p>
               {job.status === "error" && job.error_text && (
                 <p className="text-xs text-red-400 mt-0.5 truncate">{job.error_text}</p>
               )}
             </div>
-            <p className="text-xs text-gray-700 shrink-0">
+            <p className="text-xs text-gray-400 font-medium shrink-0">
               {new Date(job.created_at).toLocaleTimeString("pl-PL", {
                 hour: "2-digit",
                 minute: "2-digit",

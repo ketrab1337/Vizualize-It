@@ -2,9 +2,17 @@ import { create } from "zustand";
 import type { LedConfig, CameraConfig, AiModel, ImageFormat, TimeOfDay } from "../types";
 
 const DEFAULT_LED: LedConfig = {
-  backlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały (3000K)", lumens: null, kelvin: null },
-  frontlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały (3000K)", lumens: null, kelvin: null },
+  backlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały (3000K)", lumens: null, kelvin: null, presetId: null },
+  frontlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały (3000K)", lumens: null, kelvin: null, presetId: null },
 };
+
+/** Merge snapshot.led z defaultami — zachowuje backward-compat dla starych snapshotów bez `presetId`. */
+function mergeLed(s: Partial<LedConfig> | undefined): LedConfig {
+  return {
+    backlit: { ...DEFAULT_LED.backlit, ...(s?.backlit ?? {}) },
+    frontlit: { ...DEFAULT_LED.frontlit, ...(s?.frontlit ?? {}) },
+  };
+}
 
 const DEFAULT_CAMERA: CameraConfig = {
   rotateDeg: 0,
@@ -15,6 +23,13 @@ const DEFAULT_CAMERA: CameraConfig = {
 export interface ReferenceImage {
   dataUrl: string;
   name: string;
+  /**
+   * Opcjonalny opis roli zdjęcia w prompcie (np. "inspiracja kolorystyczna",
+   * "styl oświetlenia", "referencja kompozycji"). Trafia bezpośrednio do
+   * promptu — pozwala AI traktować to zdjęcie zgodnie z intencją usera zamiast
+   * generycznego "Obraz N to dodatkowa inspiracja".
+   */
+  description?: string;
 }
 
 /**
@@ -25,6 +40,19 @@ export interface ReferenceImage {
 export interface GenerationSnapshot {
   prompt: string | null;
   activePresetIds: string[];
+  /**
+   * Pozycja wstawienia każdego aktywnego presetu w prompcie. Klucz: presetId,
+   * wartość: ID fragmentu po którym preset ma się pojawić (np. "materials"),
+   * lub "__start__"/"__end__". Brak wpisu → domyślnie "__end__".
+   */
+  presetAnchors: Record<string, string>;
+  /**
+   * Per-instancyjne nadpisanie tekstu presetu w prompcie. Klucz: presetId,
+   * wartość: zmodyfikowany tekst. Edycja w panelu prompta zapisuje tutaj —
+   * nie modyfikuje globalnego presetu w bibliotece (toggling off + on zachowuje
+   * override aż do następnej zmiany lub usunięcia z biblioteki).
+   */
+  presetTextOverrides: Record<string, string>;
   referenceImages: ReferenceImage[];
   led: LedConfig;
   camera: CameraConfig;
@@ -33,6 +61,10 @@ export interface GenerationSnapshot {
   format: ImageFormat;
   count: 1 | 2 | 3 | 4;
   timeOfDay: TimeOfDay;
+  /** Nadpisany tekst fragmentu "Środowisko" w prompcie (null = auto-generowany). */
+  timeOfDayTextOverride?: string | null;
+  /** Anchor fragmentu "Środowisko" — jak presety, gdzie stoi w prompcie. */
+  timeOfDayAnchor?: string;
 }
 
 interface GenerationStore {
@@ -46,9 +78,17 @@ interface GenerationStore {
   prompt: string | null;
   lastGeneratedImageIds: string[];
   timeOfDay: TimeOfDay;
+  /** Nadpisany tekst fragmentu "Środowisko" w prompcie (null = auto-generowany). */
+  timeOfDayTextOverride: string | null;
+  /** Anchor fragmentu "Środowisko" — pozycja w prompcie jak preset. Brak = "__end__". */
+  timeOfDayAnchor: string;
   referenceImages: ReferenceImage[];
   /** Tylko ID aktywnych presetów — teksty doczytujemy z biblioteki przy generowaniu. */
   activePresetIds: string[];
+  /** Mapa presetId → anchor (ID fragmentu lub "__start__"/"__end__"). Brak = "__end__". */
+  presetAnchors: Record<string, string>;
+  /** Mapa presetId → nadpisany tekst tej instancji w prompcie (edycja inline w PromptPanel). */
+  presetTextOverrides: Record<string, string>;
   angleEditMode: boolean;
   batchMode: boolean;
 
@@ -62,9 +102,17 @@ interface GenerationStore {
   setPrompt: (prompt: string | null) => void;
   setLastGeneratedImageIds: (ids: string[]) => void;
   setTimeOfDay: (timeOfDay: TimeOfDay) => void;
+  setTimeOfDayTextOverride: (text: string | null) => void;
+  setTimeOfDayAnchor: (anchor: string) => void;
   addReferenceImage: (img: ReferenceImage) => void;
   removeReferenceImage: (index: number) => void;
+  setReferenceDescription: (index: number, description: string) => void;
   togglePresetId: (id: string) => void;
+  setPresetAnchor: (presetId: string, anchor: string) => void;
+  /** Ustaw tekst nadpisania dla danego presetu (pusty string = clear). */
+  setPresetTextOverride: (presetId: string, text: string) => void;
+  /** Przenieś preset w `activePresetIds` na pozycję `newIdx` (clamped do długości). */
+  reorderActivePresetId: (presetId: string, newIdx: number) => void;
   setAngleEditMode: (enabled: boolean) => void;
   setBatchMode: (enabled: boolean) => void;
   resetGeneration: () => void;
@@ -84,8 +132,12 @@ const DEFAULTS = {
   prompt: null,
   lastGeneratedImageIds: [] as string[],
   timeOfDay: "brak" as TimeOfDay,
+  timeOfDayTextOverride: null as string | null,
+  timeOfDayAnchor: "__end__" as string,
   referenceImages: [] as ReferenceImage[],
   activePresetIds: [] as string[],
+  presetAnchors: {} as Record<string, string>,
+  presetTextOverrides: {} as Record<string, string>,
 } as const;
 
 export const useGenerationStore = create<GenerationStore>((set, get) => ({
@@ -104,16 +156,60 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
   setCount: (count) => set({ count }),
   setPrompt: (prompt) => set({ prompt }),
   setLastGeneratedImageIds: (ids) => set({ lastGeneratedImageIds: ids }),
-  setTimeOfDay: (timeOfDay) => set({ timeOfDay }),
+  setTimeOfDay: (timeOfDay) => set({ timeOfDay, timeOfDayTextOverride: null }),
+  setTimeOfDayTextOverride: (text) => set({ timeOfDayTextOverride: text }),
+  setTimeOfDayAnchor: (anchor) => set({ timeOfDayAnchor: anchor }),
   addReferenceImage: (img) => set((s) => ({ referenceImages: [...s.referenceImages, img] })),
   removeReferenceImage: (index) =>
     set((s) => ({ referenceImages: s.referenceImages.filter((_, i) => i !== index) })),
-  togglePresetId: (id) =>
+  setReferenceDescription: (index, description) =>
     set((s) => ({
-      activePresetIds: s.activePresetIds.includes(id)
-        ? s.activePresetIds.filter((x) => x !== id)
-        : [...s.activePresetIds, id],
+      referenceImages: s.referenceImages.map((img, i) =>
+        i === index ? { ...img, description } : img
+      ),
     })),
+  togglePresetId: (id) =>
+    set((s) => {
+      const isActive = s.activePresetIds.includes(id);
+      if (isActive) {
+        // Wyłącz: usuń anchor i override (sprzątanie po sobie)
+        const nextAnchors = { ...s.presetAnchors };
+        const nextOverrides = { ...s.presetTextOverrides };
+        delete nextAnchors[id];
+        delete nextOverrides[id];
+        return {
+          activePresetIds: s.activePresetIds.filter((x) => x !== id),
+          presetAnchors: nextAnchors,
+          presetTextOverrides: nextOverrides,
+        };
+      }
+      return { activePresetIds: [...s.activePresetIds, id] };
+    }),
+  setPresetAnchor: (presetId, anchor) =>
+    set((s) => ({ presetAnchors: { ...s.presetAnchors, [presetId]: anchor } })),
+  setPresetTextOverride: (presetId, text) =>
+    set((s) => {
+      const next = { ...s.presetTextOverrides };
+      if (text === "") {
+        delete next[presetId];
+      } else {
+        next[presetId] = text;
+      }
+      return { presetTextOverrides: next };
+    }),
+  reorderActivePresetId: (presetId, newIdx) =>
+    set((s) => {
+      if (!s.activePresetIds.includes(presetId)) return s;
+      const filtered = s.activePresetIds.filter((x) => x !== presetId);
+      const clamped = Math.max(0, Math.min(newIdx, filtered.length));
+      return {
+        activePresetIds: [
+          ...filtered.slice(0, clamped),
+          presetId,
+          ...filtered.slice(clamped),
+        ],
+      };
+    }),
   setAngleEditMode: (enabled) => set({ angleEditMode: enabled }),
   setBatchMode: (enabled) => set({ batchMode: enabled }),
 
@@ -128,8 +224,12 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       prompt: null,
       lastGeneratedImageIds: [],
       timeOfDay: "brak",
+      timeOfDayTextOverride: null,
+      timeOfDayAnchor: "__end__",
       referenceImages: [],
       activePresetIds: [],
+      presetAnchors: {},
+      presetTextOverrides: {},
     }),
 
   applySnapshot: (snapshot) => {
@@ -145,12 +245,14 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
         timeOfDay: "brak",
         referenceImages: [],
         activePresetIds: [],
+        presetAnchors: {},
+        presetTextOverrides: {},
         lastGeneratedImageIds: [],
       });
       return;
     }
     set({
-      led: snapshot.led ?? DEFAULT_LED,
+      led: mergeLed(snapshot.led),
       camera: snapshot.camera ?? DEFAULT_CAMERA,
       cameraDirty: snapshot.cameraDirty ?? false,
       model: snapshot.model ?? "nano-banana-2",
@@ -158,8 +260,12 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       count: snapshot.count ?? 1,
       prompt: snapshot.prompt ?? null,
       timeOfDay: snapshot.timeOfDay ?? "brak",
+      timeOfDayTextOverride: snapshot.timeOfDayTextOverride ?? null,
+      timeOfDayAnchor: snapshot.timeOfDayAnchor ?? "__end__",
       referenceImages: snapshot.referenceImages ?? [],
       activePresetIds: snapshot.activePresetIds ?? [],
+      presetAnchors: snapshot.presetAnchors ?? {},
+      presetTextOverrides: (snapshot as { presetTextOverrides?: Record<string, string> }).presetTextOverrides ?? {},
       lastGeneratedImageIds: [],
     });
   },
@@ -169,6 +275,8 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
     return {
       prompt: s.prompt,
       activePresetIds: s.activePresetIds,
+      presetAnchors: s.presetAnchors,
+      presetTextOverrides: s.presetTextOverrides,
       referenceImages: s.referenceImages,
       led: s.led,
       camera: s.camera,
@@ -177,6 +285,8 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       format: s.format,
       count: s.count,
       timeOfDay: s.timeOfDay,
+      timeOfDayTextOverride: s.timeOfDayTextOverride,
+      timeOfDayAnchor: s.timeOfDayAnchor,
     };
   },
 }));

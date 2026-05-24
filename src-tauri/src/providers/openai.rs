@@ -9,6 +9,10 @@ use crate::commands::keyring::get_api_key;
 
 const GENERATIONS_ENDPOINT: &str = "https://api.openai.com/v1/images/generations";
 const EDITS_ENDPOINT: &str = "https://api.openai.com/v1/images/edits";
+// Responses API jest nieużywany dla generowania (wymagałoby chat-modelu na top-level
+// + image_generation tool zamiast bezpośrednio gpt-image-2). Zostawiamy stałą i funkcje
+// na wypadek przyszłego użycia (np. batch z multi-image który nie działa przez multipart).
+#[allow(dead_code)]
 const RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/responses";
 const FILES_ENDPOINT: &str = "https://api.openai.com/v1/files";
 const BATCHES_ENDPOINT: &str = "https://api.openai.com/v1/batches";
@@ -17,13 +21,17 @@ const MODEL: &str = "gpt-image-2";
 
 // ── Request structures ────────────────────────────────────────────────────
 
+// Payload dla /v1/images/generations zgodny z gpt-image-2.
+// WAŻNE: brak pola `response_format` — gpt-image-2 (jak wcześniej gpt-image-1) zwraca
+// zawsze base64 i ODRZUCA to pole. OpenAI nieintuicyjnie zwraca "model not found"
+// zamiast "invalid parameter", co długo wyglądało jak problem z dostępem do modelu.
 #[derive(Serialize)]
 struct GenerationsRequest {
     model: String,
     prompt: String,
     n: u8,
     size: String,
-    response_format: String,
+    quality: String, // "auto" | "low" | "medium" | "high"
 }
 
 // ── Response structures ───────────────────────────────────────────────────
@@ -113,6 +121,22 @@ fn map_api_error(status: u16, body: &str) -> String {
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
+            // OpenAI często zwraca 400/404 z formułką "model ... not found" zamiast
+            // 403 access denied. Wykrywamy ten wzorzec żeby user wiedział że to nie
+            // bug aplikacji ani błędna nazwa modelu — tylko brak dostępu konta.
+            let lower = msg.to_lowercase();
+            let is_model_access = (status == 400 || status == 404)
+                && lower.contains("model")
+                && (lower.contains("not found") || lower.contains("does not exist") || lower.contains("no access"));
+            if is_model_access {
+                return format!(
+                    "Brak dostępu do modelu gpt-image-2 dla Twojego konta. Mimo zweryfikowanej \
+                     organizacji nowe modele wymagają osobnego rolloutu — często tier 1 nie wystarczy. \
+                     Sprawdź na https://platform.openai.com/account/limits czy model jest na liście \
+                     dostępnych, albo poczekaj kilka dni na rozszerzenie dostępu. Surowy komunikat \
+                     OpenAI ({status}): {msg}"
+                );
+            }
             return match status {
                 403 => format!(
                     "Błąd API OpenAI (403): brak dostępu — wymagana weryfikacja organizacji \
@@ -178,16 +202,19 @@ fn build_size_str(config: &GenerationConfig) -> (String, u32, u32) {
 #[async_trait::async_trait]
 impl ImageGenerator for OpenAiProvider {
     async fn generate(&self, config: GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
-        // Routing: są obrazy wejściowe (tło/SVG/materiały/referencje) → Responses API
-        // (multi-image input + role developer/user). Inaczej → klasyczne /v1/images/generations
-        // (text-only — OpenAI generations nie przyjmuje obrazów wejściowych).
+        // Routing: są obrazy wejściowe → /v1/images/edits (multipart z image[] = scena
+        // + materiały + referencje). Inaczej → /v1/images/generations (text-only).
+        //
+        // WAŻNE: /v1/responses NIE jest opcją bo top-level `model` musi tam być chat-modelem
+        // (gpt-4o, gpt-5...), a `gpt-image-2` to image model — OpenAI zwraca wtedy 400
+        // "model not found" co przez długi czas wyglądało jak brak dostępu do modelu.
         let has_inputs = config.background_image.is_some()
             || config.svg_image.is_some()
             || !config.material_images.is_empty()
             || !config.reference_images.is_empty();
 
         if has_inputs {
-            return generate_via_responses(&config).await;
+            return generate_via_edits(&config).await;
         }
 
         let key = read_key().await?;
@@ -198,7 +225,7 @@ impl ImageGenerator for OpenAiProvider {
             prompt: config.prompt.clone(),
             n: config.count,
             size,
-            response_format: "b64_json".to_string(),
+            quality: "auto".to_string(),
         };
 
         let client = build_client()?;
@@ -249,16 +276,15 @@ impl ImageGenerator for OpenAiProvider {
         let key = read_key().await?;
         let client = build_client()?;
 
-        // Dispatcher analogiczny do generate(): są obrazy wejściowe → batch przez /v1/responses
-        // (multi-image + role developer/user). Brak → klasyczne /v1/images/generations.
+        // Analogicznie do generate(): są obrazy → batch przez /v1/responses (multi-image).
+        // Brak → /v1/images/generations (text-only, natywne `n` dla wielu obrazów na call).
         let has_inputs = config.background_image.is_some()
             || config.svg_image.is_some()
             || !config.material_images.is_empty()
             || !config.reference_images.is_empty();
 
-        // /v1/responses zwraca 1 obraz na call, więc dla count>1 musimy N linii JSONL.
-        // /v1/images/generations obsługuje natywnie `n` (1 linia = N obrazów).
         let lines: Vec<serde_json::Value> = if has_inputs {
+            // /v1/responses zwraca 1 obraz na call → N linii JSONL dla count > 1
             let (body, _, _) = build_responses_body(&config);
             (0..config.count.max(1))
                 .map(|idx| {
@@ -271,13 +297,14 @@ impl ImageGenerator for OpenAiProvider {
                 })
                 .collect()
         } else {
+            // BEZ response_format — gpt-image-2 odrzuca to pole (zwraca zawsze base64).
             let (size, _, _) = build_size_str(&config);
             let body = serde_json::json!({
                 "model": MODEL,
                 "prompt": config.prompt.clone(),
                 "n": config.count,
                 "size": size,
-                "response_format": "b64_json",
+                "quality": "auto",
             });
             vec![serde_json::json!({
                 "custom_id": "vizualizeit-request",
@@ -575,11 +602,13 @@ impl OpenAiProvider {
             .mime_str("image/png")
             .map_err(|e| format!("Błąd budowania formularza: {e}"))?;
 
+        // BEZ response_format — gpt-image-2 odrzuca to pole (analogicznie do /generations).
+        // quality="auto" dla spójności z live generation (Playground też tak wysyła).
         let mut form = reqwest::multipart::Form::new()
             .part("image[]", main_part)
             .text("prompt", prompt)
             .text("model", MODEL)
-            .text("response_format", "b64_json");
+            .text("quality", "auto");
 
         // Dodaj zdjęcia referencyjne (dekoduj z base64)
         for (idx, r) in references.into_iter().enumerate() {
@@ -640,6 +669,112 @@ impl OpenAiProvider {
     }
 }
 
+// ── /v1/images/edits dla generowania z obrazami wejściowymi ───────────────
+//
+// Endpoint przyjmuje wiele obrazów w polu `image[]` (multipart). Konwencjonalnie:
+// pierwszy = scena do "edycji" (tu: nasz composite tło+SVG), kolejne = referencje
+// stylistyczne (materiały, zdjęcia inspiracyjne). Mask omitted → cały obraz edytowalny.
+//
+// Używamy zamiast /v1/responses bo Responses API wymaga chat-modelu na top-levelu,
+// a my chcemy gpt-image-2 bezpośrednio.
+async fn generate_via_edits(config: &GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
+    use base64::Engine as _;
+
+    let key = read_key().await?;
+    let client = build_client()?;
+    let (size, width, height) = build_size_str(config);
+
+    let format_suffix = config.format.to_prompt_suffix();
+    let full_prompt = if format_suffix.is_empty() {
+        config.prompt.clone()
+    } else {
+        format!("{} {}", config.prompt, format_suffix)
+    };
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("model", MODEL)
+        .text("prompt", full_prompt)
+        .text("n", config.count.to_string())
+        .text("size", size)
+        .text("quality", "auto".to_string());
+
+    // Helper do dodawania obrazu w base64 jako part `image[]`
+    let add_image_part = |form: reqwest::multipart::Form,
+                          data_b64: &str,
+                          mime: &str,
+                          filename: String|
+     -> Result<reqwest::multipart::Form, String> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_b64)
+            .map_err(|e| format!("Błąd dekodowania obrazu '{filename}': {e}"))?;
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename.clone())
+            .mime_str(mime)
+            .map_err(|e| format!("Błąd budowania formularza '{filename}': {e}"))?;
+        Ok(form.part("image[]", part))
+    };
+
+    // Kolejność: scena (svg composite albo tło) → materiały → referencje.
+    // Pierwszy obraz to "główna" scena którą model będzie modyfikował.
+    // Composite (svg_image) ma priorytet bo zawiera tło + nałożony szyld.
+    if let Some(svg) = &config.svg_image {
+        form = add_image_part(form, &svg.data, &svg.mime_type, "scene.png".to_string())?;
+    } else if let Some(bg) = &config.background_image {
+        form = add_image_part(form, &bg.data, &bg.mime_type, "scene.png".to_string())?;
+    }
+
+    for (idx, m) in config.material_images.iter().enumerate() {
+        let ext = match m.mime_type.as_str() {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/webp" => "webp",
+            _ => "png",
+        };
+        form = add_image_part(form, &m.data, &m.mime_type, format!("material_{}.{ext}", idx + 1))?;
+    }
+
+    for (idx, r) in config.reference_images.iter().enumerate() {
+        let ext = match r.mime_type.as_str() {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/webp" => "webp",
+            _ => "png",
+        };
+        form = add_image_part(form, &r.data, &r.mime_type, format!("ref_{}.{ext}", idx + 1))?;
+    }
+
+    let resp = client
+        .post(EDITS_ENDPOINT)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("Błąd sieci: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(map_api_error(status, &body));
+    }
+
+    let openai_resp: OpenAiResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Błąd parsowania odpowiedzi API: {e}"))?;
+
+    if let Some(err) = openai_resp.error {
+        return Err(format!("Błąd API OpenAI: {}", err.message));
+    }
+
+    let items = openai_resp.data.unwrap_or_default();
+    if items.is_empty() {
+        return Err("API nie zwróciło żadnych obrazów. Sprawdź prompt.".to_string());
+    }
+
+    items
+        .into_iter()
+        .map(|item| decode_b64_image(item.b64_json, width, height))
+        .collect()
+}
+
 // ── Responses API (multi-image input dla gpt-image-2) ───────────────────────
 //
 // Endpoint /v1/responses akceptuje wieloobrazowy input. Wcześniej rozdzielaliśmy
@@ -681,12 +816,14 @@ enum ResponsesContent {
     },
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ResponsesResponse {
     output: Option<Vec<ResponsesOutputItem>>,
     error: Option<OpenAiError>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ResponsesOutputItem {
     #[serde(rename = "type")]
@@ -740,13 +877,21 @@ fn build_responses_body(config: &GenerationConfig) -> (serde_json::Value, u32, u
     let user_msg = ResponsesMessage { role: "user".to_string(), content: user_content };
 
     let (size_str, width, height) = build_size_str(config);
+    // image_generation tool — `model` JEST w configu toola (a NIE w top-level requestu).
+    // quality + size kopiujemy z live path żeby batch dawał takie same wyniki.
     let tool_config = serde_json::json!({
         "type": "image_generation",
+        "model": MODEL,
         "size": size_str,
+        "quality": "auto",
     });
 
+    // Top-level model MUSI być chat-modelem (gpt-4o, gpt-5...). gpt-image-2 tu zwraca
+    // 400 "model not found" — to nie chat model. gpt-5.4-mini jako orchestrator który
+    // wywołuje image_generation tool — lepsze rozumienie promptu PL niż gpt-4o-mini,
+    // wciąż tani per token.
     let request = ResponsesRequest {
-        model: MODEL.to_string(),
+        model: "gpt-5.4-mini".to_string(),
         input: vec![user_msg],
         tools: vec![tool_config],
     };
@@ -790,6 +935,7 @@ fn extract_responses_images(
 /// Wykonuje pojedyncze wywołanie Responses API i zwraca dokładnie jeden obraz.
 /// Responses API z image_generation tool zwraca 1 obraz na call (parametr `n` nie istnieje
 /// dla tego toola — `n` działa tylko w /v1/images/generations).
+#[allow(dead_code)]
 async fn single_call_responses_api(
     client: reqwest::Client,
     key: String,
@@ -836,6 +982,7 @@ async fn single_call_responses_api(
     Err("API nie zwróciło obrazu w output[].".to_string())
 }
 
+#[allow(dead_code)]
 async fn generate_via_responses(config: &GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
     let key = read_key().await?;
     let client = build_client()?;

@@ -1,13 +1,36 @@
 import { useCallback } from "react";
 import { getDb } from "../lib/db";
 import type { Template } from "../types";
-import type { LedConfig, AiModel, ImageFormat } from "../types";
+import type { LedConfig, AiModel, ImageFormat, CameraConfig, TimeOfDay } from "../types";
 
+/**
+ * Konfiguracja szablonu zapisywana jako JSON w `templates.config_json`.
+ *
+ * Wszystkie pola POZA `led, model, format` są opcjonalne — dla wstecznej
+ * kompatybilności ze starymi szablonami zapisanymi tylko z minimum.
+ *
+ * Świadomie POMINIĘTE:
+ *   - `referenceImages` — duże base64 (MB), zawsze per-projekt, nigdy do szablonu
+ *   - `nodeOverrides` / `svgContent` — to dane projektu, nie szablonu
+ *   - `productType` — per projekt, nie per generowanie
+ */
 export interface TemplateConfig {
   led: LedConfig;
   model: AiModel;
   format: ImageFormat;
   activePresetIds?: string[];
+  /** Override tekstowy promptu (gdy user przeszedł w tryb ręcznej edycji). */
+  prompt?: string | null;
+  /** Mapa presetId → anchor (pozycja preseta w prompcie). */
+  presetAnchors?: Record<string, string>;
+  /** Per-instancyjne edycje tekstu badge'ów presetów. */
+  presetTextOverrides?: Record<string, string>;
+  /** Konfiguracja kąta kamery. */
+  camera?: CameraConfig;
+  /** Czy kamera została zmodyfikowana z domyślnej (decyduje czy assembler dorzuca opis kamery). */
+  cameraDirty?: boolean;
+  /** Pora dnia / wnętrze (wpływa na styl światła). */
+  timeOfDay?: TimeOfDay;
 }
 
 export function useTemplates() {
