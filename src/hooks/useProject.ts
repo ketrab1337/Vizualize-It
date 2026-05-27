@@ -29,8 +29,9 @@ export function useProject() {
       );
     } catch (e) {
       console.error("Błąd zapisu stanu edytora:", e);
+      addToast(`Nie udało się zapisać projektu: ${e}`, "error");
     }
-  }, []);
+  }, [addToast]);
 
   const loadEditorState = useCallback(
     async (projectId: string) => {

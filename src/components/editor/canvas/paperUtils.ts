@@ -78,10 +78,18 @@ export function findItemByName(item: paper.Item, name: string): paper.Item | nul
 }
 
 function applyFill(item: paper.Item, fill: string): void {
+  // CompoundPath (litery z otworami, logo z wycięciami itp.) ma .children (subpaths),
+  // ale fill ustawia się BEZPOŚREDNIO na nim — nie na subpathach. Subpaths nie mają
+  // własnych fills i Paper.js ignoruje fillColor ustawiony na poszczególnych subpathach.
+  if (item instanceof paper.CompoundPath) {
+    try { item.fillColor = fill && fill !== "none" ? new paper.Color(fill) : null; }
+    catch { /* nieprawidłowy kolor */ }
+    return;
+  }
   const g = item as paper.Group;
   if (g.children) {
     g.children.forEach((c) => applyFill(c, fill));
-  } else if (item.fillColor !== null) {
+  } else {
     try { item.fillColor = fill && fill !== "none" ? new paper.Color(fill) : null; }
     catch { /* nieprawidłowy kolor */ }
   }

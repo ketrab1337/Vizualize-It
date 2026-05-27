@@ -682,7 +682,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const content = svgContentRef.current;
       if (!content) return;
       isSavingRef.current = true;
-      setSvgContent(updateSvgWithOverrides(content, nodeOverridesRef.current));
+      setSvgContent(updateSvgWithOverrides(content, useEditorStore.getState().nodeOverrides));
       setTimeout(() => { isSavingRef.current = false; }, 50);
     };
     captureCanvasFnRef.current = () => {

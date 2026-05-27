@@ -104,11 +104,11 @@ pub async fn import_svg(
         .map_err(|e| format!("Nie można utworzyć folderu assets: {e}"))?;
 
     let dest_path = dest_dir.join(&filename);
-    std::fs::copy(src, &dest_path)
-        .map_err(|e| format!("Nie można skopiować pliku SVG: {e}"))?;
-
-    let content = std::fs::read_to_string(&dest_path)
+    // read+write zamiast fs::copy — omija blokadę OneDrive/Defender (os error 32)
+    let content = std::fs::read_to_string(src)
         .map_err(|e| format!("Nie można odczytać pliku SVG: {e}"))?;
+    std::fs::write(&dest_path, content.as_bytes())
+        .map_err(|e| format!("Nie można zapisać pliku SVG: {e}"))?;
 
     Ok(SvgImportResult { filename, content })
 }

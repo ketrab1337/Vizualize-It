@@ -165,6 +165,7 @@ function PropertiesTab() {
       const defaultThickness = rates.length > 0 ? rates[0].thickness_mm : null;
       const override = { materialId: id || null, fill: color, thicknessMm: defaultThickness };
       setNodeOverride(selectedElementId, override);
+      applyFillByName(selectedElementId, color);
 
       // Kaskaduj materiał na wszystkich potomków grupy
       const descendants = collectDescendantNames(selectedElementId);
