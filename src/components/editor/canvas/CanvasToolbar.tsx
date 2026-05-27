@@ -1,4 +1,4 @@
-import { Upload, Loader2, Download, ImageIcon, X } from "lucide-react";
+import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid } from "lucide-react";
 
 interface CanvasToolbarProps {
   hasSvg: boolean;
@@ -6,16 +6,20 @@ interface CanvasToolbarProps {
   isImportingBg: boolean;
   backgroundDataUrl: string | null;
   backgroundFilename: string;
+  isNestingOpen: boolean;
   onImportSvg: () => void;
   onExportSvg: () => void;
   onImportBackground: () => void;
   onRemoveBackground: () => void;
+  onToggleNesting: () => void;
 }
 
 export function CanvasToolbar({
   hasSvg, isImportingSvg, isImportingBg,
   backgroundDataUrl, backgroundFilename,
+  isNestingOpen,
   onImportSvg, onExportSvg, onImportBackground, onRemoveBackground,
+  onToggleNesting,
 }: CanvasToolbarProps) {
   return (
     <div className="h-10 bg-[#1a1a1a] border-b border-gray-800 flex items-center gap-1 px-3 shrink-0 flex-wrap">
@@ -63,6 +67,23 @@ export function CanvasToolbar({
             <X className="w-3 h-3" />
           </button>
         </div>
+      )}
+
+      {hasSvg && (
+        <>
+          <div className="h-5 w-px bg-gray-800 mx-1" />
+          <button
+            onClick={onToggleNesting}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm border transition-colors ${
+              isNestingOpen
+                ? "text-blue-300 bg-blue-950/50 border-blue-800"
+                : "text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border-gray-700 hover:border-gray-600"
+            }`}
+          >
+            <LayoutGrid className="w-3.5 h-3.5" />
+            Nesting
+          </button>
+        </>
       )}
     </div>
   );

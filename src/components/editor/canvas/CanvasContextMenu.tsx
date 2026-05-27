@@ -1,3 +1,5 @@
+import { useRef, useState, useEffect } from "react";
+
 export interface CtxMenuState {
   x: number;
   y: number;
@@ -27,12 +29,28 @@ export function CanvasContextMenu({
   onClose, onCopy, onPaste, onUndo, onRedo,
   onGroup, onUngroup, onToggleLock, onDelete,
 }: CanvasContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x: menu.x, y: menu.y });
+
+  // Po zamontowaniu sprawdź czy menu nie wychodzi poza krawędź okna i skoryguj pozycję.
+  useEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    let x = menu.x;
+    let y = menu.y;
+    if (x + width > window.innerWidth - 4) x = Math.max(4, window.innerWidth - width - 4);
+    if (y + height > window.innerHeight - 4) y = Math.max(4, window.innerHeight - height - 4);
+    setPos({ x, y });
+  }, [menu.x, menu.y]);
+
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
+        ref={menuRef}
         className="fixed z-50 min-w-[200px] bg-[#1e1e1e] border border-gray-700 rounded-lg shadow-2xl py-1 text-sm"
-        style={{ left: menu.x, top: menu.y }}
+        style={{ left: pos.x, top: pos.y }}
       >
         <button
           onClick={() => { onCopy(); onClose(); }}

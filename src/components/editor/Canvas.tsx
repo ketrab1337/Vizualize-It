@@ -9,7 +9,12 @@ import paper from "paper";
 import { useEditorStore } from "../../stores/editorStore";
 import { useGenerationStore } from "../../stores/generationStore";
 import { useToastStore } from "../../stores/toastStore";
-import { saveFnRef, resizeElementFnRef, captureCanvasFnRef, pushHistoryRef } from "../../lib/paperCanvas";
+import {
+  saveFnRef, resizeElementFnRef, captureCanvasFnRef, pushHistoryRef,
+  runNestingFnRef, clearNestingFnRef, exportNestingSvgFnRef,
+} from "../../lib/paperCanvas";
+import { computeNesting } from "./canvas/nestingEngine";
+import { NestingPanel } from "./NestingPanel";
 import { updateSvgWithOverrides, patchSvgLayerState } from "../../lib/svgHelpers";
 import { RULER_SIZE, RULER_BG, RULER_BORDER, drawHRuler, drawVRuler } from "./canvas/rulers";
 import {
@@ -43,8 +48,9 @@ function setBoundsRecursive(
       areaMm2: calcTotalArea(item) * mm * mm,
     });
   }
+  // CompoundPath (litery z otworami: O, P, R, A…) NIE jest grupą — nie schodź w dół
   const g = item as paper.Group;
-  if (g.children) {
+  if (g.children && !(item instanceof paper.CompoundPath)) {
     (g.children as paper.Item[]).forEach((child) => setBoundsRecursive(child, mm, setter));
   }
 }
@@ -54,8 +60,9 @@ function buildParentMapFromItems(items: paper.Item[]): Record<string, string> {
   const map: Record<string, string> = {};
   function walk(item: paper.Item, parentName: string | null) {
     if (parentName && item.name) map[item.name] = parentName;
+    // CompoundPath (litery z otworami) traktujemy jak liść — nie schodź w sub-ścieżki
     const g = item as paper.Group;
-    if (g.children) {
+    if (g.children && !(item instanceof paper.CompoundPath)) {
       (g.children as paper.Item[]).forEach((c) => walk(c, item.name || parentName));
     }
   }
@@ -140,6 +147,7 @@ export function Canvas({ project }: CanvasProps) {
   const isSavingRef = useRef(false);
   const paperReadyRef = useRef(false);
   const svgLayerRef = useRef<paper.Layer | null>(null);
+  const nestingLayerRef = useRef<paper.Layer | null>(null);
   const uiLayerRef = useRef<paper.Layer | null>(null);
   const selectedItemsRef = useRef<paper.Item[]>([]);
   const hoverRectRef = useRef<paper.Shape | null>(null);
@@ -153,6 +161,11 @@ export function Canvas({ project }: CanvasProps) {
   const dropHandlerRef = useRef<((paths: string[]) => Promise<void>) | null>(null);
   // Blokuje współbieżne wywołania handleAddSvg i główny useEffect importu SVG
   const isAddingSvgRef = useRef(false);
+  // isMountedRef = false po unmount (np. zmiana projektu przez key={project.id}).
+  // Sprawdzamy po każdym await w handleAddSvg — bez tego stary handleAddSvg dokończyłby
+  // pracę po zmianie projektu i wsadziłby zaimportowane elementy + nodeOverrides do
+  // GLOBALNEGO Zustand store, który jest już z nowego projektu.
+  const isMountedRef = useRef(true);
 
   // Ref z aktualnymi callbackami dla Tool (Tool tworzony raz, odczytuje zawsze bieżące fn)
   const toolCbRef = useRef({
@@ -162,6 +175,7 @@ export function Canvas({ project }: CanvasProps) {
     updateHover: (_target: paper.Item | null) => {},
     drawRubberBand: (_s: paper.Point, _e: paper.Point) => {},
     hitTestHandle: (_pt: paper.Point): HandleType | null => null,
+    hitTestRotateHandle: (_pt: paper.Point): boolean => false,
     drawResizeHandles: () => {},
     clearResizeHandles: () => {},
     pushHistory: () => {},
@@ -176,6 +190,11 @@ export function Canvas({ project }: CanvasProps) {
   const resizePrevSxRef       = useRef(1);
   const resizePrevSyRef       = useRef(1);
 
+  // Refs stanu rotacji
+  const rotateHandleRef        = useRef<paper.Shape | null>(null);
+  const isRotatingRef          = useRef(false);
+  const rotateCenterRef        = useRef<paper.Point | null>(null);
+
 
   const [hasSvg, setHasSvg] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -187,6 +206,7 @@ export function Canvas({ project }: CanvasProps) {
   const [isDragOver, setIsDragOver] = useState<DragOverKind | null>(null);
   const [contextMenu, setContextMenu] = useState<CtxMenuState | null>(null);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const [isNestingPanelOpen, setIsNestingPanelOpen] = useState(false);
   const [layerItems, setLayerItems] = useState<LayerItem[]>([]);
 const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
@@ -311,12 +331,20 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   const clearResizeHandles = useCallback(() => {
     resizeHandlesRef.current.forEach((h) => { try { h.remove(); } catch { /* already removed */ } });
     resizeHandlesRef.current.clear();
+    if (rotateHandleRef.current) {
+      try { rotateHandleRef.current.remove(); } catch { /* already removed */ }
+      rotateHandleRef.current = null;
+    }
   }, []);
 
   const drawResizeHandles = useCallback(() => {
-    // Usuń stare uchwyty
+    // Usuń stare uchwyty (resize + rotate)
     resizeHandlesRef.current.forEach((h) => { try { h.remove(); } catch { /* already removed */ } });
     resizeHandlesRef.current.clear();
+    if (rotateHandleRef.current) {
+      try { rotateHandleRef.current.remove(); } catch { /* already removed */ }
+      rotateHandleRef.current = null;
+    }
 
     const items = selectedItemsRef.current;
     if (items.length === 0) return;
@@ -353,6 +381,17 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       newHandles.set(key, shape as unknown as paper.Shape);
     });
     resizeHandlesRef.current = newHandles;
+
+    // Uchwyt rotacji — kółko nad środkiem górnej krawędzi
+    const ROTATE_OFFSET = 24 / paper.view.zoom;
+    const rotatePos = b.topCenter.subtract(new paper.Point(0, ROTATE_OFFSET));
+    const rotateCircle = new paper.Shape.Circle(rotatePos, hSize * 0.65);
+    rotateCircle.fillColor = new paper.Color("white");
+    rotateCircle.strokeColor = new paper.Color("#f59e0b");
+    rotateCircle.strokeWidth = sw;
+    rotateCircle.locked = true;
+    rotateHandleRef.current = rotateCircle as unknown as paper.Shape;
+
     prev.activate();
   }, []);
 
@@ -363,6 +402,13 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       if (shape.bounds.expand(hitArea).contains(point)) return key;
     }
     return null;
+  }, []);
+
+  const hitTestRotateHandle = useCallback((point: paper.Point): boolean => {
+    const h = rotateHandleRef.current;
+    if (!h) return false;
+    const hitRadius = (HANDLE_PX * 1.5) / paper.view.zoom;
+    return h.position.getDistance(point) <= hitRadius;
   }, []);
 
 
@@ -392,6 +438,13 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     setLayerItems(newItems);
   }, []);
 
+  const onAfterPaste = useCallback((items: paper.Item[]) => {
+    const mm = mmPerUnitRef.current;
+    items.forEach((item) => setBoundsRecursive(item, mm, setBoundsForElement));
+    const layer = svgLayerRef.current;
+    if (layer) setParentMap(buildParentMapFromItems(layer.children as paper.Item[]));
+  }, [mmPerUnitRef, setBoundsForElement, svgLayerRef, setParentMap]);
+
   const {
     historyRef, historyIndexRef, isUndoRedoRef, clipboardRef, isDraggingItemRef,
     pushHistory, pushHistoryDirect, handleUndo, handleRedo, handleCopy, handlePaste, handleDelete,
@@ -399,7 +452,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef,
     selectedItemsRef, isSavingRef,
     setSvgContent, clearSelection, addToSelection, rebuildLayerItems, setContextMenu,
-    removeNodeOverride, removeBoundsForElement,
+    removeNodeOverride, removeBoundsForElement, onAfterPaste,
   });
 
   // Udostępnij pushHistory dla komponentów poza Canvas (np. ElementPanel)
@@ -552,6 +605,34 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     }
   }, [setSvgContent, pushHistory]);
 
+  const handleLayerContextMenu = useCallback((id: string, x: number, y: number) => {
+    const isSelected = selectedItemNames.includes(id);
+    if (!isSelected) handleLayerSelect(id, false);
+
+    const effectiveSelected = isSelected ? selectedItemNames : [id];
+
+    const findLayerItem = (items: LayerItem[], targetId: string): LayerItem | null => {
+      for (const item of items) {
+        if (item.id === targetId) return item;
+        if (item.children) {
+          const found = findLayerItem(item.children, targetId);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const clicked = findLayerItem(layerItems, id);
+    setContextMenu({
+      x, y,
+      showUngroup: effectiveSelected.length === 1 && clicked?.type === "group",
+      showGroup: effectiveSelected.length >= 2,
+      groupCount: effectiveSelected.length,
+      itemName: id,
+      itemLocked: clicked?.locked ?? false,
+    });
+  }, [selectedItemNames, layerItems, handleLayerSelect]);
+
   const getThumbnailForItem = useCallback((id: string): string | null => {
     const layer = svgLayerRef.current;
     if (!layer) return null;
@@ -578,7 +659,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   // Aktualizuj toolCbRef przy każdym renderze (Tool zawsze czyta bieżące fn)
   toolCbRef.current = {
     clearSelection, addToSelection, hitTestSvg, updateHover, drawRubberBand,
-    hitTestHandle, drawResizeHandles, clearResizeHandles, pushHistory,
+    hitTestHandle, hitTestRotateHandle, drawResizeHandles, clearResizeHandles, pushHistory,
   };
 
   // drawRulers — odczytuje aktualny stan paper.view za każdym wywołaniem
@@ -648,6 +729,161 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     return () => {
       saveFnRef.current = null;
       captureCanvasFnRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Nesting ────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    runNestingFnRef.current = (config) => {
+      const svgLayer = svgLayerRef.current;
+      const nestingLayer = nestingLayerRef.current;
+      if (!svgLayer || !nestingLayer) return null;
+
+      // Zbierz Paper.js items dla zaznaczonych nodeId
+      const inputs = config.nodeIds
+        .map((id) => {
+          const item = findItemByName(svgLayer, id);
+          return item ? { nodeId: id, item } : null;
+        })
+        .filter(Boolean) as Array<{ nodeId: string; item: paper.Item }>;
+
+      if (inputs.length === 0) return null;
+
+      // Wyznacz pozycję NOWEJ płyty:
+      // — jeśli istnieją już jakieś płyty na nestingLayer → na prawo od nich (wszystkie obok siebie)
+      // — w przeciwnym razie → na prawo od zawartości svgLayer
+      const existingPlates = nestingLayer.children.filter((c) => {
+        const d = (c as paper.Item & { data?: { isPlate?: boolean } }).data;
+        return d?.isPlate === true;
+      }) as paper.Item[];
+
+      let plateOriginX: number;
+      let plateOriginY: number;
+      if (existingPlates.length > 0) {
+        let maxRight = -Infinity;
+        let topY = Infinity;
+        existingPlates.forEach((p) => {
+          if (p.bounds.right > maxRight) maxRight = p.bounds.right;
+          if (p.bounds.top < topY) topY = p.bounds.top;
+        });
+        plateOriginX = maxRight + 100;
+        plateOriginY = topY;
+      } else {
+        let maxRight = 0;
+        let minTop = CANVAS_SIZE_MM / 2;
+        svgLayer.children.forEach((child) => {
+          const it = child as paper.Item;
+          if (it.bounds.right > maxRight) maxRight = it.bounds.right;
+          if (it.bounds.top < minTop) minTop = it.bounds.top;
+        });
+        plateOriginX = maxRight > 0 ? maxRight + 100 : 100;
+        plateOriginY = minTop < CANVAS_SIZE_MM / 2 ? minTop : 100;
+      }
+
+      // Narysuj obrys NOWEJ płyty (bez czyszczenia poprzednich)
+      const prevLayer = paper.project.activeLayer;
+      nestingLayer.activate();
+      const plateOutline = new paper.Shape.Rectangle(
+        new paper.Rectangle(plateOriginX, plateOriginY, config.plateWidthMm, config.plateHeightMm),
+      );
+      plateOutline.strokeColor = new paper.Color("#f59e0b");
+      plateOutline.strokeWidth = 2;
+      plateOutline.dashArray = [10, 5];
+      plateOutline.fillColor = new paper.Color(0.96, 0.62, 0.04, 0.03);
+      plateOutline.locked = true;
+      (plateOutline as paper.Item & { data: { isPlate: boolean } }).data = { isPlate: true };
+      prevLayer.activate();
+
+      // Uruchom algorytm nestingu
+      const result = computeNesting(
+        inputs,
+        config.plateWidthMm,
+        config.plateHeightMm,
+        config.gapMm,
+        config.rotationStep,
+      );
+
+      // PRZESUŃ (nie klonuj!) ułożone elementy na płytę — pozostają edytowalne
+      // w svgLayer. Obrót zmienia bounds, więc przeliczamy boundsPerElement po przesunięciu.
+      const mm = mmPerUnitRef.current;
+      for (const p of result.placed) {
+        const item = findItemByName(svgLayer, p.nodeId);
+        if (!item) continue;
+        item.rotation = p.rotation;
+        const iw = item.bounds.width;
+        const ih = item.bounds.height;
+        item.position = new paper.Point(
+          plateOriginX + p.plateX + iw / 2,
+          plateOriginY + p.plateY + ih / 2,
+        );
+        setBoundsRecursive(item, mm, setBoundsForElement);
+      }
+
+      paper.view.update();
+
+      // Zapisz do historii — Ctrl+Z cofnie układanie (elementy wrócą na poprzednie pozycje).
+      // Snapshot przez setTimeout(0) żeby Zustand setBoundsForElement zdążył się zaaplikować
+      // przed exportSvgLayer w pushHistory.
+      setTimeout(() => {
+        toolCbRef.current.pushHistory();
+        rebuildLayerItems();
+      }, 0);
+
+      return { placed: result.placed.length, overflow: result.overflow };
+    };
+
+    clearNestingFnRef.current = () => {
+      nestingLayerRef.current?.removeChildren();
+      paper.view.update();
+    };
+
+    exportNestingSvgFnRef.current = () => {
+      const nestingLayer = nestingLayerRef.current;
+      const svgLayer = svgLayerRef.current;
+      if (!nestingLayer || nestingLayer.children.length === 0) return null;
+
+      // Tylko obrysy płyt (locked rect-e z isPlate=true)
+      const plateItems = (nestingLayer.children as paper.Item[]).filter((c) => {
+        const d = (c as paper.Item & { data?: { isPlate?: boolean } }).data;
+        return d?.isPlate === true;
+      });
+      if (plateItems.length === 0) return null;
+
+      // Zbierz prostopadłe bounding-boxy każdej płyty
+      const plateRects = plateItems.map((p) => p.bounds);
+
+      // Elementy z svgLayer, których środek leży wewnątrz którejś płyty
+      const placedItems = svgLayer
+        ? (svgLayer.children as paper.Item[]).filter((item) =>
+            plateRects.some((r) => r.contains(item.bounds.center)),
+          )
+        : [];
+
+      // Buduj SVG: tymczasowa warstwa → eksport → usuń
+      const prevLayer = paper.project.activeLayer;
+      const tempLayer = new paper.Layer();
+      plateItems.forEach((c) => tempLayer.addChild(c.clone({ insert: false })));
+      placedItems.forEach((item) => tempLayer.addChild(item.clone({ insert: false })));
+
+      const b = nestingLayer.bounds;
+      const svgEl = tempLayer.exportSVG({ asString: false }) as SVGElement;
+      tempLayer.remove();
+      prevLayer.activate();
+
+      const wrapper = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      wrapper.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      wrapper.setAttribute("viewBox", `${b.x} ${b.y} ${b.width} ${b.height}`);
+      wrapper.setAttribute("width", `${b.width}mm`);
+      wrapper.setAttribute("height", `${b.height}mm`);
+      Array.from(svgEl.children).forEach((child) => wrapper.appendChild(child));
+      return new XMLSerializer().serializeToString(wrapper);
+    };
+
+    return () => {
+      runNestingFnRef.current = null;
+      clearNestingFnRef.current = null;
+      exportNestingSvgFnRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -721,11 +957,25 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     canvas.height = container.offsetHeight;
     paper.setup(canvas);
 
-    // Warstwy (od dołu: bg → svg → ui)
+    // Reset module-level dedup flag przy zmianie projektu (key={project.id} powoduje remount).
+    // Bez tego flagi z poprzedniego projektu mogłyby blokować legitymowane importy
+    // (np. user dropuje plik o tej samej ścieżce w nowym projekcie w ciągu 5s).
+    _addingSvg = false;
+    _lastAddedPath = null;
+    _lastAddedTime = 0;
+    _dropHandling = false;
+    _lastDropPaths = "";
+    _lastDropTime = 0;
+    isMountedRef.current = true;
+
+    // Warstwy (od dołu: bg → nesting → svg → ui)
     const bgLayer = paper.project.activeLayer;
     bgLayer.name = "bg";
     bgLayerRef.current = bgLayer;
     pageRectRef.current = drawPageBackground(bgLayer, !!backgroundDataUrl);
+
+    const nestingLayer = new paper.Layer({ name: "nesting" });
+    nestingLayerRef.current = nestingLayer;
 
     const svgLayer = new paper.Layer({ name: "svg" });
     svgLayerRef.current = svgLayer;
@@ -749,6 +999,20 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         return;
       }
       if (e.button !== 0) return;
+
+      // Sprawdź uchwyt rotacji PRZED resize i SVG
+      if (toolCbRef.current.hitTestRotateHandle(event.point)) {
+        isRotatingRef.current = true;
+        clickedOnItemRef.current = false;
+        const items = selectedItemsRef.current;
+        if (items.length > 0) {
+          let unionBounds = items[0].bounds.clone();
+          for (let i = 1; i < items.length; i++) unionBounds = unionBounds.unite(items[i].bounds);
+          rotateCenterRef.current = unionBounds.center;
+        }
+        canvas.style.cursor = "crosshair";
+        return;
+      }
 
       // Sprawdź uchwyty resize PRZED testem SVG
       const handleHit = toolCbRef.current.hitTestHandle(event.point);
@@ -836,6 +1100,20 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         return;
       }
 
+      // Tryb rotacji — kąt przyrostowy (lastPoint→point) unika nieciągłości atan2
+      if (isRotatingRef.current && rotateCenterRef.current) {
+        isDraggingItemRef.current = true;
+        const center = rotateCenterRef.current;
+        const a1 = Math.atan2(event.lastPoint.y - center.y, event.lastPoint.x - center.x);
+        const a2 = Math.atan2(event.point.y - center.y, event.point.x - center.x);
+        let step = (a2 - a1) * (180 / Math.PI);
+        if (step > 180) step -= 360;
+        if (step < -180) step += 360;
+        selectedItemsRef.current.forEach((it) => it.rotate(step, center));
+        toolCbRef.current.drawResizeHandles();
+        return;
+      }
+
       // Tryb resize — aktywny uchwyt
       if (activeHandleRef.current) {
         isDraggingItemRef.current = true;
@@ -889,6 +1167,40 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         return;
       }
       if (e.button !== 0) return;
+
+      // Zakończ tryb rotacji
+      if (isRotatingRef.current) {
+        isRotatingRef.current = false;
+        rotateCenterRef.current = null;
+        canvas.style.cursor = "default";
+        const items = selectedItemsRef.current;
+        const mm = mmPerUnitRef.current;
+        items.forEach((it) => {
+          if (!it.name) return;
+          const b = it.bounds;
+          setBoundsForElement(it.name, {
+            widthMm: b.width * mm,
+            heightMm: b.height * mm,
+            pathLengthMm: calcTotalLength(it) * mm,
+            areaMm2: calcTotalArea(it) * mm * mm,
+          });
+        });
+        if (items.length === 1) {
+          const b = items[0].bounds;
+          setSelectedItemBounds({
+            widthMm: b.width * mm, heightMm: b.height * mm,
+            pathLengthMm: calcTotalLength(items[0]) * mm, areaMm2: calcTotalArea(items[0]) * mm * mm,
+          });
+        } else if (items.length > 1) {
+          setSelectedItemBounds(computeCombinedBounds(items, mm));
+        }
+        if (isDraggingItemRef.current) {
+          isDraggingItemRef.current = false;
+          toolCbRef.current.pushHistory();
+        }
+        drawRulersRef.current();
+        return;
+      }
 
       // Zakończ tryb resize
       if (activeHandleRef.current) {
@@ -991,6 +1303,12 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         toolCbRef.current.updateHover(null);
         return;
       }
+      // Sprawdź uchwyt rotacji
+      if (toolCbRef.current.hitTestRotateHandle(event.point)) {
+        canvas.style.cursor = "crosshair";
+        toolCbRef.current.updateHover(null);
+        return;
+      }
       // Sprawdź uchwyty resize PRZED testem SVG
       const handleHit = toolCbRef.current.hitTestHandle(event.point);
       if (handleHit) {
@@ -1040,6 +1358,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     canvas.addEventListener("contextmenu", onCtxMenu);
 
     return () => {
+      isMountedRef.current = false;
       paper.project?.clear();
       canvas.removeEventListener("contextmenu", onCtxMenu);
     };
@@ -1101,10 +1420,12 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     paper.project.clear();
     clearSelection();
 
-    // Odtwórz warstwy po clear() (od dołu: bg → svg → ui)
+    // Odtwórz warstwy po clear() (od dołu: bg → nesting → svg → ui)
     const bgLayer = new paper.Layer({ name: "bg" });
     bgLayerRef.current = bgLayer;
     pageRectRef.current = drawPageBackground(bgLayer, !!backgroundDataUrl);
+    const nestingLayer = new paper.Layer({ name: "nesting" });
+    nestingLayerRef.current = nestingLayer;
     const svgLayer = new paper.Layer({ name: "svg" });
     svgLayerRef.current = svgLayer;
     const uiLayer = new paper.Layer({ name: "ui" });
@@ -1222,12 +1543,14 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     // ale my chcemy mieć dzieci bezpośrednio w svgLayer, żeby cofanie nie grupowało
     // wszystkiego z powrotem w jedną grupę.
     // Paper.js przenosi dzieci z zachowaniem globalnej transformacji (matrix).
+    // KRYTYCZNE: rootGroup ZAWSZE usuwany — nawet gdy nie ma dzieci. Bez tego po
+    // imporcie pustego SVG (np. snapshot z historii po usunięciu wszystkich elementów)
+    // assignMissingNames nadaje mu nazwę "svg_item_0" i zostaje w warstwie jako
+    // pusty fantom 0×0 mm w lewym górnym rogu.
     const rootGroup = imported as paper.Group;
-    if (rootGroup.children?.length) {
-      const kids = [...(rootGroup.children as paper.Item[])];
-      kids.forEach((kid) => svgLayer.addChild(kid));
-      rootGroup.remove();
-    }
+    const rootKids = rootGroup.children ? [...(rootGroup.children as paper.Item[])] : [];
+    rootKids.forEach((kid) => svgLayer.addChild(kid));
+    rootGroup.remove();
 
     // Wycentruj tylko przy imporcie świeżego pliku zewnętrznego.
     // Nasze zapisane SVG mają data-mm-per-unit → pozycje są już poprawne, nie ruszaj.
@@ -1242,7 +1565,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       }
     }
 
-    setHasSvg(true);
+    // Pusta warstwa po imporcie (np. snapshot z historii po usunięciu wszystkich elementów)
+    // → traktuj jak brak SVG (placeholder "Brak projektu" zamiast pustego pola)
+    setHasSvg(svgLayer.children.length > 0);
     clearBoundsPerElement();
     const mm = mmPerUnitRef.current;
     const svgLyr = svgLayerRef.current;
@@ -1406,6 +1731,8 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
     parent.insertChildren(idx, children);
     item.remove();
+    // Usuń starą grupę z boundsPerElement — już nie istnieje jako element
+    if (groupName) removeBoundsForElement(groupName);
     clearSelection();
     children.forEach((c) => addToSelection(c));
     setTimeout(() => rebuildLayerItems(), 0);
@@ -1416,7 +1743,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     }
     pushHistory();
     setContextMenu(null);
-  }, [clearSelection, addToSelection, setSvgContent, rebuildLayerItems, pushHistory, setNodeOverride, removeNodeOverride, setChildParent, removeFromParentMap]);
+  }, [clearSelection, addToSelection, setSvgContent, rebuildLayerItems, pushHistory, setNodeOverride, removeNodeOverride, setChildParent, removeFromParentMap, removeBoundsForElement]);
 
   // ── Skróty klawiszowe ─────────────────────────────────────────────────────
   // Blok musi być po handleGroup/handleUngroup (zdefiniowanych wyżej przez useCallback),
@@ -1479,6 +1806,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     let filePath: string | null = providedPath ?? null;
     if (!filePath) {
       const picked = await open({ multiple: false, filters: [{ name: "SVG", extensions: ["svg"] }] });
+      if (!isMountedRef.current) { _addingSvg = false; return; }
       if (!picked || typeof picked !== "string") {
         _addingSvg = false;
         isAddingSvgRef.current = false;
@@ -1498,15 +1826,26 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     setIsImportingSvg(true);
     try {
       const result = await invoke<SvgImportResult>("import_svg", { slug: project.slug, sourcePath: filePath });
+
+      // GUARD: jeśli komponent został unmountowany (zmiana projektu w trakcie awaita),
+      // przerywamy. Bez tego stary handleAddSvg po awaicie wsadziłby content do nowego
+      // (już zamontowanego dla innego projektu) Zustand store — stąd "SVG z innego projektu
+      // pojawiło się po dodaniu pliku".
+      if (!isMountedRef.current) return;
+
       const newContent = result.content;
 
-      // Zapisz stan sprzed scalenia do historii — Ctrl+Z wróci do kanwasu bez nowego SVG
+      // Zapisz stan sprzed scalenia do historii — Ctrl+Z wróci do kanwasu bez nowego SVG.
+      // Czytamy nodeOverrides BEZPOŚREDNIO ze store (a nie z refa) — ref aktualizuje się
+      // dopiero po renderze, więc tuż po usunięciu elementów mógłby zawierać przeterminowane
+      // wpisy. Synchroniczny Zustand zwraca aktualny stan.
       {
         const lyr = svgLayerRef.current;
         const cnt = svgContentRef.current;
         if (lyr && cnt) {
+          const currentOverrides = useEditorStore.getState().nodeOverrides;
           const exported = exportSvgLayer(lyr, paper.project, cnt, mmPerUnitRef.current);
-          const withOverrides = updateSvgWithOverrides(exported, nodeOverridesRef.current);
+          const withOverrides = updateSvgWithOverrides(exported, currentOverrides);
           historyRef.current.splice(historyIndexRef.current + 1);
           historyRef.current.push({ svg: withOverrides, selection: [] });
           historyIndexRef.current = historyRef.current.length - 1;
@@ -1613,21 +1952,18 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         if (grp.children) grp.children.forEach((c, i) => renameItem(c, item.name, i));
       };
 
-      // Rozwiń root-grupę do svgLayer
+      // Rozwiń root-grupę do svgLayer. ZAWSZE usuwamy wrapper — nawet jeśli pusty
+      // (analogicznie do głównego useEffectu importu; bez tego pusty wrapper zostaje
+      // jako fantom "svg_item_0" 0×0).
       const rootGroup = imported as paper.Group;
       const newKids: paper.Item[] = [];
-      if (rootGroup.children?.length) {
-        const kids = [...(rootGroup.children as paper.Item[])];
-        kids.forEach((kid, i) => {
-          renameItem(kid, "svg_item", i);
-          layer.addChild(kid);
-          newKids.push(kid);
-        });
-        rootGroup.remove();
-      } else {
-        renameItem(imported, "svg_item", 0);
-        newKids.push(imported);
-      }
+      const kids = rootGroup.children ? [...(rootGroup.children as paper.Item[])] : [];
+      kids.forEach((kid, i) => {
+        renameItem(kid, "svg_item", i);
+        layer.addChild(kid);
+        newKids.push(kid);
+      });
+      rootGroup.remove();
 
       // Przesuń nowe elementy na środek strony (7500/2, 7500/2)
       if (newKids.length > 0) {
@@ -1659,6 +1995,12 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       // Przelicz wymiary nowych elementów (rekurencyjnie — łącznie z dziećmi grup)
       newKids.forEach((item) => { setBoundsRecursive(item, mm, setBoundsForElement); });
 
+      // Odbuduj parentMap na podstawie WSZYSTKICH top-level items (świeży SVG + istniejące).
+      // Bez tego po merge NestingPanel nie widzi nowych elementów jako "top-level" (a dla
+      // SVG zawierających grupy, dzieci grupy mylnie pokazywały się jako nestowalne).
+      const allTopLevel = layer.children as paper.Item[];
+      setParentMap(buildParentMapFromItems(allTopLevel));
+
       setHasSvg(true);
       setTimeout(() => rebuildLayerItems(), 0);
       pushHistory();
@@ -1673,47 +2015,13 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   }, [project.slug, addToast, setNodeOverride, setBoundsForElement, rebuildLayerItems, pushHistory]);
 
   // ── Import SVG (dialog) ────────────────────────────────────────────────────
-  //
-  // "Importuj SVG" (przycisk) — ZASTĘPUJE bieżący projekt nowym plikiem.
-  // Gdy hasSvg=true, pokazuje modal "Zastąp / Dodaj / Anuluj" zamiast cichego mergowania.
-  // Powód: wcześniej przycisk cicho mergował, co user interpretował jako "usunięte
-  // rzeczy wróciły" — bo bieżąca zawartość zostawała widoczna obok nowego SVG.
-
-  // Path do pliku wybranego przez user, czekający na rozstrzygnięcie zastąp/dodaj.
-  const [pendingImportPath, setPendingImportPath] = useState<string | null>(null);
-
-  /** Faktyczny replace — czyści bieżący SVG i ładuje nowy z filePath. */
-  const handleReplaceSvg = useCallback(async (filePath: string) => {
-    setIsImportingSvg(true);
-    try {
-      const result = await invoke<SvgImportResult>("import_svg", { slug: project.slug, sourcePath: filePath });
-      // Zapisz pusty stan przed importem — Ctrl+Z wróci do pustego kanwasu
-      historyRef.current.splice(historyIndexRef.current + 1);
-      historyRef.current.push({ svg: "", selection: [] });
-      historyIndexRef.current = historyRef.current.length - 1;
-      // setSvgContent triggeruje główny useEffect który czyści paper.project,
-      // clearNodeOverrides (line ~1256), i reimportuje nowy SVG. Stare overrides znikają.
-      setSvgContent(result.content);
-    } catch (e) {
-      addToast(`Błąd importu SVG: ${e}`, "error");
-    } finally {
-      setIsImportingSvg(false);
-    }
-  }, [project.slug, setSvgContent, addToast]);
+  // Przycisk "Importuj SVG" zawsze MERGEUJE z istniejącą zawartością — user może
+  // swobodnie mieszać wiele plików SVG w jednym projekcie. Nie ma trybu "zastąp"
+  // — jeśli user chce wyczyścić, deletuje elementy ręcznie.
 
   const handleImportSvg = useCallback(async () => {
-    const filePath = await open({ multiple: false, filters: [{ name: "SVG", extensions: ["svg"] }] });
-    if (!filePath || typeof filePath !== "string") return;
-
-    if (hasSvg) {
-      // Pokaż modal z wyborem — user świadomie decyduje co zrobić
-      setPendingImportPath(filePath);
-      return;
-    }
-
-    // Brak istniejącego SVG — bezpośredni import
-    await handleReplaceSvg(filePath);
-  }, [hasSvg, handleReplaceSvg]);
+    await handleAddSvg();
+  }, [handleAddSvg]);
 
   // ── Import tła ─────────────────────────────────────────────────────────────
 
@@ -1781,8 +2089,11 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     }
 
     if (svgPath) {
-      if (svgLayerRef.current && svgLayerRef.current.children?.length > 0) {
-        // Jest już SVG — dodaj scalając
+      // hasSvg to React state — pewniejszy niż inspekcja Paper.js layer.children
+      // (layer może być chwilowo pusty podczas inicjalizacji mimo że projekt ma SVG).
+      // dropHandlerRef jest reassignowany przy każdym renderze, więc hasSvg jest zawsze świeże.
+      if (hasSvg) {
+        // Jest już SVG — dodaj scalając (user może swobodnie mieszać wiele plików)
         await handleAddSvg(svgPath);
       } else {
         setIsImportingSvg(true);
@@ -1872,10 +2183,12 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         isImportingBg={isImportingBg}
         backgroundDataUrl={backgroundDataUrl}
         backgroundFilename={bgFilename}
+        isNestingOpen={isNestingPanelOpen}
         onImportSvg={handleImportSvg}
         onExportSvg={handleExportSvg}
         onImportBackground={handleImportBackground}
         onRemoveBackground={handleRemoveBackground}
+        onToggleNesting={() => setIsNestingPanelOpen((v) => !v)}
       />
 
       {/* Obszar kanwasu z linijkami */}
@@ -1951,7 +2264,12 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
             onToggleVisible={handleLayerToggleVisible}
             onReorder={handleLayerReorder}
             getThumbnail={getThumbnailForItem}
+            onContextMenu={handleLayerContextMenu}
           />
+        )}
+
+        {hasSvg && isNestingPanelOpen && (
+          <NestingPanel onClose={() => setIsNestingPanelOpen(false)} />
         )}
 
         {!hasSvg && !isImportingSvg && !isDragOver && (
@@ -1998,60 +2316,6 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         />
       )}
 
-      {/* Modal wyboru zachowania importu gdy projekt już ma SVG.
-          Trzy opcje: Zastąp (clear + load), Dodaj (merge), Anuluj. */}
-      {pendingImportPath && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="bg-[#1e1e1e] rounded-lg shadow-xl w-full max-w-md p-5 flex flex-col gap-4">
-            <div>
-              <h3 className="text-gray-100 text-base font-semibold mb-1">
-                Projekt zawiera już SVG
-              </h3>
-              <p className="text-gray-400 text-sm">
-                Co chcesz zrobić z plikiem{" "}
-                <span className="text-gray-200">
-                  {pendingImportPath.split(/[\\/]/).pop()}
-                </span>
-                ?
-              </p>
-            </div>
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={() => {
-                  const path = pendingImportPath;
-                  setPendingImportPath(null);
-                  handleReplaceSvg(path);
-                }}
-                className="px-3 py-2 rounded text-sm text-white bg-red-700 hover:bg-red-600 transition-colors text-left"
-              >
-                <span className="font-medium">Zastąp</span>
-                <span className="block text-[11px] text-red-100/80 mt-0.5">
-                  Usuwa bieżący projekt i ładuje nowy SVG.
-                </span>
-              </button>
-              <button
-                onClick={() => {
-                  const path = pendingImportPath;
-                  setPendingImportPath(null);
-                  handleAddSvg(path);
-                }}
-                className="px-3 py-2 rounded text-sm text-white bg-blue-700 hover:bg-blue-600 transition-colors text-left"
-              >
-                <span className="font-medium">Dodaj do projektu</span>
-                <span className="block text-[11px] text-blue-100/80 mt-0.5">
-                  Scala nowy plik z istniejącym SVG.
-                </span>
-              </button>
-              <button
-                onClick={() => setPendingImportPath(null)}
-                className="px-3 py-2 rounded text-sm text-gray-300 bg-[#2a2a2a] hover:bg-[#333] transition-colors"
-              >
-                Anuluj
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

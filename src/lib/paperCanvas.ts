@@ -25,3 +25,25 @@ export interface CanvasCapture {
  */
 export const captureCanvasFnRef: { current: (() => CanvasCapture | null) | null } = { current: null };
 export function captureCanvas(): CanvasCapture | null { return captureCanvasFnRef.current?.() ?? null; }
+
+// ── Nesting ───────────────────────────────────────────────────────────────────
+
+/** Krok rotacji w stopniach; 360 = bez rotacji (tylko 0°). */
+export type RotationStep = 1 | 5 | 15 | 45 | 90 | 360;
+
+export interface NestingConfig {
+  nodeIds: string[];
+  plateWidthMm: number;
+  plateHeightMm: number;
+  gapMm: number;
+  rotationStep: RotationStep;
+}
+
+export interface NestingRunResult {
+  placed: number;
+  overflow: string[];
+}
+
+export const runNestingFnRef: { current: ((config: NestingConfig) => NestingRunResult | null) | null } = { current: null };
+export const clearNestingFnRef: { current: (() => void) | null } = { current: null };
+export const exportNestingSvgFnRef: { current: (() => string | null) | null } = { current: null };

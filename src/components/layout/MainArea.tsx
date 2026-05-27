@@ -210,9 +210,12 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
       </header>
 
       {/* Edytor — zawsze zmontowany, ukryty gdy inna zakładka; dzięki temu Paper.js
-          zachowuje pozycje elementów po przejściu do Generowania / Galerii. */}
+          zachowuje pozycje elementów po przejściu do Generowania / Galerii.
+          KLUCZOWE: key={activeProject.id} wymusza pełny remount przy zmianie projektu —
+          bez tego historyRef, paper.project i refy stanu wyciekają między projektami
+          (np. po dodaniu SVG w nowym projekcie pojawiała się zawartość z poprzedniego). */}
       <div className={`flex flex-1 overflow-hidden ${activeTab !== "edytor" ? "hidden" : ""}`}>
-        <Canvas project={activeProject} />
+        <Canvas key={activeProject.id} project={activeProject} />
         <ElementPanel />
       </div>
 

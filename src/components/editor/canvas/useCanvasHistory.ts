@@ -21,6 +21,8 @@ interface UseCanvasHistoryParams {
   setContextMenu: (m: null) => void;
   removeNodeOverride: (id: string) => void;
   removeBoundsForElement: (id: string) => void;
+  /** Wywoływane po wklejeniu — aktualizuje boundsPerElement i parentMap dla nowych kopii. */
+  onAfterPaste?: (items: paper.Item[]) => void;
 }
 
 interface UseCanvasHistoryResult {
@@ -48,7 +50,7 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef,
     selectedItemsRef, isSavingRef,
     setSvgContent, clearSelection, addToSelection, rebuildLayerItems, setContextMenu,
-    removeNodeOverride, removeBoundsForElement,
+    removeNodeOverride, removeBoundsForElement, onAfterPaste,
   } = params;
 
   const historyRef = useRef<HistoryEntry[]>([]);
@@ -148,13 +150,15 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
       const clone = original.clone({ deep: true, insert: false }) as paper.Item;
       layer.addChild(clone);
       clone.position = clone.position.add(new paper.Point(offset, offset));
-      clone.name = `${name}_kopia_${i}`;
+      // offset rośnie o 10 przy każdym wklejeniu → unikalna nazwa dla każdej partii kopii
+      clone.name = `${name}_kopia_${offset}_${i}`;
       pasted.push(clone);
     });
     pasted.forEach((item) => addToSelection(item));
+    onAfterPaste?.(pasted);
     setTimeout(() => rebuildLayerItems(), 0);
     pushHistory();
-  }, [svgLayerRef, clearSelection, addToSelection, rebuildLayerItems, pushHistory]);
+  }, [svgLayerRef, clearSelection, addToSelection, rebuildLayerItems, pushHistory, onAfterPaste]);
 
   const handleDelete = useCallback(() => {
     const items = [...selectedItemsRef.current];

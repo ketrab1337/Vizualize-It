@@ -21,6 +21,7 @@ interface Props {
   onToggleVisible: (id: string) => void;
   onReorder: (fromIdx: number, toIdx: number) => void;
   getThumbnail: (id: string) => string | null;
+  onContextMenu?: (id: string, x: number, y: number) => void;
 }
 
 function TypeIcon({ type }: { type: LayerItemType }) {
@@ -63,7 +64,7 @@ const BORDER_COLOR = "#c4c5ce";
 const DRAG_THRESHOLD = 5;
 
 export function LayersPanel({
-  items, selectedIds, onSelect, onRename, onToggleLock, onToggleVisible, onReorder, getThumbnail,
+  items, selectedIds, onSelect, onRename, onToggleLock, onToggleVisible, onReorder, getThumbnail, onContextMenu,
 }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -240,6 +241,7 @@ export function LayersPanel({
           onMouseEnter={(e) => handleRowEnter(item.id, e.currentTarget)}
           onMouseLeave={() => setPreview(null)}
           onClick={(e) => { if (!dragId && editingId !== item.id) onSelect(item.id, e.shiftKey); }}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(item.id, e.clientX, e.clientY); }}
           className={[
             "group flex items-center gap-1.5 pr-2 py-1.5 select-none border-l-2 transition-colors",
             isBeingDragged
