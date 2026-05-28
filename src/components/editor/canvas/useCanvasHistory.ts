@@ -106,24 +106,29 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     isUndoRedoRef.current = true;
     historyIndexRef.current--;
     const entry = historyRef.current[historyIndexRef.current];
+    // Wyzeruj lastSavedContentRef — bez tego REDO do najświeższego stanu (== lastSaved
+    // z ostatniego pushHistory) trafi w skip-guard w useEffect import i Paper.js
+    // zostanie w stanie po undo, a store pokaże stan po redo (rozsynchronizowanie).
+    lastSavedContentRef.current = null;
     setSvgContent(entry.svg);
     setTimeout(() => {
       isUndoRedoRef.current = false;
       restoreSelectionAfterUndoRedo(entry.selection);
     }, 100);
-  }, [setSvgContent, restoreSelectionAfterUndoRedo]);
+  }, [setSvgContent, restoreSelectionAfterUndoRedo, lastSavedContentRef]);
 
   const handleRedo = useCallback(() => {
     if (historyIndexRef.current >= historyRef.current.length - 1) return;
     isUndoRedoRef.current = true;
     historyIndexRef.current++;
     const entry = historyRef.current[historyIndexRef.current];
+    lastSavedContentRef.current = null;
     setSvgContent(entry.svg);
     setTimeout(() => {
       isUndoRedoRef.current = false;
       restoreSelectionAfterUndoRedo(entry.selection);
     }, 100);
-  }, [setSvgContent, restoreSelectionAfterUndoRedo]);
+  }, [setSvgContent, restoreSelectionAfterUndoRedo, lastSavedContentRef]);
 
   const handleCopy = useCallback(() => {
     const items = selectedItemsRef.current;
