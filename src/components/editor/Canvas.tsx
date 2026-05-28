@@ -2148,7 +2148,16 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     // ścieżki plików bezpośrednio od OS (nie przez file.path jak w Electron/Chromium).
     // Wewnętrzny HTML5 DnD presetów (bez ścieżek pliku) nie wpływa na ten handler —
     // preset drag używa pointerup jako fallback (patrz PromptPanel.tsx).
-    let unlisten: (() => void) | null = null;
+    //
+    // RACE CONDITION FIX: onDragDropEvent zwraca Promise<UnlistenFn>. Jeśli komponent
+    // unmountuje się ZANIM Promise się rozwiąże, cleanup nie ma czego wywołać — listener
+    // zostaje w Tauri jako zombie. Przy następnym mount nowy listener się dubluje:
+    // stary zombie ustawia _lastDropPaths/_lastDropTime + woła martwy dropHandlerRef,
+    // nowy listener widzi dedup-flagi (właśnie ustawione) → return → drop nie działa.
+    // Flaga `cancelled` zapewnia że listener jest dezarejestrowany od razu po unmount,
+    // niezależnie od kolejności mount/cleanup/Promise-resolve.
+    let cleanup: (() => void) | null = null;
+    let cancelled = false;
 
     getCurrentWindow().onDragDropEvent((event) => {
       const { type } = event.payload;
@@ -2173,9 +2182,20 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         _lastDropTime = now;
         dropHandlerRef.current?.(paths);
       }
-    }).then((fn) => { unlisten = fn; });
+    }).then((fn) => {
+      if (cancelled) {
+        // Unmount przed rozwiązaniem Promise — od razu dezarejestruj listener,
+        // żeby nie zostawić zombie w Tauri.
+        fn();
+      } else {
+        cleanup = fn;
+      }
+    });
 
-    return () => { unlisten?.(); };
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const bgFilename = backgroundPath?.split(/[/\\]/).pop() ?? "";
