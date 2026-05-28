@@ -9,11 +9,9 @@ use crate::commands::keyring::get_api_key;
 
 const GENERATIONS_ENDPOINT: &str = "https://api.openai.com/v1/images/generations";
 const EDITS_ENDPOINT: &str = "https://api.openai.com/v1/images/edits";
-// Responses API jest nieużywany dla generowania (wymagałoby chat-modelu na top-level
-// + image_generation tool zamiast bezpośrednio gpt-image-2). Zostawiamy stałą i funkcje
-// na wypadek przyszłego użycia (np. batch z multi-image który nie działa przez multipart).
-#[allow(dead_code)]
-const RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/responses";
+// Uwaga: batch z obrazami używa endpointu "/v1/responses" (string w JSONL, nie pełny
+// URL const) — to JEDYNY sposób na multi-image w OpenAI Batch API (multipart /v1/images/edits
+// nie serializuje się do JSONL). Patrz komentarz w submit_batch.
 const FILES_ENDPOINT: &str = "https://api.openai.com/v1/files";
 const BATCHES_ENDPOINT: &str = "https://api.openai.com/v1/batches";
 const FILE_CONTENT_TEMPLATE: &str = "https://api.openai.com/v1/files/{id}/content";
@@ -851,29 +849,14 @@ enum ResponsesContent {
     },
 }
 
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct ResponsesResponse {
-    output: Option<Vec<ResponsesOutputItem>>,
-    error: Option<OpenAiError>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct ResponsesOutputItem {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    /// Dla type="image_generation_call" — base64 PNG wynikowego obrazu.
-    result: Option<String>,
-}
-
 fn material_to_data_url(m: &super::MaterialImage) -> String {
     format!("data:{};base64,{}", m.mime_type, m.data)
 }
 
-/// Buduje body JSON dla Responses API — używane przez live (`generate_via_responses`)
-/// i przez batch (`submit_batch` gdy są obrazy). Zwraca też (width, height) bo wymiary
-/// wynikowego obrazu są potrzebne przy dekodowaniu base64.
+/// Buduje body JSON dla Responses API — używane przez batch (`submit_batch` gdy są obrazy).
+/// Live z obrazami idzie przez `/v1/images/edits` (multipart), więc Responses API zostało
+/// tylko dla batcha (jedyny multi-image endpoint dostępny w OpenAI Batch). Zwraca też
+/// (width, height) bo wymiary wynikowego obrazu są potrzebne przy dekodowaniu base64.
 ///
 /// Jeden prompt = jedna wiadomość użytkownika z tekstem + obrazami. Wcześniej rozdzielenie
 /// na role developer (techniczny) i user (swobodny) było eksperymentem — okazało się, że
@@ -963,91 +946,6 @@ fn extract_responses_images(
         if images.len() >= max_count {
             break;
         }
-    }
-    Ok(images)
-}
-
-/// Wykonuje pojedyncze wywołanie Responses API i zwraca dokładnie jeden obraz.
-/// Responses API z image_generation tool zwraca 1 obraz na call (parametr `n` nie istnieje
-/// dla tego toola — `n` działa tylko w /v1/images/generations).
-#[allow(dead_code)]
-async fn single_call_responses_api(
-    client: reqwest::Client,
-    key: String,
-    body: serde_json::Value,
-    width: u32,
-    height: u32,
-) -> Result<GeneratedImage, String> {
-    let resp = client
-        .post(RESPONSES_ENDPOINT)
-        .header(header::AUTHORIZATION, format!("Bearer {key}"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Błąd sieci: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(map_api_error(status, &body));
-    }
-
-    let parsed: ResponsesResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Błąd parsowania odpowiedzi Responses API: {e}"))?;
-
-    if let Some(err) = parsed.error {
-        return Err(format!("Błąd API OpenAI: {}", err.message));
-    }
-
-    let output = parsed
-        .output
-        .ok_or_else(|| "API zwróciło odpowiedź bez pola output.".to_string())?;
-
-    for item in output {
-        if item.kind.as_deref() != Some("image_generation_call") {
-            continue;
-        }
-        if let Some(b64) = item.result {
-            return decode_b64_image(Some(b64), width, height);
-        }
-    }
-
-    Err("API nie zwróciło obrazu w output[].".to_string())
-}
-
-#[allow(dead_code)]
-async fn generate_via_responses(config: &GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
-    let key = read_key().await?;
-    let client = build_client()?;
-    let (body, width, height) = build_responses_body(config);
-
-    // Responses API zwraca 1 obraz na wywołanie — żeby spełnić config.count, spawn N
-    // wywołań równolegle. Każde wraca z jednym obrazem.
-    let n = config.count.max(1) as usize;
-    let mut handles = Vec::with_capacity(n);
-    for _ in 0..n {
-        let client = client.clone();
-        let key = key.clone();
-        let body = body.clone();
-        handles.push(tokio::spawn(async move {
-            single_call_responses_api(client, key, body, width, height).await
-        }));
-    }
-
-    let mut images: Vec<GeneratedImage> = Vec::with_capacity(n);
-    for h in handles {
-        let res = h
-            .await
-            .map_err(|e| format!("Błąd zadania równoległego: {e}"))?;
-        images.push(res?);
-    }
-
-    if images.is_empty() {
-        return Err(
-            "API nie zwróciło obrazu. Sprawdź czy gpt-image-2 obsługuje multimodalny input dla Twojego konta.".to_string(),
-        );
     }
     Ok(images)
 }

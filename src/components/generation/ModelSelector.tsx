@@ -33,8 +33,6 @@ export function ModelSelector() {
   const { model, format, count, batchMode, setModel, setFormat, setCount, setBatchMode } =
     useGenerationStore();
 
-  // Ostrzeżenie gdy NB 2 + tło — model często ignoruje tło, sugerujemy NB Pro/GPT-2
-
   return (
     <div className="bg-[#1a1a1a] rounded-lg p-4 space-y-5">
       <h3 className="text-sm font-semibold text-gray-100 uppercase tracking-wide">

@@ -377,7 +377,7 @@ Numeracja "Obraz N" musi być spójna z faktyczną kolejnością obrazów wysył
 
 **Ważne — dublowanie tła:** `captureCanvas()` zwraca KOMPOZYT (tło + SVG) gdy jest tło. `useGeneration.ts` wysyła wtedy TYLKO kompozyt jako `svg_image` — NIE wysyła `background_image` osobno. Wysłanie obu (tło + kompozyt) myliło model (dwa obrazy z tłem — przed/po) i powodowało losowe generowanie nowej sceny. Wysyłaj tło OSOBNO tylko gdy NIE ma SVG.
 
-**Ostrzeżenie w UI dla NB 2 + tło**: `ModelSelector.tsx` pokazuje żółtą notatkę gdy `model === "nano-banana-2"` i `backgroundDataUrl` — z linkami do przełączenia na NB Pro lub GPT Image 2. Model flash często ignoruje tło mimo imperatywnego promptu.
+**Nano Banana 2 + tło**: model flash często ignoruje tło mimo imperatywnego promptu — dla projektów z tłem lepszy efekt daje NB Pro lub GPT Image 2. (Wcześniejsza wersja `ModelSelector.tsx` pokazywała żółte ostrzeżenie w tej sytuacji; zostało świadomie usunięte — informacja zostaje tu jako wskazówka produktowa.)
 
 **`material_type` (matowa/mleczna/polysk/lustro)** — przekładany na opisową frazę przez `MATERIAL_TYPE_DESCRIPTIONS` w `promptAssembler.ts`. `lustro` → `"lustrzana, w pełni refleksyjna, odbija otoczenie"`. Bez tego AI nie wie czy plexa jest matowa czy z połyskiem.
 
