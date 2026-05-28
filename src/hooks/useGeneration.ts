@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../lib/db";
 import { useProjectStore } from "../stores/projectStore";
@@ -289,7 +289,13 @@ export function useGeneration() {
       );
       setActiveTab("galeria");
     } catch (e) {
-      addToast(`Błąd generowania: ${e}`, "error", { label: "Spróbuj ponownie", fn: generate });
+      // fn musi przejść przez ref — `generate` self-reference w body useCallback
+      // tworzyło stale closure (toast pamiętał starszą wersję funkcji niż aktualnie
+      // zarejestrowana, więc retry używał nieaktualnych depsów).
+      addToast(`Błąd generowania: ${e}`, "error", {
+        label: "Spróbuj ponownie",
+        fn: () => { void generateRef.current?.(); },
+      });
     } finally {
       setGenerating(false);
     }
@@ -320,6 +326,12 @@ export function useGeneration() {
     setActiveTab,
     setLastGeneratedImageIds,
   ]);
+
+  // Aktualizuj ref na każdym renderze — fn w toast retry'u czyta przez generateRef.current.
+  const generateRef = useRef<typeof generate>(generate);
+  useEffect(() => {
+    generateRef.current = generate;
+  });
 
   return { generate, generating };
 }

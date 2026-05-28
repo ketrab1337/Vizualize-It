@@ -215,8 +215,10 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             "dystans" => format!("Dystans — {}", g.material_name.as_deref().unwrap_or("—")),
             _ => g.material_name.clone().unwrap_or_else(|| "—".into()),
         };
-        let mat_short = if mat_label.len() > 38 {
-            format!("{}…", &mat_label[..37])
+        let mat_short = if mat_label.chars().count() > 38 {
+            // .chars().take(N) zamiast slice'a bajtów — polskie znaki (ą, ć, ł)
+            // zajmują 2 bajty UTF-8 i &str[..N] panikuje na granicy znaku.
+            format!("{}…", mat_label.chars().take(37).collect::<String>())
         } else {
             mat_label
         };
@@ -357,8 +359,9 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
                 .map(|v| format!("{:.0}", v))
                 .unwrap_or_else(|| "—".to_string());
 
-            let label = if item.label.len() > 24 {
-                format!("{}…", &item.label[..23])
+            let label = if item.label.chars().count() > 24 {
+                // .chars().take(N) zamiast slice'a bajtów — patrz komentarz wyżej.
+                format!("{}…", item.label.chars().take(23).collect::<String>())
             } else {
                 item.label.clone()
             };

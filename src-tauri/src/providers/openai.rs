@@ -68,12 +68,25 @@ struct BatchCreateRequest {
 
 #[derive(Deserialize)]
 struct BatchResponse {
-    #[allow(dead_code)]
     id: String,
     status: String,
     output_file_id: Option<String>,
     error_file_id: Option<String>,
+    // input_file_id zachowany przez OpenAI w batch object — używany do best-effort
+    // DELETE po sukcesie, żeby nie zostawiać orphan files na koncie usera.
+    input_file_id: Option<String>,
     errors: Option<BatchErrors>,
+}
+
+/// Best-effort DELETE /v1/files/{id} — błędy ignorujemy. Wołane po sukcesie
+/// batcha, żeby nie zaśmiecać konta OpenAI (każdy plik to koszt storage).
+async fn delete_file_best_effort(client: &reqwest::Client, key: &str, file_id: &str) {
+    let url = format!("{FILES_ENDPOINT}/{file_id}");
+    let _ = client
+        .delete(&url)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .send()
+        .await;
 }
 
 #[derive(Deserialize)]
@@ -276,8 +289,19 @@ impl ImageGenerator for OpenAiProvider {
         let key = read_key().await?;
         let client = build_client()?;
 
-        // Analogicznie do generate(): są obrazy → batch przez /v1/responses (multi-image).
-        // Brak → /v1/images/generations (text-only, natywne `n` dla wielu obrazów na call).
+        // ── ŚWIADOMA NIESPÓJNOŚĆ Z `generate()` ────────────────────────────────
+        // Live z obrazami używa `/v1/images/edits` (multipart, gpt-image-2 bezpośrednio).
+        // Batch — NIE MOŻE używać `/v1/images/edits`, bo OpenAI Batch API obsługuje tylko
+        // endpointy z JSONL body w jednej linii (`/v1/chat/completions`, `/v1/responses`,
+        // `/v1/images/generations`, `/v1/embeddings`, `/v1/completions`). Multipart się nie
+        // serializuje do JSONL — to fizyczne ograniczenie infrastruktury OpenAI Batch.
+        //
+        // Stąd dla batcha z obrazami JEDYNA opcja to `/v1/responses` z chat-modelem jako
+        // orchestratorem (gpt-5.4-mini) i `image_generation` tool wywołującym gpt-image-2.
+        // Wyniki MOGĄ się delikatnie różnić od live (orchestrator rephrase'uje prompt),
+        // ale to nie jest do naprawy po stronie aplikacji.
+        //
+        // Bez obrazów — text-only `/v1/images/generations` zarówno live jak i batch (spójne).
         let has_inputs = config.background_image.is_some()
             || config.svg_image.is_some()
             || !config.material_images.is_empty()
@@ -549,6 +573,17 @@ impl ImageGenerator for OpenAiProvider {
                         error: "Batch ukończony ale brak obrazów w wyniku.".to_string(),
                     });
                 }
+
+                // Best-effort sprzątanie plików po sukcesie batcha — bez tego pliki JSONL
+                // (input + output) zostawały na koncie OpenAI generując koszty storage.
+                delete_file_best_effort(&client, &key, &output_file_id).await;
+                if let Some(input_id) = &batch.input_file_id {
+                    delete_file_best_effort(&client, &key, input_id).await;
+                }
+                if let Some(error_id) = &batch.error_file_id {
+                    delete_file_best_effort(&client, &key, error_id).await;
+                }
+
                 Ok(BatchPoll::Succeeded { images })
             }
             other => Err(format!("Nieznany status batcha OpenAI: '{other}'.")),

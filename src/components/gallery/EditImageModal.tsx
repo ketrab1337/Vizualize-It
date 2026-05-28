@@ -31,7 +31,10 @@ function uint8ToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-interface ReferenceImage {
+// Lokalna nazwa różna od `ReferenceImage` z generationStore — tamten typ ma tylko
+// { dataUrl, name }, a edycja wymaga jeszcze surowych bajtów base64 + mimeType
+// do wysłania w multipart do API (Google Gemini / OpenAI images.edits).
+interface EditReferenceImage {
   data: string; // base64 (bez prefiksu)
   mimeType: string;
   dataUrl: string; // do podglądu
@@ -109,7 +112,7 @@ export function EditImageModal({
    * się razem z canvasem i jest zawsze w 1:1 z rysowanym strokiem.
    */
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
-  const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
+  const [referenceImages, setReferenceImages] = useState<EditReferenceImage[]>([]);
 
   const addToast = useToastStore((s) => s.addToast);
   const editTextModel = useSettingsStore((s) => s.editTextModel);

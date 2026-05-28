@@ -191,11 +191,4 @@ export function Templates() {
   );
 }
 
-function modelLabel(model: string): string {
-  switch (model) {
-    case "nano-banana-2":   return "NB2";
-    case "nano-banana-pro": return "NB Pro";
-    case "gpt-image-2":     return "GPT-4o";
-    default:                return model;
-  }
-}
+import { modelLabelShort as modelLabel } from "../../lib/aiModelLabels";

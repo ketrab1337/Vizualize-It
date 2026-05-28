@@ -20,15 +20,30 @@ interface ToastStore {
   removeToast: (id: string) => void;
 }
 
+// Mapa timerów poza store — żeby zmiany nie powodowały re-renderów subskrybentów.
+// Klucz: id toastu. Czyszczona w `removeToast` (ręczne zamknięcie) i w callbacku
+// `setTimeout` (auto-dismiss po TTL).
+const timers = new Map<string, number>();
+
 export const useToastStore = create<ToastStore>((set) => ({
   toasts: [],
   addToast: (message, type = "info", action) => {
     const id = crypto.randomUUID();
     set((s) => ({ toasts: [...s.toasts, { id, message, type, action }] }));
     const ttl = action ? 8000 : 3500;
-    setTimeout(() => {
+    const timerId = window.setTimeout(() => {
+      timers.delete(id);
       set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
     }, ttl);
+    timers.set(id, timerId);
   },
-  removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  removeToast: (id) => {
+    // Anuluj auto-dismiss żeby uniknąć podwójnego setState na nieistniejącym już id.
+    const timerId = timers.get(id);
+    if (timerId !== undefined) {
+      window.clearTimeout(timerId);
+      timers.delete(id);
+    }
+    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+  },
 }));

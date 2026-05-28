@@ -111,6 +111,12 @@ pub fn run() {
             sql: include_str!("db/migrations/016_project_product_type.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 17,
+            description: "drop_cutting_rates",
+            sql: include_str!("db/migrations/017_drop_cutting_rates.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -152,13 +158,15 @@ pub fn run() {
             commands::generation::get_abs_path,
             commands::generation::delete_image_file,
             commands::keyring::set_api_key,
-            commands::keyring::get_api_key,
+            // commands::keyring::get_api_key świadomie NIE jest tu wystawione —
+            // surowy klucz nie może wracać do webview. Komenda istnieje jako pub fn
+            // używana wewnętrznie przez providery AI (google_ai.rs, openai.rs).
+            // Frontend sprawdza obecność klucza przez `test_api_key` (zwraca bool).
             commands::keyring::delete_api_key,
             commands::keyring::test_api_key,
             commands::keyring::test_google_ai_connection,
             commands::keyring::test_openai_connection,
             commands::batch::save_batch_payload,
-            commands::batch::load_batch_payload,
             commands::batch::delete_batch_payload,
             commands::batch::submit_batch_to_provider,
             commands::batch::poll_batch_status,

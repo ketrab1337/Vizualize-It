@@ -144,7 +144,11 @@ export function Canvas({ project }: CanvasProps) {
   const bgLayerRef = useRef<paper.Layer | null>(null);
   const pageRectRef = useRef<paper.Shape | null>(null);
   const nodeOverridesRef = useRef<Record<string, NodeOverride>>({});
-  const isSavingRef = useRef(false);
+  // Wartość ostatnio zapisanego svgContent (przez nasze save flow). Reimport useEffect
+  // porównuje `svgContent === lastSavedContentRef.current` — jeśli równe, pomija reimport.
+  // Wcześniej był tu `isSavingRef` z `setTimeout(50)` — czas-based dedup był fragile
+  // (przy większych SVG render mógł trwać dłużej niż 50ms → pętla reimport→save→reimport).
+  const lastSavedContentRef = useRef<string | null>(null);
   const paperReadyRef = useRef(false);
   const svgLayerRef = useRef<paper.Layer | null>(null);
   const nestingLayerRef = useRef<paper.Layer | null>(null);
@@ -450,7 +454,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     pushHistory, pushHistoryDirect, handleUndo, handleRedo, handleCopy, handlePaste, handleDelete,
   } = useCanvasHistory({
     svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef,
-    selectedItemsRef, isSavingRef,
+    selectedItemsRef, lastSavedContentRef,
     setSvgContent, clearSelection, addToSelection, rebuildLayerItems, setContextMenu,
     removeNodeOverride, removeBoundsForElement, onAfterPaste,
   });
@@ -512,9 +516,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     renameNodeOverride(id, trimmed);
 
     if (svgContentRef.current) {
-      isSavingRef.current = true;
-      setSvgContent(exportSvgLayer(layer, paper.project, svgContentRef.current, mmPerUnitRef.current));
-      setTimeout(() => { isSavingRef.current = false; }, 50);
+      const updated = exportSvgLayer(layer, mmPerUnitRef.current);
+      lastSavedContentRef.current = updated;
+      setSvgContent(updated);
       pushHistory();
     }
   }, [renameNodeOverride, setSvgContent, pushHistory]);
@@ -598,9 +602,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     });
 
     if (didReorder && svgLayerRef.current && svgContentRef.current) {
-      isSavingRef.current = true;
-      setSvgContent(exportSvgLayer(svgLayerRef.current, paper.project, svgContentRef.current, mmPerUnitRef.current));
-      setTimeout(() => { isSavingRef.current = false; }, 50);
+      const updated = exportSvgLayer(svgLayerRef.current, mmPerUnitRef.current);
+      lastSavedContentRef.current = updated;
+      setSvgContent(updated);
       pushHistory();
     }
   }, [setSvgContent, pushHistory]);
@@ -681,9 +685,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     saveFnRef.current = () => {
       const content = svgContentRef.current;
       if (!content) return;
-      isSavingRef.current = true;
-      setSvgContent(updateSvgWithOverrides(content, useEditorStore.getState().nodeOverrides));
-      setTimeout(() => { isSavingRef.current = false; }, 50);
+      const updated = updateSvgWithOverrides(content, useEditorStore.getState().nodeOverrides);
+      lastSavedContentRef.current = updated;
+      setSvgContent(updated);
     };
     captureCanvasFnRef.current = () => {
       const canvas = canvasRef.current;
@@ -1386,7 +1390,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   // ── Import SVG ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!paperReadyRef.current || isSavingRef.current || isAddingSvgRef.current) return;
+    if (!paperReadyRef.current || isAddingSvgRef.current) return;
+    // Skip reimport gdy svgContent pochodzi z naszego save flow — Paper.js już ma
+    // aktualny stan, reimport tylko gubił zaznaczenie i powodował pętlę.
+    if (svgContent && svgContent === lastSavedContentRef.current) return;
 
     if (!svgContent) {
       resizeHandlesRef.current.clear();
@@ -1680,9 +1687,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     addToSelection(group);
     setTimeout(() => rebuildLayerItems(), 0);
     if (svgContentRef.current) {
-      isSavingRef.current = true;
-      setSvgContent(exportSvgLayer(svgLayerRef.current, paper.project, svgContentRef.current, mmPerUnitRef.current));
-      setTimeout(() => { isSavingRef.current = false; }, 50);
+      const updated = exportSvgLayer(svgLayerRef.current, mmPerUnitRef.current);
+      lastSavedContentRef.current = updated;
+      setSvgContent(updated);
     }
     pushHistory();
     setContextMenu(null);
@@ -1737,9 +1744,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     children.forEach((c) => addToSelection(c));
     setTimeout(() => rebuildLayerItems(), 0);
     if (svgContentRef.current) {
-      isSavingRef.current = true;
-      setSvgContent(exportSvgLayer(svgLayerRef.current, paper.project, svgContentRef.current, mmPerUnitRef.current));
-      setTimeout(() => { isSavingRef.current = false; }, 50);
+      const updated = exportSvgLayer(svgLayerRef.current, mmPerUnitRef.current);
+      lastSavedContentRef.current = updated;
+      setSvgContent(updated);
     }
     pushHistory();
     setContextMenu(null);
@@ -1844,7 +1851,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         const cnt = svgContentRef.current;
         if (lyr && cnt) {
           const currentOverrides = useEditorStore.getState().nodeOverrides;
-          const exported = exportSvgLayer(lyr, paper.project, cnt, mmPerUnitRef.current);
+          const exported = exportSvgLayer(lyr, mmPerUnitRef.current);
           const withOverrides = updateSvgWithOverrides(exported, currentOverrides);
           historyRef.current.splice(historyIndexRef.current + 1);
           historyRef.current.push({ svg: withOverrides, selection: [] });

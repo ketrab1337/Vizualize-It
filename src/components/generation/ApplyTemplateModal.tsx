@@ -7,14 +7,7 @@ import { useGenerationStore } from "../../stores/generationStore";
 import { useToastStore } from "../../stores/toastStore";
 import type { Template } from "../../types";
 
-function modelLabel(model: string): string {
-  switch (model) {
-    case "nano-banana-2":   return "NB2";
-    case "nano-banana-pro": return "NB Pro";
-    case "gpt-image-2":     return "GPT-4o";
-    default:                return model;
-  }
-}
+import { modelLabelShort as modelLabel } from "../../lib/aiModelLabels";
 
 interface ApplyTemplateModalProps {
   open: boolean;
@@ -26,7 +19,7 @@ export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
   const { loadPresets } = usePromptPresets();
   const {
     setLedBacklit, setLedFrontlit, setModel, setFormat,
-    togglePresetId, activePresetIds,
+    togglePresetId, clearActivePresets,
     setPrompt, setCamera, resetCamera, setTimeOfDay,
     setPresetAnchor, setPresetTextOverride,
   } = useGenerationStore();
@@ -70,8 +63,9 @@ export function ApplyTemplateModal({ open, onClose }: ApplyTemplateModalProps) {
       const targetActiveIds = config.activePresetIds ?? [];
       const allPresets = await loadPresets();
       const knownIds = new Set(allPresets.map((p) => p.id));
-      // Wyczyść bieżące presety
-      for (const id of [...activePresetIds]) togglePresetId(id);
+      // Wyczyść bieżące presety jednym setState (wcześniej for-loop togglePresetId
+      // iterował po stale snapshot — sprzeczne z mutacjami store w tej samej pętli).
+      clearActivePresets();
       // Włącz presety z szablonu (zachowując kolejność z config)
       for (const id of targetActiveIds) {
         if (knownIds.has(id)) togglePresetId(id);

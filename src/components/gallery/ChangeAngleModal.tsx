@@ -7,16 +7,11 @@ import { buildCameraPrompt } from "../../lib/promptAssembler";
 import { getDb } from "../../lib/db";
 import { useToastStore } from "../../stores/toastStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { modelLabel } from "../../lib/aiModelLabels";
 import type { CameraConfig } from "../../types";
 import type { GalleryImage } from "../../hooks/useGallery";
 
 const DEFAULT_CAMERA: CameraConfig = { rotateDeg: 0, moveForward: 5, verticalTilt: 0 };
-
-function modelLabel(m: string): string {
-  if (m === "nano-banana-pro") return "Nano Banana Pro";
-  if (m === "gpt-image-2") return "GPT Image 2";
-  return "Nano Banana 2";
-}
 
 interface ChangeAngleModalProps {
   img: GalleryImage;

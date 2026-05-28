@@ -65,13 +65,6 @@ export interface Material {
   default_thickness_mm: number | null;
 }
 
-export interface CuttingRate {
-  id: string;
-  material_id: string;
-  thickness_mm: number;
-  price_per_m: number;
-}
-
 export interface GlobalCuttingRate {
   id: string;
   category: string;
@@ -258,10 +251,3 @@ export type PollBatchResult =
   | { status: "failed"; error: string }
   | { status: "cancelled" };
 
-export interface GenerationConfig {
-  projectId: string;
-  sign: SignConfig;
-  model: AiModel;
-  format: ImageFormat;
-  count: 1 | 2 | 3 | 4;
-}

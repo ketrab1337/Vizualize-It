@@ -135,14 +135,15 @@ function PropertiesTab() {
     }
   }, [selectedItemBounds]);
 
+  // Reaguj na zmiany selectedElementId ORAZ na zewnętrzne zmiany materialId
+  // (np. drag&drop, undo/redo, presety) — bez nodeOverrides w deps stan
+  // wewnętrzny `materialId` zostaje rozsynchronizowany.
+  const externalMaterialId = selectedElementId
+    ? nodeOverrides[selectedElementId]?.materialId ?? ""
+    : "";
   useEffect(() => {
-    if (!selectedElementId) {
-      setMaterialId("");
-      return;
-    }
-    const override = nodeOverrides[selectedElementId];
-    setMaterialId(override?.materialId ?? "");
-  }, [selectedElementId]); // eslint-disable-line react-hooks/exhaustive-deps
+    setMaterialId(externalMaterialId);
+  }, [selectedElementId, externalMaterialId]);
 
   const selectedMaterial = materials.find((m) => m.id === materialId) ?? null;
   const override = selectedElementId ? nodeOverrides[selectedElementId] : null;

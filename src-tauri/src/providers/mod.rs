@@ -52,6 +52,20 @@ pub enum ImageFormat {
 }
 
 impl ImageFormat {
+    /// Parsuje stringowy identyfikator formatu (np. "16:9") z payloadu frontu.
+    /// Wcześniej zduplikowane jako `parse_image_format` w `commands/generation.rs`
+    /// i `commands/batch.rs` — teraz jedno źródło prawdy.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "16:9" => Ok(Self::Landscape16x9),
+            "4:3" => Ok(Self::Landscape4x3),
+            "1:1" => Ok(Self::Square),
+            "3:4" => Ok(Self::Portrait3x4),
+            "9:16" => Ok(Self::Portrait9x16),
+            _ => Err(format!("Nieznany format obrazu: {s}")),
+        }
+    }
+
     pub fn to_prompt_suffix(&self) -> &'static str {
         match self {
             Self::Landscape16x9 => "Wygeneruj obraz poziomy w proporcjach 16:9.",
@@ -62,14 +76,32 @@ impl ImageFormat {
         }
     }
 
+    /// Mapuje MIME type obrazu na rozszerzenie pliku. Wcześniej zduplikowane
+    /// jako `mime_to_ext` w `commands/generation.rs` i `commands/batch.rs`.
+    /// Nie zależne od `ImageFormat`, ale logicznie pasuje obok parse().
+
     pub fn to_openai_dimensions(&self) -> (u32, u32) {
+        // gpt-image-2 wspiera tylko: 1024×1024, 1024×1536 (portrait), 1536×1024 (landscape).
+        // 4:3 i 9:16 nie mają dokładnego odpowiednika — mapujemy na najbliższy dozwolony
+        // landscape/portrait, żeby API nie zwracało 400 "Unknown size".
         match self {
             Self::Landscape16x9 => (1536, 1024),
-            Self::Landscape4x3 => (1024, 768),
+            Self::Landscape4x3 => (1536, 1024),
             Self::Square => (1024, 1024),
             Self::Portrait3x4 => (1024, 1536),
             Self::Portrait9x16 => (1024, 1536),
         }
+    }
+}
+
+/// Mapuje MIME type zwrócony przez providera AI na rozszerzenie pliku do zapisu na dysku.
+/// Jedyne źródło prawdy — wcześniej zduplikowane w `commands/generation.rs` i `commands/batch.rs`.
+pub fn mime_to_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
     }
 }
 

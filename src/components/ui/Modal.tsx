@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
 import { X } from "lucide-react";
 
 interface ModalProps {
@@ -16,9 +16,22 @@ const SIZE_CLASS: Record<NonNullable<ModalProps["size"]>, string> = {
 };
 
 export function Modal({ title, open, onClose, children, size = "md" }: ModalProps) {
+  // Escape zamyka modal (spójne z natywnym zachowaniem dialogów w OS).
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      // Klik w backdrop (poza okienkiem) zamyka modal — e.target === e.currentTarget
+      // upewnia się, że ignorujemy bubble click z wnętrza okienka.
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <div
         className={`bg-[#1e1e1e] rounded-lg shadow-xl w-full ${SIZE_CLASS[size]} flex flex-col`}
         style={{ maxHeight: "calc(100vh - 2rem)" }}

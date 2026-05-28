@@ -1,4 +1,4 @@
-use crate::commands::path_guard::validate_slug;
+use crate::commands::path_guard::{check_within_parent, sanitize_filename, validate_slug};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -35,6 +35,23 @@ pub async fn create_project(
     }
     let projects_root = state.data_dir.join("projects");
     let project_dir = projects_root.join(&slug);
+
+    // Defense-in-depth: bazowy UNIQUE constraint na `projects.slug` (migracja 001)
+    // złapie duplikat na poziomie DB, ALE Rust komenda jest wołana PRZED INSERT-em
+    // w `useProject.ts` — gdyby tu wykonać `create_dir_all` na istniejącym slug-u,
+    // sukcesywnie zwróciłaby OK, a dopiero INSERT do DB zwróciłby UNIQUE violation.
+    // Wtedy folder z poprzedniego projektu zostałby „dotknięty" (no-op, ale brzydko),
+    // a użytkownik dostałby mylący komunikat „Projekt o nazwie X już istnieje" —
+    // gdy nazwa naprawdę jest unikatowa, kolizja jest na slug-u (np. „Test A" vs „test_a"
+    // oba → „test-a"). Tu zwracamy precyzyjny komunikat ZANIM cokolwiek zapiszemy.
+    if project_dir.exists() {
+        return Err(format!(
+            "Nazwa „{trimmed_name}” generuje identyfikator folderu („{slug}”), \
+             który jest już używany przez inny projekt. Wybierz inną nazwę — \
+             unikaj wariantów różniących się tylko wielkością liter, podkreśleniami \
+             lub znakami specjalnymi."
+        ));
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -89,6 +106,7 @@ pub async fn import_svg(
         .ok_or("Nieprawidłowa ścieżka pliku")?
         .to_string_lossy()
         .to_string();
+    sanitize_filename(&filename)?;
 
     let ext = std::path::Path::new(&filename)
         .extension()
@@ -104,6 +122,9 @@ pub async fn import_svg(
         .map_err(|e| format!("Nie można utworzyć folderu assets: {e}"))?;
 
     let dest_path = dest_dir.join(&filename);
+    // Defense-in-depth: oprócz sanitize_filename sprawdź, że ścieżka docelowa
+    // faktycznie zostaje w data_dir (canonicalize parenta).
+    check_within_parent(&state.data_dir, &dest_path)?;
     // read+write zamiast fs::copy — omija blokadę OneDrive/Defender (os error 32)
     let content = std::fs::read_to_string(src)
         .map_err(|e| format!("Nie można odczytać pliku SVG: {e}"))?;
@@ -134,6 +155,7 @@ pub async fn import_background(
         .ok_or("Nieprawidłowa ścieżka pliku")?
         .to_string_lossy()
         .to_string();
+    sanitize_filename(&filename)?;
 
     let ext = std::path::Path::new(&filename)
         .extension()
@@ -153,6 +175,7 @@ pub async fn import_background(
         .unwrap_or_default()
         .as_millis();
     let dest_path = dest_dir.join(format!("bg_{ts}_{filename}"));
+    check_within_parent(&state.data_dir, &dest_path)?;
 
     // read+write zamiast fs::copy — omija blokadę OneDrive/Defender (os error 32)
     let bytes = std::fs::read(src)

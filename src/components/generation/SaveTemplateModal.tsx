@@ -4,6 +4,7 @@ import { Modal } from "../ui/Modal";
 import { useTemplates } from "../../hooks/useTemplates";
 import { useGenerationStore } from "../../stores/generationStore";
 import { useToastStore } from "../../stores/toastStore";
+import { modelLabel } from "../../lib/aiModelLabels";
 
 interface SaveTemplateModalProps {
   open: boolean;
@@ -148,11 +149,3 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function modelLabel(model: string): string {
-  switch (model) {
-    case "nano-banana-2":   return "Nano Banana 2";
-    case "nano-banana-pro": return "Nano Banana Pro";
-    case "gpt-image-2":     return "GPT Image 2";
-    default:                return model;
-  }
-}

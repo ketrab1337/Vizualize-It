@@ -26,7 +26,7 @@ export function drawPageBackground(bgLayer: paper.Layer, hasBg = false): paper.S
   return rect;
 }
 
-export function exportSvgLayer(layer: paper.Layer, _project: paper.Project, _originalContent: string, mmPerUnit: number): string {
+export function exportSvgLayer(layer: paper.Layer, mmPerUnit: number): string {
   // Eksportujemy tylko tę warstwę bez kopiowania width/height/viewBox z oryginalnego pliku.
   // Historia przechowuje elementy we współrzędnych Paper.js (po fit-to-view).
   // Kopiowanie viewBox z oryginału powodowałoby, że importSVG przelicza współrzędne

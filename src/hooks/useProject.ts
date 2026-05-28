@@ -112,23 +112,39 @@ export function useProject() {
           input: { name: trimmed },
         });
 
-        await db.execute(
-          "INSERT INTO projects (id, name, slug, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
-          [project.id, project.name, project.slug, project.created_at, project.updated_at]
-        );
+        try {
+          await db.execute(
+            "INSERT INTO projects (id, name, slug, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+            [project.id, project.name, project.slug, project.created_at, project.updated_at]
+          );
+        } catch (insertErr) {
+          // INSERT do DB padł (np. UNIQUE) — folder utworzony przez backend zostałby sierotą.
+          // Rollback: usuń folder. Błąd cleanup logujemy, ale i tak rzucamy oryginalny błąd.
+          await invoke("delete_project", { id: project.id, slug: project.slug }).catch((e) =>
+            console.warn("Rollback create_project: nie udało się usunąć folderu:", e)
+          );
+          throw insertErr;
+        }
 
         setProjects([project, ...projects]);
         setActiveProject(project.id);
         return project;
       } catch (e) {
         const msg = String(e);
-        if (
+        // Kolizja slugu (folderu) — Rust zwraca komunikat o „identyfikatorze folderu".
+        // Pokazujemy go bezpośrednio, bo wyjaśnia dlaczego unikatowa nazwa wciąż się odbija.
+        if (msg.includes("identyfikator folderu")) {
+          addToast(msg.replace(/^Error:\s*/i, ""), "error");
+        } else if (
           msg.includes("UNIQUE") ||
           msg.includes("unique") ||
           msg.toLowerCase().includes("already exists") ||
           msg.includes("już istnieje")
         ) {
-          addToast(`Projekt o nazwie „${trimmed}" już istnieje. Wybierz inną nazwę.`, "error");
+          // Kolizja nazwy w DB (powinno być rzadkie po check-u w linii 102, ale możliwe
+          // race między select a INSERT, lub kolizja slug-u przez UNIQUE w DB gdy Rust
+          // check by się nie wykonał — np. po edycie ścieżki data_dir).
+          addToast(`Projekt o nazwie „${trimmed}" już istnieje (lub generuje taki sam identyfikator folderu). Wybierz inną nazwę.`, "error");
         } else {
           addToast(`Błąd tworzenia projektu: ${e}`, "error");
         }

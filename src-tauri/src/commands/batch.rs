@@ -1,7 +1,7 @@
 use crate::commands::path_guard::validate_slug;
 use crate::providers::{
-    google_ai::GoogleAiProvider, openai::OpenAiProvider, BatchPoll, BatchSubmit, GenerationConfig,
-    ImageFormat, ImageGenerator, MaterialImage,
+    google_ai::GoogleAiProvider, mime_to_ext, openai::OpenAiProvider, BatchPoll, BatchSubmit,
+    GenerationConfig, ImageFormat, ImageGenerator, MaterialImage,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -22,23 +22,7 @@ fn build_provider(model: &str) -> Result<Box<dyn ImageGenerator>, String> {
 }
 
 fn parse_image_format(s: &str) -> Result<ImageFormat, String> {
-    match s {
-        "16:9" => Ok(ImageFormat::Landscape16x9),
-        "4:3" => Ok(ImageFormat::Landscape4x3),
-        "1:1" => Ok(ImageFormat::Square),
-        "3:4" => Ok(ImageFormat::Portrait3x4),
-        "9:16" => Ok(ImageFormat::Portrait9x16),
-        _ => Err(format!("Nieznany format obrazu: {s}")),
-    }
-}
-
-fn mime_to_ext(mime: &str) -> &str {
-    match mime {
-        "image/png" => "png",
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/webp" => "webp",
-        _ => "png",
-    }
+    ImageFormat::parse(s)
 }
 
 // ── Payload zapisany przez frontend (taki sam jak GoogleGenerateInput) ──────
@@ -109,24 +93,6 @@ pub async fn save_batch_payload(
     let path = dir.join(format!("{job_id}.json"));
     std::fs::write(&path, payload_json.as_bytes())
         .map_err(|e| format!("Nie można zapisać payloadu: {e}"))
-}
-
-#[tauri::command]
-pub async fn load_batch_payload(
-    project_slug: String,
-    job_id: String,
-    state: tauri::State<'_, crate::AppState>,
-) -> Result<String, String> {
-    validate_slug(&project_slug)?;
-    validate_job_id(&job_id)?;
-    let path = state
-        .data_dir
-        .join("projects")
-        .join(&project_slug)
-        .join("batch")
-        .join(format!("{job_id}.json"));
-    std::fs::read_to_string(&path)
-        .map_err(|e| format!("Nie można odczytać payloadu: {e}"))
 }
 
 #[tauri::command]

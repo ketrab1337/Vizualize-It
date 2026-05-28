@@ -246,26 +246,32 @@ export function useBatchJobs(projectId: string | null) {
     }
   }, [jobs, submitJob]);
 
-  // Poll running co POLL_INTERVAL_MS
+  // jobsRef trzyma aktualną listę zadań — wcześniej deps `[jobs]` w interwale
+  // poniżej powodowało, że każdy `setJobs` (np. po update statusu) niszczył
+  // interwał i tworzył nowy z natychmiastowym tick(). Teraz interwał jest
+  // stabilny, a tick czyta świeże dane przez ref.
+  const jobsRef = useRef<BatchJob[]>(jobs);
   useEffect(() => {
-    const hasRunning = jobs.some((j) => j.status === "running");
-    if (!hasRunning) return;
+    jobsRef.current = jobs;
+  }, [jobs]);
 
+  // Poll running co POLL_INTERVAL_MS — jeden trwały interwał na cały hook.
+  useEffect(() => {
     const tick = () => {
-      for (const job of jobs) {
+      for (const job of jobsRef.current) {
         if (job.status === "running" && job.provider_batch_id) {
           pollJob(job);
         }
       }
     };
-    // Pierwszy poll od razu, potem co interval
+    // Pierwszy poll od razu (jeśli są aktualnie running po wczytaniu listy)
     tick();
     const interval = setInterval(() => {
       loadJobs(); // odśwież listę z DB (na wypadek zmian z innych miejsc)
       tick();
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [jobs, pollJob, loadJobs]);
+  }, [pollJob, loadJobs]);
 
   return { jobs, loadJobs, cancelJob, dismissJob };
 }

@@ -15,107 +15,8 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-
-// ── Obraz z zoomem (scroll) i przesuwaniem (drag) ────────────────────────────
-
-function ZoomableImage({ src }: { src: string | undefined }) {
-  const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
-  const containerRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef({ active: false, lastX: 0, lastY: 0 });
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = el.getBoundingClientRect();
-      const cx = e.clientX - rect.left - rect.width / 2;
-      const cy = e.clientY - rect.top - rect.height / 2;
-      const step = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      setView((prev) => {
-        const next = Math.max(1, Math.min(8, prev.scale * step));
-        if (next === 1) return { scale: 1, tx: 0, ty: 0 };
-        const f = next / prev.scale;
-        return { scale: next, tx: cx * (1 - f) + prev.tx * f, ty: cy * (1 - f) + prev.ty * f };
-      });
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, []);
-
-  function handleMouseDown(e: React.MouseEvent) {
-    if (view.scale <= 1) return;
-    e.preventDefault();
-    dragRef.current = { active: true, lastX: e.clientX, lastY: e.clientY };
-  }
-
-  function handleMouseMove(e: React.MouseEvent) {
-    if (!dragRef.current.active) return;
-    const dx = e.clientX - dragRef.current.lastX;
-    const dy = e.clientY - dragRef.current.lastY;
-    dragRef.current.lastX = e.clientX;
-    dragRef.current.lastY = e.clientY;
-    setView((prev) => ({ ...prev, tx: prev.tx + dx, ty: prev.ty + dy }));
-  }
-
-  function handleMouseUp() {
-    dragRef.current.active = false;
-  }
-
-  function handleReset() {
-    setView({ scale: 1, tx: 0, ty: 0 });
-  }
-
-  const isZoomed = view.scale > 1.01;
-
-  return (
-    <div
-      ref={containerRef}
-      className={`flex-1 overflow-hidden flex items-center justify-center bg-[#111111] p-4 relative select-none ${
-        isZoomed ? "cursor-grab active:cursor-grabbing" : "cursor-default"
-      }`}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-    >
-      {src ? (
-        <img
-          src={src}
-          alt=""
-          className="max-w-full max-h-full object-contain rounded"
-          style={{
-            transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`,
-            transformOrigin: "50% 50%",
-            willChange: "transform",
-          }}
-          draggable={false}
-        />
-      ) : (
-        <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
-      )}
-
-      {isZoomed && (
-        <div className="absolute bottom-3 right-3 flex items-center gap-1 bg-black/60 rounded px-2 py-1">
-          <span className="text-white text-[11px] font-mono">{Math.round(view.scale * 100)}%</span>
-          <button
-            onClick={(e) => { e.stopPropagation(); handleReset(); }}
-            className="text-gray-400 hover:text-white transition-colors ml-1"
-            title="Resetuj zoom"
-          >
-            <RotateCcw className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      {!isZoomed && src && (
-        <div className="absolute bottom-3 right-3 text-[10px] text-gray-600 pointer-events-none">
-          scroll — zoom · przeciągnij — przesuń
-        </div>
-      )}
-    </div>
-  );
-}
+import { ZoomableImage } from "../ui/ZoomableImage";
+import { modelLabel } from "../../lib/aiModelLabels";
 import { useGallery, type GalleryImage } from "../../hooks/useGallery";
 import { useBatchJobs } from "../../hooks/useBatchJobs";
 import { useEditorStore } from "../../stores/editorStore";
@@ -132,12 +33,6 @@ interface ImageGridProps {
 }
 
 type Filter = "wszystkie" | "ulubione";
-
-function modelLabel(model: string): string {
-  if (model === "nano-banana-pro") return "Nano Banana Pro";
-  if (model === "gpt-image-2") return "GPT Image 2";
-  return "Nano Banana 2";
-}
 
 // ---------------------------------------------------------------------------
 // Karta pojedynczego obrazu

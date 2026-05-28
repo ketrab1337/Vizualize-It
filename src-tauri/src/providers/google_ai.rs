@@ -78,7 +78,9 @@ struct GeminiRespContent {
 struct GeminiRespPart {
     #[serde(rename = "inlineData")]
     inline_data: Option<GeminiRespInlineData>,
-    text: Option<String>,
+    // Pole `text` z odpowiedzi Gemini świadomie nie deserializowane — serde domyślnie
+    // ignoruje nieznane pola. Image-preview modele rzadko zwracają text, a my potrzebujemy
+    // tylko inlineData (base64 PNG/JPEG).
 }
 
 #[derive(Deserialize)]
@@ -283,7 +285,6 @@ fn extract_images_from_response(value: &serde_json::Value) -> Result<Vec<Generat
                     format: inline.mime_type,
                 });
             }
-            let _ = part.text;
         }
     }
     Ok(images)

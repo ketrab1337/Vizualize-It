@@ -2,7 +2,8 @@ import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getDb } from "../lib/db";
-import type { Material, MaterialCategory, CuttingRate } from "../types";
+import { useMaterialsStore } from "../stores/materialsStore";
+import type { Material, MaterialCategory } from "../types";
 
 export interface MaterialInput {
   name: string;
@@ -16,13 +17,6 @@ export interface MaterialInput {
 }
 
 export function useCategories() {
-  const loadCategories = useCallback(async (): Promise<MaterialCategory[]> => {
-    const db = await getDb();
-    return db.select<MaterialCategory[]>(
-      "SELECT * FROM material_categories ORDER BY sort_order ASC, name ASC"
-    );
-  }, []);
-
   const createCategory = useCallback(async (name: string): Promise<MaterialCategory> => {
     const db = await getDb();
     const id = `cat-${crypto.randomUUID()}`;
@@ -49,7 +43,7 @@ export function useCategories() {
     await db.execute("DELETE FROM material_categories WHERE id=$1", [id]);
   }, []);
 
-  return { loadCategories, createCategory, updateCategory, deleteCategory };
+  return { createCategory, updateCategory, deleteCategory };
 }
 
 export function useMaterials() {
@@ -84,11 +78,26 @@ export function useMaterials() {
       "UPDATE materials SET name=$1, category=$2, material_type=$3, color_hex=$4, photo_path=$5, pricing_unit=$6, base_price=$7, default_thickness_mm=$8 WHERE id=$9",
       [input.name, input.category, input.material_type, input.color_hex, input.photo_path, input.pricing_unit, input.base_price, input.default_thickness_mm, id]
     );
+    // Invalidate photoCache — bez tego edycja zdjęcia materiału nie odświeży miniaturek
+    // (ensurePhoto wcześnie wraca gdy klucz jest w cache, niezależnie od ścieżki).
+    useMaterialsStore.setState((s) => {
+      if (!(id in s.photoCache)) return s;
+      const next = { ...s.photoCache };
+      delete next[id];
+      return { photoCache: next };
+    });
   }, []);
 
   const deleteMaterial = useCallback(async (id: string): Promise<void> => {
     const db = await getDb();
     await db.execute("DELETE FROM materials WHERE id=$1", [id]);
+    // Posprzątaj cache zdjęć po usuniętym materiale (nieduży memory leak gdyby zostało).
+    useMaterialsStore.setState((s) => {
+      if (!(id in s.photoCache)) return s;
+      const next = { ...s.photoCache };
+      delete next[id];
+      return { photoCache: next };
+    });
   }, []);
 
   /** Otwiera dialog wyboru pliku, kopiuje do plexylibrary/ i zwraca pełną ścieżkę. */
@@ -115,40 +124,4 @@ export function useMaterials() {
     pickAndCopyPhoto,
     getPhotoDataUrl,
   };
-}
-
-export function useCuttingRates() {
-  const loadRates = useCallback(async (materialId: string): Promise<CuttingRate[]> => {
-    const db = await getDb();
-    return db.select<CuttingRate[]>(
-      "SELECT * FROM cutting_rates WHERE material_id=$1 ORDER BY thickness_mm ASC",
-      [materialId]
-    );
-  }, []);
-
-  const upsertRate = useCallback(
-    async (materialId: string, thicknessMm: number, pricePerM: number): Promise<CuttingRate> => {
-      const db = await getDb();
-      const id = crypto.randomUUID();
-      await db.execute(
-        `INSERT INTO cutting_rates (id, material_id, thickness_mm, price_per_m)
-         VALUES ($1,$2,$3,$4)
-         ON CONFLICT(material_id, thickness_mm) DO UPDATE SET price_per_m=$4`,
-        [id, materialId, thicknessMm, pricePerM]
-      );
-      const rows = await db.select<CuttingRate[]>(
-        "SELECT * FROM cutting_rates WHERE material_id=$1 AND thickness_mm=$2",
-        [materialId, thicknessMm]
-      );
-      return rows[0];
-    },
-    []
-  );
-
-  const deleteRate = useCallback(async (id: string): Promise<void> => {
-    const db = await getDb();
-    await db.execute("DELETE FROM cutting_rates WHERE id=$1", [id]);
-  }, []);
-
-  return { loadRates, upsertRate, deleteRate };
 }

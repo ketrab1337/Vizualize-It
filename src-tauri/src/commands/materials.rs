@@ -1,4 +1,4 @@
-use crate::commands::path_guard::check_within;
+use crate::commands::path_guard::{check_within, check_within_parent, sanitize_filename};
 use std::path::Path;
 
 /// Kopiuje zdjęcie referencyjne do ~/Documents/VizualizeIt/library/.
@@ -16,6 +16,7 @@ pub async fn copy_material_photo(
         .ok_or("Nieprawidłowa ścieżka pliku")?
         .to_string_lossy()
         .to_string();
+    sanitize_filename(&filename)?;
 
     let ext = Path::new(&filename)
         .extension()
@@ -37,6 +38,8 @@ pub async fn copy_material_photo(
         .collect::<String>();
     let dest_name = format!("{prefix}_{filename}");
     let dest_path = library_dir.join(&dest_name);
+    // Defense-in-depth obok sanitize_filename — guarduje wynik join przed wyjściem z library_dir.
+    check_within_parent(&state.data_dir, &dest_path)?;
 
     std::fs::copy(src, &dest_path)
         .map_err(|e| format!("Nie można skopiować zdjęcia: {e}"))?;

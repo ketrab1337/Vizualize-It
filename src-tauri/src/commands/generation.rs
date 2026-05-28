@@ -103,25 +103,11 @@ pub async fn generate_image(
     Ok(result)
 }
 
-fn parse_image_format(s: &str) -> Result<crate::providers::ImageFormat, String> {
-    use crate::providers::ImageFormat;
-    match s {
-        "16:9" => Ok(ImageFormat::Landscape16x9),
-        "4:3" => Ok(ImageFormat::Landscape4x3),
-        "1:1" => Ok(ImageFormat::Square),
-        "3:4" => Ok(ImageFormat::Portrait3x4),
-        "9:16" => Ok(ImageFormat::Portrait9x16),
-        _ => Err(format!("Nieznany format obrazu: {s}")),
-    }
-}
-
-fn mime_to_ext(mime: &str) -> &str {
-    match mime {
-        "image/png" => "png",
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/webp" => "webp",
-        _ => "png",
-    }
+// parse_image_format → crate::providers::ImageFormat::parse
+// mime_to_ext → crate::providers::mime_to_ext
+use crate::providers::{mime_to_ext, ImageFormat};
+fn parse_image_format(s: &str) -> Result<ImageFormat, String> {
+    ImageFormat::parse(s)
 }
 
 // ── Edycja kąta przez Google AI ───────────────────────────────────────────────

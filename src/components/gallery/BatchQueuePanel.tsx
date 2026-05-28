@@ -1,16 +1,11 @@
 import { CheckCircle2, Clock, Loader2, Trash2, X, XCircle } from "lucide-react";
+import { modelLabel } from "../../lib/aiModelLabels";
 import type { BatchJob } from "../../types";
 
 interface BatchQueuePanelProps {
   jobs: BatchJob[];
   onCancel: (job: BatchJob) => void;
   onDismiss: (job: BatchJob) => void;
-}
-
-function modelLabel(model: string): string {
-  if (model === "nano-banana-pro") return "Nano Banana Pro";
-  if (model === "gpt-image-2") return "GPT Image 2";
-  return "Nano Banana 2";
 }
 
 function StatusIcon({ status }: { status: BatchJob["status"] }) {

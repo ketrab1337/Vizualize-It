@@ -1,12 +1,11 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../lib/db";
-import type { Material, MaterialCategory, CuttingRate, GlobalCuttingRate } from "../types";
+import type { Material, MaterialCategory, GlobalCuttingRate } from "../types";
 
 interface MaterialsState {
   categories: MaterialCategory[];
   materials: Material[];
-  cuttingRates: CuttingRate[];
   globalCuttingRates: GlobalCuttingRate[];
   photoCache: Record<string, string>;
   isLoading: boolean;
@@ -18,7 +17,6 @@ interface MaterialsState {
 export const useMaterialsStore = create<MaterialsState>((set, get) => ({
   categories: [],
   materials: [],
-  cuttingRates: [],
   globalCuttingRates: [],
   photoCache: {},
   isLoading: false,
@@ -45,14 +43,6 @@ export const useMaterialsStore = create<MaterialsState>((set, get) => ({
         ),
         db.select<Material[]>("SELECT * FROM materials ORDER BY name ASC"),
       ]);
-      let cuttingRates: CuttingRate[] = [];
-      try {
-        cuttingRates = await db.select<CuttingRate[]>(
-          "SELECT * FROM cutting_rates ORDER BY thickness_mm ASC"
-        );
-      } catch {
-        // Tabela jeszcze nie istnieje (migracja 003 nie uruchomiona)
-      }
       let globalCuttingRates: GlobalCuttingRate[] = [];
       try {
         globalCuttingRates = await db.select<GlobalCuttingRate[]>(
@@ -61,7 +51,7 @@ export const useMaterialsStore = create<MaterialsState>((set, get) => ({
       } catch {
         // Tabela jeszcze nie istnieje (migracja 009 nie uruchomiona)
       }
-      set({ categories, materials, cuttingRates, globalCuttingRates });
+      set({ categories, materials, globalCuttingRates });
 
       // Przeładuj zdjęcia dla materiałów które ich jeszcze nie mają w cache
       const { photoCache } = get();

@@ -108,6 +108,8 @@ interface GenerationStore {
   removeReferenceImage: (index: number) => void;
   setReferenceDescription: (index: number, description: string) => void;
   togglePresetId: (id: string) => void;
+  /** Czyści listę aktywnych presetów + sprząta anchory/overrides. Jeden setState. */
+  clearActivePresets: () => void;
   setPresetAnchor: (presetId: string, anchor: string) => void;
   /** Ustaw tekst nadpisania dla danego presetu (pusty string = clear). */
   setPresetTextOverride: (presetId: string, text: string) => void;
@@ -185,6 +187,8 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       }
       return { activePresetIds: [...s.activePresetIds, id] };
     }),
+  clearActivePresets: () =>
+    set({ activePresetIds: [], presetAnchors: {}, presetTextOverrides: {} }),
   setPresetAnchor: (presetId, anchor) =>
     set((s) => ({ presetAnchors: { ...s.presetAnchors, [presetId]: anchor } })),
   setPresetTextOverride: (presetId, text) =>

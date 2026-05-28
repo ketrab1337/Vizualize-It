@@ -13,7 +13,8 @@ interface UseCanvasHistoryParams {
   nodeOverridesRef: React.MutableRefObject<Record<string, NodeOverride>>;
   mmPerUnitRef: React.MutableRefObject<number>;
   selectedItemsRef: React.MutableRefObject<paper.Item[]>;
-  isSavingRef: React.MutableRefObject<boolean>;
+  /** Ostatnio zapisany svgContent — reimport w Canvas skip-uje gdy svgContent === ten ref. */
+  lastSavedContentRef: React.MutableRefObject<string | null>;
   setSvgContent: (content: string) => void;
   clearSelection: () => void;
   addToSelection: (item: paper.Item) => void;
@@ -48,7 +49,7 @@ interface UseCanvasHistoryResult {
 export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHistoryResult {
   const {
     svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef,
-    selectedItemsRef, isSavingRef,
+    selectedItemsRef, lastSavedContentRef,
     setSvgContent, clearSelection, addToSelection, rebuildLayerItems, setContextMenu,
     removeNodeOverride, removeBoundsForElement, onAfterPaste,
   } = params;
@@ -65,7 +66,7 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     const layer = svgLayerRef.current;
     const content = svgContentRef.current;
     if (!layer || !content) return;
-    const exported = exportSvgLayer(layer, paper.project, content, mmPerUnitRef.current);
+    const exported = exportSvgLayer(layer, mmPerUnitRef.current);
     // Czytaj bezpośrednio ze store (synchroniczny Zustand), nie z ref — ref aktualizuje się
     // dopiero po renderze, a pushHistory może być wołany z setTimeout(0) przed renderem.
     const currentOverrides = useEditorStore.getState().nodeOverrides;
@@ -74,11 +75,11 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     historyRef.current.splice(historyIndexRef.current + 1);
     historyRef.current.push({ svg: withOverrides, selection });
     historyIndexRef.current = historyRef.current.length - 1;
-    // Sync store → wyzwala auto-zapis w MainArea; isSavingRef blokuje reimport w Canvas
-    isSavingRef.current = true;
+    // Sync store → wyzwala auto-zapis w MainArea; lastSavedContentRef blokuje reimport w Canvas
+    // (deterministyczne porównanie content zamiast wcześniejszego setTimeout-based isSavingRef).
+    lastSavedContentRef.current = withOverrides;
     setSvgContent(withOverrides);
-    setTimeout(() => { isSavingRef.current = false; }, 50);
-  }, [svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef, selectedItemsRef, isSavingRef, setSvgContent]);
+  }, [svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef, selectedItemsRef, lastSavedContentRef, setSvgContent]);
 
   const pushHistoryDirect = useCallback((svg: string) => {
     if (isUndoRedoRef.current) return;
@@ -86,10 +87,9 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     historyRef.current.splice(historyIndexRef.current + 1);
     historyRef.current.push({ svg, selection });
     historyIndexRef.current = historyRef.current.length - 1;
-    isSavingRef.current = true;
+    lastSavedContentRef.current = svg;
     setSvgContent(svg);
-    setTimeout(() => { isSavingRef.current = false; }, 50);
-  }, [isUndoRedoRef, selectedItemsRef, historyRef, historyIndexRef, isSavingRef, setSvgContent]);
+  }, [isUndoRedoRef, selectedItemsRef, historyRef, historyIndexRef, lastSavedContentRef, setSvgContent]);
 
   const restoreSelectionAfterUndoRedo = useCallback((names: string[]) => {
     const layer = svgLayerRef.current;
@@ -185,17 +185,16 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
 
     setTimeout(() => rebuildLayerItems(), 0);
     if (svgContentRef.current && svgLayerRef.current) {
-      const exported = exportSvgLayer(svgLayerRef.current, paper.project, svgContentRef.current, mmPerUnitRef.current);
+      const exported = exportSvgLayer(svgLayerRef.current, mmPerUnitRef.current);
       const withOverrides = updateSvgWithOverrides(exported, nodeOverridesRef.current);
       historyRef.current.splice(historyIndexRef.current + 1);
       historyRef.current.push({ svg: withOverrides, selection: [] });
       historyIndexRef.current = historyRef.current.length - 1;
-      isSavingRef.current = true;
+      lastSavedContentRef.current = withOverrides;
       setSvgContent(withOverrides);
-      setTimeout(() => { isSavingRef.current = false; }, 50);
     }
     setContextMenu(null);
-  }, [selectedItemsRef, svgContentRef, svgLayerRef, nodeOverridesRef, mmPerUnitRef, isSavingRef, clearSelection, rebuildLayerItems, setSvgContent, setContextMenu, removeNodeOverride, removeBoundsForElement]);
+  }, [selectedItemsRef, svgContentRef, svgLayerRef, nodeOverridesRef, mmPerUnitRef, lastSavedContentRef, clearSelection, rebuildLayerItems, setSvgContent, setContextMenu, removeNodeOverride, removeBoundsForElement]);
 
   return {
     historyRef, historyIndexRef, isUndoRedoRef, clipboardRef, isDraggingItemRef,
