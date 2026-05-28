@@ -40,9 +40,6 @@ export function CompareModal({ images, dataUrls, onClose }: CompareModalProps) {
           <span className="text-white text-sm font-medium">
             Porównanie {images.length} obrazów
           </span>
-          <span className="text-gray-600 text-xs">
-            Scroll — zoom · przeciągnij — przesuń
-          </span>
         </div>
         <div className="flex items-center gap-2">
           <button

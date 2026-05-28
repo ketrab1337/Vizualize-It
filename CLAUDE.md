@@ -414,20 +414,17 @@ let provider: Box<dyn ImageGenerator> = match input.model.as_str() {
 
 ### OpenAI (GPT Image 2)
 - Model: `gpt-image-2` (wydany 21 kwietnia 2026 — snapshot `gpt-image-2-2026-04-21`)
-- **Generowanie z obrazami wejściowymi** → `POST https://api.openai.com/v1/responses` (Responses API):
+- **Generowanie z obrazami wejściowymi (LIVE)** → `POST https://api.openai.com/v1/images/edits` (multipart):
   - `/v1/images/generations` **nie przyjmuje obrazów wejściowych** (tylko `prompt: string`) — tło, SVG, materiały byłyby ignorowane
-  - Routing w `OpenAiProvider::generate()`: są obrazy → `generate_via_responses` → Responses API. Brak obrazów → klasyczne `/v1/images/generations`
-  - Struktura: `tools: [{type: "image_generation", size: "..."}]`, `input: [developer_msg, user_msg]`
-  - Rozdzielenie promptów: `role: "developer"` dla głównego promptu technicznego (analog `systemInstruction` w Gemini), `role: "user"` dla swobodnego promptu użytkownika
-  - Obrazy w user message jako `{type: "input_image", image_url: "data:image/png;base64,..."}`
-  - Wynik wraca w `output[]` z elementami `type: "image_generation_call"` i polem `result` (base64 PNG)
-- Edycja kąta / inpainting: `POST https://api.openai.com/v1/images/edits` (multipart, obsługuje `image[]` wieloobrazowy + opcjonalna `mask`)
-- Batch API (`/v1/batches`) — analogiczny dispatcher do trybu live:
-  - Są obrazy → endpoint w JSONL: `/v1/responses` (multi-image + role)
+  - Routing w `OpenAiProvider::generate()`: są obrazy → `generate_via_edits` → `/v1/images/edits`. Brak obrazów → klasyczne `/v1/images/generations`
+  - **Dlaczego NIE `/v1/responses` dla live:** Responses API wymaga chat-modelu na top-levelu (`gpt-4o`/`gpt-5...`); `gpt-image-2` zwraca tam 400 „model not found". `/v1/images/edits` woła `gpt-image-2` bezpośrednio (multipart `image[]`: pierwszy = scena/kompozyt, kolejne = materiały + referencje; opcjonalna `mask`)
+  - **count > 1 live:** `/v1/images/edits` natywnie obsługuje parametr `n` — jedno wywołanie zwraca N obrazów (bez równoległych spawnów)
+  - BEZ pola `response_format` — `gpt-image-2` je odrzuca (zawsze zwraca base64)
+- Edycja kąta / inpainting: `POST https://api.openai.com/v1/images/edits` (multipart, `image[]` wieloobrazowy + opcjonalna `mask`) → `edit_with_mask_inner`
+- Batch API (`/v1/batches`) — endpoint w JSONL zależny od obecności obrazów (świadoma niespójność z live, bo Batch API obsługuje TYLKO endpointy serializowalne do JSONL — multipart `/v1/images/edits` się nie serializuje):
+  - Są obrazy → endpoint w JSONL: `/v1/responses` (JEDYNY multi-image endpoint w Batch API; top-level model = `gpt-5.4-mini` jako orchestrator wołający `image_generation` tool z `model: gpt-image-2`)
   - Brak obrazów → endpoint w JSONL: `/v1/images/generations` (text-only, parametr `n` natywnie obsługuje multi-output)
-  - **Ważne — count > 1 z Responses API:** `image_generation` tool w Responses zwraca 1 obraz na call. Dla `count > 1`:
-    - Live (`generate_via_responses`): spawnujemy N równoległych `tokio::spawn` wywołań `single_call_responses_api`, zbieramy wyniki
-    - Batch (`submit_batch`): N linii JSONL z różnymi `custom_id` (`vizualizeit-request-1`, `-2`, ...)
+  - **count > 1 w batchu:** `/v1/responses` zwraca 1 obraz na call → dla `count > 1` `submit_batch` tworzy N linii JSONL z różnymi `custom_id` (`vizualizeit-request-1`, `-2`, ...). Text-only: jedna linia z `n: count`.
   - `poll_batch` iteruje po liniach JSONL i zbiera obrazy z każdej. Rozpoznaje oba formaty wyniku: `body.data[].b64_json` (generations) lub `body.output[]` z `image_generation_call.result` (responses)
 - 50% zniżki działa automatycznie po stronie OpenAI dla każdego wspieranego endpointu w batchu, włącznie z `/v1/responses` z image_generation tool
 - Uwaga: wymaga weryfikacji organizacji w OpenAI Developer Console (`openai.rs` mapuje 403 na zrozumiały komunikat)
@@ -597,8 +594,8 @@ pending → running → done | error | cancelled
 ```rust
 // Lokalne — payload zapisany na dysku przed wysłaniem do dostawcy
 save_batch_payload(project_slug, job_id, payload_json) → Result<()>
-load_batch_payload(project_slug, job_id) → Result<String>
 delete_batch_payload(project_slug, job_id) → Result<()>
+// (load_batch_payload nie istnieje jako komenda — odczyt jest wewnątrz submit_batch_to_provider)
 
 // Batch API dostawców
 submit_batch_to_provider(job_id, project_slug) → SubmitBatchOutput { batch_id, input_file_id? }

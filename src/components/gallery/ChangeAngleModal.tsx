@@ -83,16 +83,15 @@ export function ChangeAngleModal({
 
       await db.execute(
         `INSERT INTO generation_sessions
-           (id, project_id, prompt_assembled, prompt_user, model, format, count,
+           (id, project_id, prompt_assembled, model, format, count,
             camera_rotate, camera_tilt, camera_distance,
             led_backlit_enabled, led_backlit_color,
             led_frontlit_enabled, led_frontlit_color, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [
           sessionId,
           img.project_id,
           prompt,
-          null,
           changeAngleModel,
           img.format || "1:1",
           1,

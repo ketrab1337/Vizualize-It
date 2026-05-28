@@ -156,8 +156,6 @@ export function EditImageModal({
     historyRef.current.push(snapshot);
     if (historyRef.current.length > MAX_HISTORY) {
       historyRef.current.shift();
-    } else {
-      historyIndexRef.current = historyRef.current.length - 1;
     }
     historyIndexRef.current = historyRef.current.length - 1;
     refreshUndoRedoState();
@@ -593,16 +591,15 @@ export function EditImageModal({
 
       await db.execute(
         `INSERT INTO generation_sessions
-           (id, project_id, prompt_assembled, prompt_user, model, format, count,
+           (id, project_id, prompt_assembled, model, format, count,
             camera_rotate, camera_tilt, camera_distance,
             led_backlit_enabled, led_backlit_color,
             led_frontlit_enabled, led_frontlit_color, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,0,0,5,0,NULL,0,NULL,$8)`,
+         VALUES ($1,$2,$3,$4,$5,$6,0,0,5,0,NULL,0,NULL,$7)`,
         [
           sessionId,
           img.project_id,
           trimmed,
-          null,
           usedModel,
           img.format || "1:1",
           1,

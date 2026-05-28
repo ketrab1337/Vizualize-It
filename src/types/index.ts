@@ -76,7 +76,6 @@ export interface GenerationSession {
   id: string;
   project_id: string;
   prompt_assembled: string | null;
-  prompt_user: string | null;
   model: "nano-banana-2" | "nano-banana-pro" | "gpt-image-2";
   format: "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
   count: number;

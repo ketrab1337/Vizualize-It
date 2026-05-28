@@ -121,11 +121,6 @@ export function ZoomableImage({
         </div>
       )}
 
-      {!isZoomed && src && (
-        <div className={`absolute ${badgePosClassName} text-[10px] text-gray-600 pointer-events-none`}>
-          scroll — zoom · przeciągnij — przesuń
-        </div>
-      )}
     </div>
   );
 

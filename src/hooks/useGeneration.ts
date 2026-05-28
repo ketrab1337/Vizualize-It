@@ -138,7 +138,7 @@ export function useGeneration() {
       }
 
       // Przygotuj obrazy wejściowe.
-      // WAŻNE: captureCanvas() zwraca KOMPOZYT (tło + SVG + etykiety) gdy jest tło.
+      // WAŻNE: captureCanvas() zwraca KOMPOZYT (tło + SVG) gdy jest tło.
       // Wysyłanie tła osobno DODATKOWO myli model (widzi 2 obrazy z tłem — przed/po)
       // i powoduje że losowo bierze jedno lub miesza. Dlatego:
       //   - jest kompozyt → wysyłamy TYLKO kompozyt (zawiera już tło)
@@ -244,17 +244,15 @@ export function useGeneration() {
 
       await db.execute(
         `INSERT INTO generation_sessions
-           (id, project_id, prompt_assembled, prompt_user, model, format, count,
+           (id, project_id, prompt_assembled, model, format, count,
             camera_rotate, camera_tilt, camera_distance,
             led_backlit_enabled, led_backlit_color,
             led_frontlit_enabled, led_frontlit_color, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [
           sessionId,
           project.id,
           finalPrompt,
-          // `prompt_user` zostawiamy w schemacie (legacy) — zapisujemy null po unifikacji.
-          null,
           model,
           format,
           count,

@@ -33,9 +33,19 @@ export function useBatchJobs(projectId: string | null) {
         [projectId]
       );
       setJobs(rows);
+      // Natychmiastowy poll running jobów tuż po załadowaniu listy —
+      // bez tego pierwsze sprawdzenie byłoby dopiero po 30 sekundach.
+      // pollJob jest stabilny (useCallback []) — celowo poza deps, by uniknąć
+      // odwołania do niego przed deklaracją (TDZ) w tablicy zależności.
+      for (const job of rows) {
+        if (job.status === "running" && job.provider_batch_id && !inFlightRef.current.has(job.id)) {
+          pollJob(job);
+        }
+      }
     } catch {
       // ignoruj błędy odczytu
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   // ── Submit pending → provider ──────────────────────────────────────────────
@@ -114,11 +124,11 @@ export function useBatchJobs(projectId: string | null) {
         const sessionId = crypto.randomUUID();
         await db.execute(
           `INSERT INTO generation_sessions
-             (id, project_id, prompt_assembled, prompt_user, model, format, count,
+             (id, project_id, prompt_assembled, model, format, count,
               camera_rotate, camera_tilt, camera_distance,
               led_backlit_enabled, led_backlit_color,
               led_frontlit_enabled, led_frontlit_color, created_at)
-           VALUES ($1,$2,NULL,NULL,$3,$4,$5,0,0,5,0,NULL,0,NULL,$6)`,
+           VALUES ($1,$2,NULL,$3,$4,$5,0,0,5,0,NULL,0,NULL,$6)`,
           [sessionId, job.project_id, job.model, job.format, job.count, now]
         );
 
@@ -246,32 +256,15 @@ export function useBatchJobs(projectId: string | null) {
     }
   }, [jobs, submitJob]);
 
-  // jobsRef trzyma aktualną listę zadań — wcześniej deps `[jobs]` w interwale
-  // poniżej powodowało, że każdy `setJobs` (np. po update statusu) niszczył
-  // interwał i tworzył nowy z natychmiastowym tick(). Teraz interwał jest
-  // stabilny, a tick czyta świeże dane przez ref.
-  const jobsRef = useRef<BatchJob[]>(jobs);
-  useEffect(() => {
-    jobsRef.current = jobs;
-  }, [jobs]);
-
   // Poll running co POLL_INTERVAL_MS — jeden trwały interwał na cały hook.
+  // loadJobs() samodzielnie poluje running joby tuż po odświeżeniu listy z DB,
+  // więc dodatkowy tick() jest zbędny.
   useEffect(() => {
-    const tick = () => {
-      for (const job of jobsRef.current) {
-        if (job.status === "running" && job.provider_batch_id) {
-          pollJob(job);
-        }
-      }
-    };
-    // Pierwszy poll od razu (jeśli są aktualnie running po wczytaniu listy)
-    tick();
     const interval = setInterval(() => {
-      loadJobs(); // odśwież listę z DB (na wypadek zmian z innych miejsc)
-      tick();
+      loadJobs();
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [pollJob, loadJobs]);
+  }, [loadJobs]);
 
   return { jobs, loadJobs, cancelJob, dismissJob };
 }

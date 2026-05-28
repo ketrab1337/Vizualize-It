@@ -58,7 +58,11 @@ fn draw_table_row(
 }
 
 fn format_pln(v: f64) -> String {
-    format!("{:.2} zl", v)
+    format!("{:.2} zł", v)
+}
+
+fn apply_margin(cost: f64, is_quote: bool, margin_pct: f64) -> f64 {
+    if is_quote { cost * (1.0 + margin_pct / 100.0) } else { cost }
 }
 
 // ── Komenda ───────────────────────────────────────────────────────────────────
@@ -75,7 +79,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
     let title = if input.is_quote {
         format!("Wycena — {}", input.project_name)
     } else {
-        format!("Koszty wlasne — {}", input.project_name)
+        format!("Koszty własne — {}", input.project_name)
     };
 
     let (doc, first_page, first_layer) =
@@ -83,7 +87,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
 
     let font = doc
         .add_external_font(std::io::Cursor::new(&font_bytes))
-        .map_err(|e| format!("Blad czcionki: {e}"))?;
+        .map_err(|e| format!("Błąd czcionki: {e}"))?;
 
     // ── Tabela GŁÓWNA (Podsumowanie pogrupowane) ───────────────────────────
     // Mniej kolumn, dopasowane do A4 pionowego.
@@ -100,12 +104,12 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             &font,
             y,
             &[
-                ("Material", g_col_mat),
+                ("Materiał", g_col_mat),
                 ("Grub.", g_col_grub),
                 ("Pow.cm2", g_col_pow),
-                ("Ciecie m", g_col_len),
-                ("Ilosc", g_col_qty),
-                ("Wartosc", g_col_total),
+                ("Cięcie m", g_col_len),
+                ("Ilość", g_col_qty),
+                ("Wartość", g_col_total),
             ],
             8.5,
         );
@@ -127,12 +131,12 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             y,
             &[
                 ("Element", d_col_label),
-                ("Material", d_col_mat),
+                ("Materiał", d_col_mat),
                 ("Grub.", d_col_grub),
                 ("Pow.cm2", d_col_pow),
-                ("Ciecie m", d_col_len),
-                ("Ilosc", d_col_qty),
-                ("Wartosc", d_col_total),
+                ("Cięcie m", d_col_len),
+                ("Ilość", d_col_qty),
+                ("Wartość", d_col_total),
             ],
             8.0,
         );
@@ -142,7 +146,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
     let mut y: f64 = PH - M - 4.0;
 
     // Nagłówek dokumentu
-    let header = if input.is_quote { "WYCENA" } else { "KOSZTY WLASNE" };
+    let header = if input.is_quote { "WYCENA" } else { "KOSZTY WŁASNE" };
     layer.use_text(header, 18.0, mm(M), mm(y), &font);
     y -= 7.0;
     layer.use_text(&input.project_name, 12.0, mm(M), mm(y), &font);
@@ -204,11 +208,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             y -= 6.5;
         }
 
-        let display_cost = if input.is_quote {
-            g.total_cost * (1.0 + input.margin_pct / 100.0)
-        } else {
-            g.total_cost
-        };
+        let display_cost = apply_margin(g.total_cost, input.is_quote, input.margin_pct);
 
         let mat_label = match g.line_type.as_str() {
             "led" => format!("LED — {}", g.material_name.as_deref().unwrap_or("—")),
@@ -265,7 +265,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             y = ny;
         }
         layer.use_text(
-            &format!("Materialy:  {}", format_pln(input.total_material)),
+            &format!("Materiały:  {}", format_pln(input.total_material)),
             9.0,
             mm(g_col_total - 40.0),
             mm(y),
@@ -273,7 +273,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
         );
         y -= 6.0;
         layer.use_text(
-            &format!("Ciecie:     {}", format_pln(input.total_cutting)),
+            &format!("Cięcie:     {}", format_pln(input.total_cutting)),
             9.0,
             mm(g_col_total - 40.0),
             mm(y),
@@ -290,9 +290,8 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
         y -= 6.0;
     }
 
-    let quote_total = input.grand_total * (1.0 + input.margin_pct / 100.0);
-    let final_label = if input.is_quote { "RAZEM:" } else { "KOSZTY LACZNIE:" };
-    let final_value = if input.is_quote { quote_total } else { input.grand_total };
+    let final_label = if input.is_quote { "RAZEM:" } else { "KOSZTY ŁĄCZNIE:" };
+    let final_value = apply_margin(input.grand_total, input.is_quote, input.margin_pct);
     layer.use_text(
         &format!("{}  {}", final_label, format_pln(final_value)),
         11.0,
@@ -304,7 +303,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
 
     if input.is_quote && input.margin_pct > 0.0 {
         layer.use_text(
-            &format!("(marza {}%)", input.margin_pct as u32),
+            &format!("(marża {}%)", input.margin_pct as u32),
             8.0,
             mm(g_col_total - 50.0),
             mm(y),
@@ -321,7 +320,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             layer = nl;
             y = ny;
         }
-        layer.use_text("SZCZEGOLY", 13.0, mm(M), mm(y), &font);
+        layer.use_text("SZCZEGÓŁY", 13.0, mm(M), mm(y), &font);
         y -= 7.0;
         draw_detail_headers(&layer, y);
         y -= 6.0;
@@ -335,11 +334,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
                 y -= 6.0;
             }
 
-            let display_cost = if input.is_quote {
-                item.total_cost * (1.0 + input.margin_pct / 100.0)
-            } else {
-                item.total_cost
-            };
+            let display_cost = apply_margin(item.total_cost, input.is_quote, input.margin_pct);
 
             let mat = item.material_name.as_deref().unwrap_or("—");
             let grub = item
@@ -386,9 +381,9 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
     }
 
     let file = std::fs::File::create(&input.save_path)
-        .map_err(|e| format!("Nie mozna zapisac pliku: {e}"))?;
+        .map_err(|e| format!("Nie można zapisać pliku: {e}"))?;
     doc.save(&mut BufWriter::new(file))
-        .map_err(|e| format!("Blad zapisu PDF: {e}"))?;
+        .map_err(|e| format!("Błąd zapisu PDF: {e}"))?;
 
     Ok(())
 }
@@ -514,12 +509,12 @@ pub async fn export_offer_pdf(
     y -= 14.0;
 
     // Specyfikacja materiałów
-    spec.use_text("Specyfikacja materialow:", 13.0, mm(MARGIN), mm(y), &font);
+    spec.use_text("Specyfikacja materiałów:", 13.0, mm(MARGIN), mm(y), &font);
     y -= 8.0;
 
     if input.materials.is_empty() {
         spec.use_text(
-            "Brak przypisanych materialow.",
+            "Brak przypisanych materiałów.",
             10.0,
             mm(MARGIN + 3.0),
             mm(y),
@@ -557,7 +552,7 @@ pub async fn export_offer_pdf(
             if input.led.backlit_enabled {
                 let c = input.led.backlit_color_name.as_deref().unwrap_or("—");
                 spec.use_text(
-                    &format!("• Podswietlenie od tylu:  {}", c),
+                    &format!("• Podświetlenie od tyłu:  {}", c),
                     10.0,
                     mm(MARGIN + 3.0),
                     mm(y),

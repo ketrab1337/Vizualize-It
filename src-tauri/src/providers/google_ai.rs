@@ -153,7 +153,7 @@ fn map_api_error(status: u16, body: &str) -> String {
         }
     }
     match status {
-        400 => format!("Błąd API (400): nieprawidłowe żądanie — sprawdź prompt."),
+        400 => "Błąd API (400): nieprawidłowe żądanie — sprawdź prompt.".into(),
         401 | 403 => format!("Błąd API ({status}): nieprawidłowy klucz Google AI."),
         429 => "Błąd API (429): przekroczono limit zapytań — spróbuj za chwilę.".into(),
         500..=599 => format!("Błąd serwera Google ({status}) — spróbuj ponownie."),
@@ -344,16 +344,30 @@ impl ImageGenerator for GoogleAiProvider {
             }));
         }
 
+        // Zbieramy udane obrazy; pojedyncze błędy (np. filtr SAFETY na jednym z N
+        // równoległych wywołań) NIE odrzucają reszty. Błąd zwracamy tylko gdy ŻADEN
+        // obraz się nie wygenerował — wtedy raportujemy pierwszy napotkany błąd.
         let mut images: Vec<GeneratedImage> = Vec::with_capacity(n);
+        let mut first_error: Option<String> = None;
         for h in handles {
-            let res = h
-                .await
-                .map_err(|e| format!("Błąd zadania równoległego: {e}"))?;
-            images.push(res?);
+            match h.await {
+                Ok(Ok(img)) => images.push(img),
+                Ok(Err(e)) => {
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
+                }
+                Err(e) => {
+                    if first_error.is_none() {
+                        first_error = Some(format!("Błąd zadania równoległego: {e}"));
+                    }
+                }
+            }
         }
 
         if images.is_empty() {
-            return Err("API nie zwróciło żadnego obrazu. Sprawdź prompt.".to_string());
+            return Err(first_error
+                .unwrap_or_else(|| "API nie zwróciło żadnego obrazu. Sprawdź prompt.".to_string()));
         }
         Ok(images)
     }
