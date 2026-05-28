@@ -1,0 +1,40 @@
+# Wymuś LF (Unix line endings) dla wszystkich plików tekstowych w git index.
+# Bez tego `core.autocrlf=true` (typowy Windows config) konwertuje LF→CRLF przy
+# checkout, co dla plików migracji SQLite było katastrofalne: sqlx liczy checksum
+# z bajtów pliku — różne line endings = różne checksumy = aplikacja odmawia
+# startu z "migration N was previously applied but has been modified".
+
+# Domyślnie: tekst, LF w git, autoconvert przy checkout zależnie od OS.
+* text=auto eol=lf
+
+# Migracje SQL MUSZĄ być LF — checksum sqlx zależy od bajtów pliku.
+*.sql text eol=lf
+
+# Source code — LF dla spójności cross-platform.
+*.rs   text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.svg  text eol=lf
+
+# Pliki binarne — bez konwersji.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.webp   binary
+*.gif    binary
+*.ico    binary
+*.icns   binary
+*.pdf    binary
+*.zip    binary
+*.exe    binary
+*.dll    binary
+*.dylib  binary
+*.so     binary
