@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { ZoomableImage } from "../ui/ZoomableImage";
 import { modelLabel } from "../../lib/aiModelLabels";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useGallery, type GalleryImage } from "../../hooks/useGallery";
 import { useBatchJobs } from "../../hooks/useBatchJobs";
 import { useEditorStore } from "../../stores/editorStore";
@@ -200,6 +201,7 @@ function ImageViewModal({
 }: ImageViewModalProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const addToast = useToastStore((s) => s.addToast);
+  useEscapeKey(true, onClose);
 
   const handleDownload = useCallback(async () => {
     if (!src) return;

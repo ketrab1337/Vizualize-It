@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { useProject } from "../../hooks/useProject";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 
 interface NewProjectModalProps {
   open: boolean;
@@ -13,6 +14,7 @@ export function NewProjectModal({ open, onClose }: NewProjectModalProps) {
   const [error, setError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const { createProject } = useProject();
+  useEscapeKey(open, onClose);
 
   useEffect(() => {
     if (open) {
@@ -39,7 +41,8 @@ export function NewProjectModal({ open, onClose }: NewProjectModalProps) {
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter") handleCreate();
-    if (e.key === "Escape") onClose();
+    // Escape jest też w useEscapeKey, ale tu zostaje na wypadek gdyby focus
+    // był na inpucie i listener okna nie odpalił (rzadkie, ale defensywnie).
   }
 
   return (
@@ -57,9 +60,11 @@ export function NewProjectModal({ open, onClose }: NewProjectModalProps) {
 
         <div className="px-5 py-4 space-y-3">
           <div>
-            <label className="block text-gray-400 text-xs mb-1.5">Nazwa projektu</label>
+            <label htmlFor="new-project-name" className="block text-gray-400 text-xs mb-1.5">Nazwa projektu</label>
             <input
               ref={inputRef}
+              id="new-project-name"
+              name="project_name"
               type="text"
               value={name}
               onChange={(e) => {

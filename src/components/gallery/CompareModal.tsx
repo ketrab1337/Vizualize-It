@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { ZoomableImage } from "../ui/ZoomableImage";
 import { modelLabel } from "../../lib/aiModelLabels";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import type { GalleryImage } from "../../hooks/useGallery";
 
 interface CompareModalProps {
@@ -28,6 +29,7 @@ const CompareZoom = ({ src }: { src: string | undefined }) => (
 );
 
 export function CompareModal({ images, dataUrls, onClose }: CompareModalProps) {
+  useEscapeKey(true, onClose);
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col bg-black/90"

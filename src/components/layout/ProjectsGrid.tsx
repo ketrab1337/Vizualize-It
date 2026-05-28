@@ -5,6 +5,7 @@ import { readFile } from "@tauri-apps/plugin-fs";
 import { getDb } from "../../lib/db";
 import { useProjectStore } from "../../stores/projectStore";
 import { useProject } from "../../hooks/useProject";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import type { Project } from "../../types";
 
 interface ProjectsGridProps {
@@ -328,37 +329,55 @@ export function ProjectsGrid({ onNewProject }: ProjectsGridProps) {
 
       {/* Modal potwierdzenia usunięcia */}
       {confirmDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-          onClick={() => setConfirmDelete(null)}
-        >
-          <div
-            className="bg-[#1e1e1e] rounded-lg shadow-xl w-full max-w-sm mx-4 p-5"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="text-white font-medium mb-2">Usuń projekt</h2>
-            <p className="text-gray-400 text-sm mb-5">
-              Czy na pewno chcesz usunąć projekt{" "}
-              <span className="text-white font-medium">„{confirmDelete.name}"</span>?
-              Wszystkie pliki projektu zostaną trwale usunięte.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setConfirmDelete(null)}
-                className="px-4 py-2 rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors"
-              >
-                Anuluj
-              </button>
-              <button
-                onClick={handleConfirmDelete}
-                className="px-4 py-2 rounded-md bg-red-700 hover:bg-red-600 text-white text-sm font-medium transition-colors"
-              >
-                Usuń
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDeleteOverlay
+          name={confirmDelete.name}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={handleConfirmDelete}
+        />
       )}
+    </div>
+  );
+}
+
+interface ConfirmDeleteOverlayProps {
+  name: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+// Wydzielony komponent — useEscapeKey wymaga komponentu React, nie inline JSX.
+function ConfirmDeleteOverlay({ name, onCancel, onConfirm }: ConfirmDeleteOverlayProps) {
+  useEscapeKey(true, onCancel);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-[#1e1e1e] rounded-lg shadow-xl w-full max-w-sm mx-4 p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-white font-medium mb-2">Usuń projekt</h2>
+        <p className="text-gray-400 text-sm mb-5">
+          Czy na pewno chcesz usunąć projekt{" "}
+          <span className="text-white font-medium">„{name}"</span>?
+          Wszystkie pliki projektu zostaną trwale usunięte.
+        </p>
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors"
+          >
+            Anuluj
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 rounded-md bg-red-700 hover:bg-red-600 text-white text-sm font-medium transition-colors"
+          >
+            Usuń
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

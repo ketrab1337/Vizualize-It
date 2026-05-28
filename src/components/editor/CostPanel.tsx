@@ -186,6 +186,8 @@ function LedSection({ totalLed }: { totalLed: number }) {
               <div className="text-gray-400 text-[10px] mb-0.5">Długość taśmy</div>
               <div className="flex items-center gap-1.5">
                 <input
+                  name="led_strip_length_m"
+                  aria-label="Długość taśmy LED w metrach bieżących"
                   type="number"
                   min="0"
                   step="0.1"
@@ -205,6 +207,7 @@ function LedSection({ totalLed }: { totalLed: number }) {
             <div className="space-y-1.5">
               <label className="flex items-center gap-1.5 text-gray-400 cursor-pointer select-none">
                 <input
+                  name="led_has_power_supply"
                   type="checkbox"
                   checked={ledConfig.hasPowerSupply}
                   onChange={(e) => setLedConfig({ hasPowerSupply: e.target.checked })}
@@ -215,6 +218,8 @@ function LedSection({ totalLed }: { totalLed: number }) {
               {ledConfig.hasPowerSupply && (
                 <div className="flex items-center gap-1.5">
                   <input
+                    name="led_power_supply_price"
+                    aria-label="Cena zasilacza LED za sztukę"
                     type="number"
                     min="0"
                     step="0.01"
@@ -349,8 +354,10 @@ export function CostPanelContent() {
             <span className="font-mono">{formatPln(pricing.grandTotal)}</span>
           </div>
           <div className="flex items-center gap-2 pt-1">
-            <span className="text-gray-500 text-xs">Marża</span>
+            <label htmlFor="cost-margin" className="text-gray-500 text-xs">Marża</label>
             <input
+              id="cost-margin"
+              name="cost_margin_pct"
               type="number"
               min="0"
               max="999"

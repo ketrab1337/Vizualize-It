@@ -38,6 +38,8 @@ export function ZoomWidget({
       {zoomInput !== null ? (
         <input
           autoFocus
+          name="canvas_zoom_pct"
+          aria-label="Poziom przybliżenia kanwy w procentach"
           type="number"
           min={10}
           max={500}

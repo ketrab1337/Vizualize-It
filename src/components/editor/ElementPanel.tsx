@@ -302,6 +302,8 @@ function PropertiesTab() {
                 <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Szerokość</div>
                 <div className="flex items-baseline gap-1">
                   <input
+                    name="multi_width_mm"
+                    aria-label="Łączna szerokość zaznaczenia w mm"
                     type="number"
                     min="0.1"
                     step="0.1"
@@ -318,6 +320,8 @@ function PropertiesTab() {
                 <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Wysokość</div>
                 <div className="flex items-baseline gap-1">
                   <input
+                    name="multi_height_mm"
+                    aria-label="Łączna wysokość zaznaczenia w mm"
                     type="number"
                     min="0.1"
                     step="0.1"
@@ -457,6 +461,7 @@ function PropertiesTab() {
         <div className="space-y-1.5">
           <label className="flex items-center gap-2 cursor-pointer group">
             <input
+              name="el_led_backlit"
               type="checkbox"
               checked={override?.ledBacklit === true}
               onChange={(e) => handleLedBacklitChange(e.target.checked)}
@@ -468,6 +473,7 @@ function PropertiesTab() {
           </label>
           <label className="flex items-center gap-2 cursor-pointer group">
             <input
+              name="el_led_frontlit"
               type="checkbox"
               checked={override?.ledFrontlit === true}
               onChange={(e) => handleLedFrontlitChange(e.target.checked)}
@@ -483,8 +489,10 @@ function PropertiesTab() {
       {/* Ilość sztuk — dla dystansów */}
       {isDistans && (
         <div className="space-y-1.5">
-          <label className="text-xs text-gray-400 font-medium block">Ilość sztuk</label>
+          <label htmlFor="el-quantity" className="text-xs text-gray-400 font-medium block">Ilość sztuk</label>
           <input
+            id="el-quantity"
+            name="el_quantity"
             type="number"
             min="1"
             step="1"
@@ -507,6 +515,8 @@ function PropertiesTab() {
               <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Szerokość</div>
               <div className="flex items-baseline gap-1">
                 <input
+                  name="el_width_mm"
+                  aria-label="Szerokość elementu w mm"
                   type="number"
                   min="0.1"
                   step="0.1"
@@ -523,6 +533,8 @@ function PropertiesTab() {
               <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Wysokość</div>
               <div className="flex items-baseline gap-1">
                 <input
+                  name="el_height_mm"
+                  aria-label="Wysokość elementu w mm"
                   type="number"
                   min="0.1"
                   step="0.1"

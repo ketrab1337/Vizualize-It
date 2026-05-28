@@ -4,6 +4,7 @@ import { useMaterials, useCategories, type MaterialInput } from "../../hooks/use
 import { useMaterialsStore } from "../../stores/materialsStore";
 import { ColorPicker } from "../ui/ColorPicker";
 import { useToastStore } from "../../stores/toastStore";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import type { Material, MaterialCategory } from "../../types";
 
 // ── Typy ──────────────────────────────────────────────────────────────────────
@@ -165,6 +166,7 @@ function CategoryManagerModal({ categories, onClose, onChanged }: CategoryManage
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  useEscapeKey(true, onClose);
 
   async function handleAdd() {
     const trimmed = newName.trim();
@@ -347,6 +349,7 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
     useMaterials();
   const { refresh } = useMaterialsStore();
   const addToast = useToastStore((s) => s.addToast);
+  useEscapeKey(true, onClose);
 
   const initialCategory = material?.category ?? defaultCategory ?? "plexa";
 

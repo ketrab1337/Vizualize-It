@@ -300,6 +300,8 @@ export function LayersPanel({
           {editingId === item.id ? (
             <input
               ref={inputRef}
+              name="layer_rename"
+              aria-label="Nowa nazwa elementu"
               value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
               onBlur={commitEdit}
