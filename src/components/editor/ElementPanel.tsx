@@ -435,17 +435,19 @@ function PropertiesTab() {
             <option value="">— Wybierz warstwę pod spodem —</option>
             {Object.entries(nodeOverrides)
               .filter(([id]) => id !== selectedElementId)
-              .map(([id, ov]) => {
-                const matName = materials.find((m) => m.id === ov.materialId)?.name;
-                const colorHex = ov.fill || "—";
-                return (
-                  <option key={id} value={id}>
-                    {colorHex}
-                    {matName ? ` · ${matName}` : ""}
-                    {ov.role ? ` (${ov.role})` : ""}
-                  </option>
-                );
-              })}
+              .reduce<Array<{ id: string; label: string }>>(
+                (acc, [id, ov]) => {
+                  const matName = materials.find((m) => m.id === ov.materialId)?.name;
+                  const colorHex = ov.fill || "—";
+                  const label = `${colorHex}${matName ? ` · ${matName}` : ""}`;
+                  if (!acc.some((x) => x.label === label)) acc.push({ id, label });
+                  return acc;
+                },
+                []
+              )
+              .map(({ id, label }) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
           </select>
         </div>
       )}

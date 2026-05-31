@@ -15,7 +15,7 @@ interface UseCanvasHistoryParams {
   selectedItemsRef: React.MutableRefObject<paper.Item[]>;
   /** Ostatnio zapisany svgContent — reimport w Canvas skip-uje gdy svgContent === ten ref. */
   lastSavedContentRef: React.MutableRefObject<string | null>;
-  setSvgContent: (content: string) => void;
+  setSvgContent: (content: string | null) => void;
   clearSelection: () => void;
   addToSelection: (item: paper.Item) => void;
   rebuildLayerItems: () => void;
@@ -190,13 +190,24 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
 
     setTimeout(() => rebuildLayerItems(), 0);
     if (svgContentRef.current && svgLayerRef.current) {
-      const exported = exportSvgLayer(svgLayerRef.current, mmPerUnitRef.current);
-      const withOverrides = updateSvgWithOverrides(exported, nodeOverridesRef.current);
-      historyRef.current.splice(historyIndexRef.current + 1);
-      historyRef.current.push({ svg: withOverrides, selection: [] });
-      historyIndexRef.current = historyRef.current.length - 1;
-      lastSavedContentRef.current = withOverrides;
-      setSvgContent(withOverrides);
+      const layerEmpty = svgLayerRef.current.children.length === 0;
+      if (layerEmpty) {
+        // Warstwa pusta — traktuj jak brak SVG, żeby assembler promptu nie generował
+        // opisu "schematyczny projekt SVG" dla pustego canvasa.
+        historyRef.current.splice(historyIndexRef.current + 1);
+        historyIndexRef.current = historyRef.current.length - 1;
+        lastSavedContentRef.current = null;
+        svgContentRef.current = null;
+        setSvgContent(null);
+      } else {
+        const exported = exportSvgLayer(svgLayerRef.current, mmPerUnitRef.current);
+        const withOverrides = updateSvgWithOverrides(exported, nodeOverridesRef.current);
+        historyRef.current.splice(historyIndexRef.current + 1);
+        historyRef.current.push({ svg: withOverrides, selection: [] });
+        historyIndexRef.current = historyRef.current.length - 1;
+        lastSavedContentRef.current = withOverrides;
+        setSvgContent(withOverrides);
+      }
     }
     setContextMenu(null);
   }, [selectedItemsRef, svgContentRef, svgLayerRef, nodeOverridesRef, mmPerUnitRef, lastSavedContentRef, clearSelection, rebuildLayerItems, setSvgContent, setContextMenu, removeNodeOverride, removeBoundsForElement]);

@@ -27,6 +27,18 @@ export interface NestResult {
  */
 const SCAN_STEP = 5;
 
+/**
+ * Sprawdza czy item (lub którekolwiek jego dziecko) ma ustawiony kolor wypełnienia.
+ * Kształty stroke-only mają fillColor === null — dla nich geometry check (intersects/contains)
+ * nie widzi "wnętrza", więc musi działać samo AABB.
+ */
+function itemHasFill(item: paper.Item): boolean {
+  if (item.fillColor !== null) return true;
+  const children = (item as paper.Item & { children?: paper.Item[] }).children;
+  if (children) return children.some(itemHasFill);
+  return false;
+}
+
 function rotationAngles(step: RotationStep): number[] {
   if (step >= 360) return [0];
   const angles: number[] = [];
@@ -213,6 +225,13 @@ export function computeNesting(
             }
             // Fallback: intersects() nie wykrywa kształtów leżących idealnie w sobie
             if (col.contains(testCenter) || testClone.contains(cb.center)) {
+              collision = true;
+              break;
+            }
+            // Fallback dla kształtów stroke-only (fillColor === null):
+            // intersects/contains nie widzą "wnętrza" ścieżki bez wypełnienia.
+            // Jeśli AABB jest w zasięgu (dotarliśmy do tej linii), to kolizja.
+            if (!itemHasFill(col)) {
               collision = true;
               break;
             }

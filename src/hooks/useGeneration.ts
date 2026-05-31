@@ -141,13 +141,15 @@ export function useGeneration() {
       // WAŻNE: captureCanvas() zwraca KOMPOZYT (tło + SVG) gdy jest tło.
       // Wysyłanie tła osobno DODATKOWO myli model (widzi 2 obrazy z tłem — przed/po)
       // i powoduje że losowo bierze jedno lub miesza. Dlatego:
-      //   - jest kompozyt → wysyłamy TYLKO kompozyt (zawiera już tło)
-      //   - brak kompozytu, ale jest tło → wysyłamy samo tło
+      //   - jest SVG + (opcjonalnie tło) → wysyłamy TYLKO kompozyt jako svgImageInput
+      //   - brak SVG, ale jest tło → wysyłamy samo tło jako backgroundImageInput
       //   - brak obu → wysyłamy nic z edytora
+      // UWAGA: capture != null NIE oznacza że jest SVG — pusty canvas też zwraca PNG.
+      // Używamy svgContent (store) jako sygnał że SVG faktycznie jest załadowany.
       let backgroundImageInput: { data: string; mime_type: string } | null = null;
       let svgImageInput: { data: string; mime_type: string } | null = null;
 
-      if (capture) {
+      if (capture && svgContent) {
         svgImageInput = { data: capture.pngBase64, mime_type: "image/png" };
       } else if (backgroundDataUrl) {
         backgroundImageInput = dataUrlToBase64(backgroundDataUrl);
