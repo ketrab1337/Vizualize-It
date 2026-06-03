@@ -46,6 +46,12 @@ struct GeminiGenConfig {
     response_modalities: Vec<String>,
     #[serde(rename = "candidateCount", skip_serializing_if = "Option::is_none")]
     candidate_count: Option<u8>,
+    /// Temperatura sampling. Default Gemini = 1.0 (wysoka kreatywność, częsta mutacja
+    /// tekstów i kolorów). Dla edycji-zachowującej (mockup, edit kąta) ustawiamy 0.35
+    /// — model dużo wierniej trzyma się instrukcji o tekstach, kolorach i pixelach tła.
+    /// Empirycznie: 1.0 → "Green-partners.pl" → "Green Partnership"; 0.35 → tekst zostaje.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 // ── Response structures ───────────────────────────────────────────────────
@@ -242,6 +248,7 @@ fn build_request(config: &GenerationConfig) -> GeminiRequest {
             // wspierają candidateCount > 1 ("Multiple candidates is not enabled for this
             // model"). Dla count > 1 robimy N osobnych wywołań w `generate()` / submit_batch.
             candidate_count: None,
+            temperature: Some(0.35),
         },
     }
 }
@@ -421,6 +428,7 @@ impl ImageGenerator for GoogleAiProvider {
                 // TEXT+IMAGE — Gemini-3 "thinking process" w tekście stabilizuje edycję.
                 response_modalities: vec!["TEXT".to_string(), "IMAGE".to_string()],
                 candidate_count: None,
+                temperature: Some(0.35),
             },
         };
 

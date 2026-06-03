@@ -67,6 +67,24 @@ export interface AssembleOptions {
    * Null/undefined = brak środowiska w prompcie.
    */
   timeOfDayPreset?: { text: string; anchor?: string } | null;
+  /**
+   * Model docelowy — wpływa na etykiety obrazów i dodatkowe imperatywy:
+   *   - "openai" → "Image N" + angielski imperatyw w ścieżce ze zdjęciem materiału
+   *     (GPT-Image-2 nie koreluje polskich "Obraz N" z nazwami plików multipart)
+   *   - "gemini" (default) → "Obraz N", brak dodatkowych instrukcji
+   */
+  targetModel?: "gemini" | "openai";
+}
+
+/** Etykieta obrazu w prompcie — różni się per model docelowy. */
+function imgLabel(n: number, target?: "gemini" | "openai"): string {
+  return target === "openai" ? `Image ${n}` : `Obraz ${n}`;
+}
+
+/** Pierwszą literą dużą — reszta bez zmian. Polskie znaki obsługiwane. */
+function capitalize(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /**
@@ -143,7 +161,10 @@ function describeThickness(thicknessMm: number | null): string | null {
  * Struktura: backplate na spodzie, dekoracje, logo, napisy na wierzchu (z głębią).
  * Jeśli są dystanse — cały produkt stoi na nich, oddalony od ściany.
  */
-function buildLayerStructure(elements: SignElement[], productNoun: { nominative: string; genitive: string }): string | null {
+function buildLayerStructure(
+  elements: SignElement[],
+  productNoun: { nominative: string; genitive: string }
+): string | null {
   const byRole: Record<string, SignElement[]> = {
     backplate: [],
     decoration: [],
@@ -196,8 +217,8 @@ function buildLayerStructure(elements: SignElement[], productNoun: { nominative:
     const colors = [...new Set(byRole.text.map((e) => e.colorHex ?? "domyślny"))].join(", ");
     lines.push(
       `- Napisy (warstwa wierzchnia): regiony ${colors} w SVG, litery jako OSOBNE wystające ` +
-      `elementy zamontowane NA tle ${gg} (nie wtopione w tło), rzucające wyraźny cień na ` +
-      `backplate pod nimi — głębia liter musi być wizualnie widoczna`
+      `elementy zamontowane NA tle ${gg}, rzucające wyraźny cień na backplate pod nimi — ` +
+      `wyraźnie widoczna głębia liter`
     );
   }
 
@@ -221,7 +242,21 @@ function buildLayerStructure(elements: SignElement[], productNoun: { nominative:
   }
 
   if (lines.length === 0) return null;
-  return `Warstwy ${gg} (od spodu do wierzchu):\n${lines.join("\n")}`;
+
+  // Licznik kompozycji — model wie ILE elementów ma renderować i w ilu kolorach.
+  // Bez tego przy 20+ elementach AI improwizuje liczbę napisów/dekoracji.
+  const countedRoles = elements.filter((el) => el.role && el.role !== "distance");
+  const totalEls = countedRoles.length;
+  const uniqueColors = new Set(
+    countedRoles.map((el) => el.colorHex).filter((c): c is string => !!c)
+  );
+  const header =
+    totalEls > 0
+      ? `Warstwy ${gg} (od spodu do wierzchu, łącznie ${totalEls} ` +
+        `${totalEls === 1 ? "element" : "elementów"} w ${uniqueColors.size} ` +
+        `${uniqueColors.size === 1 ? "kolorze" : "kolorach"}):`
+      : `Warstwy ${gg} (od spodu do wierzchu):`;
+  return `${header}\n${lines.join("\n")}`;
 }
 
 /**
@@ -256,49 +291,84 @@ function describeElementMaterial(
   thicknessMm: number | null,
   hasReferencePhoto: boolean,
   referenceImageIndex: number | null,
-  hasBackground: boolean
+  hasBackground: boolean,
+  targetModel?: "gemini" | "openai"
 ): string {
   const color = colorHex ?? "domyślny";
   const thicknessDesc = describeThickness(thicknessMm);
   const thicknessSuffix = thicknessDesc ? `, ${thicknessDesc}` : "";
+  const sceneRef = imgLabel(1, targetModel);
 
-  // ── Ścieżka 1: lustro / połysk — refleksyjne powierzchnie ──────────────
-  // Zdjęcie referencyjne (jeśli jest) służy tu TYLKO jako wskazówka koloru tintu,
-  // NIE jako tekstura powierzchni. Lustro odbija otoczenie, nie ma "własnej" faktury.
-  if (m.material_type === "lustro" || m.material_type === "polysk") {
-    const isLustro = m.material_type === "lustro";
-    const surface = isLustro
-      ? "wysokopolerowany, lustrzany panel akrylowy, w pełni refleksyjny"
-      : "panel z akrylu o wysokim połysku, polerowany, z silnymi lustrzanymi odbiciami";
-
-    // Źródło refleksji — kompozyt (Obraz 1) lub fallback dla monochromatycznego tła
+  // ── Ścieżka 1a: lustro — w pełni refleksyjna powierzchnia ──────────────
+  // Lustro nie ma własnej barwy; jego dominującym efektem jest odbicie otoczenia.
+  // Zdjęcie / kolor hex służy WYŁĄCZNIE jako tint hue, nie jako tekstura powierzchni.
+  if (m.material_type === "lustro") {
+    const surface = "wysokopolerowany, lustrzany panel akrylowy, w pełni refleksyjny";
     const reflectionDesc = hasBackground
-      ? `odbijający otoczenie widoczne na Obrazie 1 (ściana, sufit, światła, meble, wystrój) ` +
-        `— refleksy powinny pasować do tej konkretnej sceny`
-      : `z subtelnymi miękkimi rozbłyskami światła otoczenia (soft ambient highlights), ` +
-        `bez wyraźnych, szczegółowych odbić — neutralne studyjne otoczenie`;
-
+      ? `odbijający otoczenie z ${sceneRef} (ściana, sufit, światła, meble) — refleksy spójne z tą sceną`
+      : `z miękkimi rozbłyskami światła otoczenia, neutralne studyjne tło`;
     const tintRef = hasReferencePhoto && referenceImageIndex != null
-      ? `, z subtelnym przebarwieniem (tint) w tonie z Obrazu ${referenceImageIndex} ` +
-        `(Obraz ${referenceImageIndex} pokazuje DOMINUJĄCY ODCIEŃ refleksji — NIE jest teksturą powierzchni)`
+      ? ` z subtelnym tintem w tonie z ${imgLabel(referenceImageIndex, targetModel)} (${imgLabel(referenceImageIndex, targetModel)} = dominujący odcień refleksji, nie tekstura)`
       : colorHex
-        ? `, z subtelnym przebarwieniem (tint) w tonie ${color}`
+        ? ` z subtelnym tintem w tonie ${color}`
         : "";
+    return `region ${color} w SVG → ${surface}, ${reflectionDesc},${tintRef}${thicknessSuffix} (większość powierzchni to odbicia, kolor ${color} pełni rolę tintu)`;
+  }
 
-    return (
-      `region o kolorze ${color} w SVG → ${surface}, ${reflectionDesc}${tintRef}${thicknessSuffix} ` +
-      `(kolor ${color} to identyfikator regionu w SVG — większość powierzchni pokazuje REFLEKSY, ` +
-      `nie ten kolor)`
-    );
+  // ── Ścieżka 1b: połysk — kolorowa plexa z błyszczącą powierzchnią ──────
+  // KRYTYCZNE: jeśli materiał ma zdjęcie referencyjne, hex jest WYŁĄCZNIE
+  // lokalizatorem regionu — nie pojawia się jako "dominujący kolor". Wcześniejsza
+  // wersja pisała "polerowana plexa w nasyconym, dominującym kolorze #X" PLUS
+  // "dokładny odcień pobierz z Obraz N" — dwa sprzeczne sygnały, model zawsze
+  // wybierał pierwszy (mocniejsza gramatyka) i renderował kolor z color pickera
+  // zamiast koloru ze zdjęcia. Color picker w aplikacji to TYLKO identyfikator
+  // regionów SVG — nigdy nie jest sugestią faktycznego koloru materiału.
+  const reflectionDesc = hasBackground
+    ? `wyraźne błyski światła i refleksy odpowiadające oświetleniu sceny z ${sceneRef}`
+    : `wyraźne błyski światła otoczenia, neutralne studyjne oświetlenie`;
+  if (m.material_type === "polysk") {
+    if (hasReferencePhoto && referenceImageIndex != null) {
+      const refLabel = imgLabel(referenceImageIndex, targetModel);
+      // Pozytywna konstrukcja: kolor pochodzi ze zdjęcia, hex pełni rolę locatora.
+      // Bez negacji typu "nie traktuj jako koloru" — to było paradoksalnie szkodliwe.
+      const polishPart =
+        `region ${color} w SVG → polerowana plexa, gładka błyszcząca powierzchnia. ` +
+        `Kolor i odcień materiału: identyczny jak na ${refLabel} ` +
+        `(zdjęcie referencyjne). Hex ${color} pełni rolę identyfikatora regionu w SVG. ` +
+        `${reflectionDesc}${thicknessSuffix}`;
+      // Dla GPT-Image-2 dorzucamy krótki EN imperatyw — model słabiej reaguje na
+      // polskie etykiety "Obraz N" niż Gemini i potrzebuje wzmocnienia.
+      if (targetModel === "openai") {
+        return (
+          polishPart +
+          `. Color source for region ${color}: copy directly from ${refLabel} ` +
+          `(material reference photo). The hex value is a region identifier in the SVG`
+        );
+      }
+      return polishPart;
+    }
+    // Bez zdjęcia: hex JEST jedynym źródłem koloru (intencja użytkownika z color pickera)
+    return `region ${color} w SVG → polerowana plexa w nasyconym, dominującym kolorze ${color}, gładka błyszcząca powierzchnia, ${reflectionDesc}${thicknessSuffix}`;
   }
 
   // ── Ścieżka 2: zdjęcie referencyjne ma PRIORYTET (nie-lustro/połysk) ───
+  // KRYTYCZNE dla GPT-Image-2: dorzucamy angielski imperatyw, bo polskie etykiety
+  // "Obraz N" są dla niego słabszym sygnałem niż dla Gemini; GPT bez tego wraca
+  // do hexu z SVG i renderuje plastikowy kolor z color pickera zamiast tekstury
+  // ze zdjęcia referencyjnego.
   if (hasReferencePhoto && referenceImageIndex != null) {
-    return (
-      `region o kolorze ${color} w SVG → użyj dokładnie tej samej tekstury, koloru i wykończenia, ` +
-      `co na Obrazie ${referenceImageIndex} (zdjęcie referencyjne materiału)${thicknessSuffix}. ` +
-      `Kolor hex ${color} jest tu wyłącznie identyfikatorem regionu w SVG, NIE rzeczywistym kolorem materiału`
-    );
+    const refLabel = imgLabel(referenceImageIndex, targetModel);
+    // Pozytywna wersja: jedno zdanie pokazujące skąd brać kolor + rola hexu jako locator.
+    const polishPart =
+      `region o kolorze ${color} w SVG → kolor, tekstura i wykończenie identyczne jak na ${refLabel} ` +
+      `(zdjęcie referencyjne materiału)${thicknessSuffix}. Hex ${color} pełni rolę identyfikatora regionu w SVG`;
+    if (targetModel === "openai") {
+      return (
+        polishPart +
+        `. Color and texture source for region ${color}: copy directly from ${refLabel}`
+      );
+    }
+    return polishPart;
   }
 
   // ── Ścieżka 3: standard ────────────────────────────────────────────────
@@ -460,6 +530,7 @@ export function assemblePromptFragments(
   // Polskie odmiany nazwy produktu — używane w opisach dla AI ("szyldu" →
   // "tabliczki informacyjnej", "numeru na dom", ...). Default = "szyld".
   const productNoun = getProductNoun(config.productType);
+  const target = options?.targetModel;
 
   // ── STRUKTURA PROMPTU ───────────────────────────────────────────────────
   // Wzorzec mockup od Google Cloud (oficjalny guide Nano Banana, 2026):
@@ -470,7 +541,7 @@ export function assemblePromptFragments(
   // ("Nie zmieniaj X"). Modele transformerowe gorzej radzą sobie z negacjami.
   // ────────────────────────────────────────────────────────────────────────
 
-  // Mapowanie: nodeId → numer "Obraz N" w prompcie (dla elementów ze zdjęciem materiału).
+  // Mapowanie: nodeId → numer obrazu w prompcie (dla elementów ze zdjęciem materiału).
   const elementToImageIdx: Record<string, number> = {};
 
   if (visualInputs) {
@@ -478,39 +549,44 @@ export function assemblePromptFragments(
     let imgIdx = 1;
 
     if (visualInputs.hasSvg && visualInputs.hasBackground) {
-      // KOMPOZYT — najczęstszy przypadek (tło + schematyczny SVG nałożony)
+      // KOMPOZYT — najczęstszy przypadek (tło + schematyczny SVG nałożony).
+      // Zwięzła, pozytywna instrukcja. Google docs (Nano Banana guide) i Anthropic
+      // research zgodnie pokazują: krótszy, pozytywny prompt > długi prompt z negacjami.
+      // Każda negacja ("NIE zmieniaj X") rozcieńcza sygnał i czasem działa odwrotnie.
+      const sceneLabel = imgLabel(imgIdx, target);
       imgRefs.push(
         `ZADANIE: fotorealistyczna wizualizacja ${productNoun.genitive} (mockup). ` +
-          `Obraz ${imgIdx} to PRAWDZIWE ZDJĘCIE wnętrza z nałożoną schematyczną nakładką SVG ` +
-          `(płaskie, kolorowe kształty pokazujące planowane położenie, rozmiar i kształt ${productNoun.genitive} na ścianie).` +
+          `${sceneLabel} to PRAWDZIWE ZDJĘCIE wnętrza z półprzezroczystą nakładką SVG, ` +
+          `która pokazuje gdzie ma być ${productNoun.nominative}, jaki ma kształt i jakie kolory ` +
+          `mają poszczególne regiony.` +
           `\n\n` +
-          `Biorąc Obraz ${imgIdx} jako bazową scenę i kolorowe kształty SVG jako strukturę ` +
-          `umieszczenia, przekształć schematyczne kształty w fotorealistyczny ${productNoun.nominative} wykonany ` +
-          `z materiałów opisanych poniżej.` +
+          `Wyrenderuj zdjęcie identyczne jak ${sceneLabel}, ale z nakładką SVG zastąpioną ` +
+          `gotowym, fotorealistycznym renderem ${productNoun.genitive}. ` +
+          `Cała reszta sceny pozostaje IDENTYCZNA (pixel-perfect): ściana, sufit, podłoga, ` +
+          `meble, osoby, rośliny, oświetlenie, perspektywa, kąt kamery.` +
           `\n\n` +
-          `Zachowaj CAŁĄ scenę z Obrazu ${imgIdx} dokładnie tak, jak jest widoczna — tę samą fakturę ścian, ` +
-          `ten sam sufit, tę samą podłogę, te same meble i wystrój, te same osoby i ich pozy, ` +
-          `te same rośliny i przedmioty, to samo światło z okien i oświetlenie otoczenia, ` +
-          `ten sam kąt kamery i perspektywę. Wynik musi wyglądać jak to samo zdjęcie, ` +
-          `tylko ze schematycznym regionem SVG zastąpionym gotowym renderem ${productNoun.genitive}.` +
-          `\n\n` +
-          `Wyrenderowany ${productNoun.nominative} powinien zajmować dokładnie tę samą pozycję i skalę co schematyczne ` +
-          `kształty SVG na Obrazie ${imgIdx}, rzucać naturalne cienie zgodne z istniejącym oświetleniem sceny ` +
-          `oraz realistycznie odbijać światło otoczenia z widocznego środowiska.`
+          `${capitalize(productNoun.nominative)} jest TRÓJWYMIAROWYM obiektem fizycznie ` +
+          `zamontowanym na ścianie: ma głębię, rzuca naturalne cienie, realistycznie odbija ` +
+          `światło sceny, a jego krawędzie podążają za perspektywą ściany widocznej na ${sceneLabel}. ` +
+          `Mapa kolorów na nakładce SVG pokazuje DOKŁADNE przypisanie koloru do regionu — ` +
+          `każdy region zachowuje swoją pozycję, kształt i kolor (zmienia się tylko forma: ` +
+          `z płaskiego kształtu na fotorealistyczny materiał).`
       );
       imgIdx++;
     } else if (visualInputs.hasSvg) {
+      const sceneLabel = imgLabel(imgIdx, target);
       imgRefs.push(
         `ZADANIE: fotorealistyczny render ${productNoun.genitive}. ` +
-          `Obraz ${imgIdx} to schematyczny projekt SVG (płaskie, kolorowe kształty pokazujące układ ${productNoun.genitive}). ` +
+          `${sceneLabel} to schematyczny projekt SVG (płaskie, kolorowe kształty pokazujące układ ${productNoun.genitive}). ` +
           `Wyrenderuj go jako fotorealistyczny ${productNoun.nominative} wykonany z materiałów opisanych poniżej, ` +
           `z naturalnym studyjnym oświetleniem i czystym, neutralnym tłem.`
       );
       imgIdx++;
     } else if (visualInputs.hasBackground) {
+      const sceneLabel = imgLabel(imgIdx, target);
       imgRefs.push(
         `ZADANIE: dodaj ${productNoun.nominative} do istniejącego zdjęcia. ` +
-          `Obraz ${imgIdx} to PRAWDZIWE ZDJĘCIE ściany wnętrza. ` +
+          `${sceneLabel} to PRAWDZIWE ZDJĘCIE ściany wnętrza. ` +
           `Zachowaj CAŁĄ scenę dokładnie tak, jak jest widoczna — tę samą ścianę, ten sam sufit, tę samą podłogę, ` +
           `te same meble, to samo światło i cienie. ` +
           `Dodaj opisany poniżej ${productNoun.nominative} na ścianę — z naturalnymi cieniami zgodnymi z istniejącym ` +
@@ -561,10 +637,15 @@ export function assemblePromptFragments(
           }
           continue;
         }
-        matRefs.push(
-          `Obraz ${thisImgIdx} to próbka tekstury materiału — nałóż dokładnie tę teksturę, kolor i ` +
-            `wykończenie na ${elementToken} odpowiadającego regionowi SVG ${regions}`
-        );
+        const matLabel = imgLabel(thisImgIdx, target);
+        const matLine =
+          `${matLabel} to próbka tekstury materiału — nałóż dokładnie tę teksturę, kolor i ` +
+          `wykończenie na ${elementToken} odpowiadającego regionowi SVG ${regions}`;
+        // Krótki EN imperatyw dla GPT-Image-2 — pozytywnie, bez „NOT the material color".
+        const matLineWithCta = target === "openai"
+          ? `${matLine}. Texture and color source for SVG region ${regions}: ${matLabel}`
+          : matLine;
+        matRefs.push(matLineWithCta);
         for (const nid of group.nodeIds) {
           elementToImageIdx[nid] = thisImgIdx;
         }
@@ -586,16 +667,20 @@ export function assemblePromptFragments(
         for (let i = 0; i < refCount; i++) {
           const idx = refStart + i;
           const desc = (descs[i] ?? "").trim();
+          const lbl = imgLabel(idx, target);
           if (desc) {
-            refLines.push(`Obraz ${idx}: ${desc}`);
+            refLines.push(`${lbl}: ${desc}`);
           } else {
-            refLines.push(`Obraz ${idx}: dodatkowa inspiracja stylistyczna`);
+            refLines.push(`${lbl}: dodatkowa inspiracja stylistyczna`);
           }
         }
         imgRefs.push(refLines.join("; "));
       } else {
         const refEnd = refStart + refCount - 1;
-        const range = refStart === refEnd ? `Obraz ${refStart}` : `Obrazy ${refStart}–${refEnd}`;
+        const startLbl = imgLabel(refStart, target);
+        const range = refStart === refEnd
+          ? startLbl
+          : `${startLbl}–${imgLabel(refEnd, target).split(" ")[1]}`;
         imgRefs.push(
           `${range} to dodatkowe inspiracje stylistyczne (użyj jako referencji dla jakości wykończenia i światła)`
         );
@@ -606,35 +691,50 @@ export function assemblePromptFragments(
     }
   }
 
-  // TEKSTY z SVG — pozytywny format, bez negacji.
+  // TEKSTY z SVG — Gemini (Nano Banana) bardzo często mutuje teksty:
+  // "Green-partners.pl" → "Green Partnership", "Green ENGINEERS", "G&N partners".
+  // Pozytywna instrukcja + przykład w cudzysłowach + niska temperatura (0.35)
+  // wspólnie dają wierność. Wersja z listą "NIE skracaj, NIE tłumacz..." była dłuższa
+  // i — paradoksalnie — gorsza, bo każda wzmianka mutacji aktywuje ją u modelu.
   const svgTexts = visualInputs?.svgTexts ?? [];
   if (svgTexts.length > 0) {
-    const quoted = svgTexts.map((t) => `„${t}"`).join(", ");
+    const quoted = svgTexts.map((t) => `"${t}"`).join(", ");
     fragments.push({
       id: FRAGMENT_IDS.SVG_TEXTS,
       text:
-        `Wyrenderuj widoczne teksty dokładnie tak, jak widać w projekcie SVG, znak po znaku: ${quoted}. ` +
-        `Użyj tych samych krojów pisma, odstępów i wielkości liter co w SVG.`,
+        `Teksty na ${productNoun.genitive} (skopiuj DOSŁOWNIE, znak po znaku): ${quoted}. ` +
+        `Zachowaj identyczną pisownię, wielkość liter, łączniki i znaki interpunkcyjne. ` +
+        `Użyj krojów pisma i rozmiarów liter zgodnych z projektem SVG.`,
     });
   }
 
+  // KOLEJNOŚĆ: warstwy PRZED materiałami — model musi wiedzieć "co buduje"
+  // (backplate → napisy → logo → dystanse) zanim usłyszy "z czego". Wcześniej
+  // materiały lądowały pierwsze, a "Warstwy" na końcu — AI traktowała listę
+  // hexów jako płaską mapę kolorów bez głębi.
+  const layerStructure = buildLayerStructure(config.elements, productNoun);
+  if (layerStructure) {
+    fragments.push({ id: FRAGMENT_IDS.LAYERS, text: layerStructure });
+  }
+
   // Materiały elementów — trzy ścieżki w `describeElementMaterial`.
-  // Deduplikacja po (colorHex + thicknessMm + role): te trzy razem identyfikują
-  // unikalny "wariant elementu". Dwa napisy w tym samym kolorze i grubości mają
-  // identyczny opis — jeden wystarczy. Ale ten sam kolor w innej grubości lub
-  // innej roli (np. czerwone tło vs czerwone litery) zasługuje na osobny opis.
+  // Deduplikacja po (colorHex + thicknessMm) — opis materiału jest funkcją
+  // KOLORU + GRUBOŚCI + materiału, NIE roli. Rola jest opisywana osobno
+  // w `buildLayerStructure` (tam każdy hex trafia do swojej warstwy). Wcześniej
+  // dedup obejmował też rolę — przez co ten sam hex używany w 2 rolach (np.
+  // #3ab238 jako napis I logo) dostawał IDENTYCZNY długi opis 2 razy.
   const hasBg = !!visualInputs?.hasBackground;
   const seenKeys = new Set<string>();
   const materialDescriptions: string[] = [];
   for (const el of elementsWithMaterial) {
     const colorKey = el.colorHex ?? "domyślny";
-    const dedupKey = `${colorKey}|${el.thicknessMm ?? ""}|${el.role ?? ""}`;
+    const dedupKey = `${colorKey}|${el.thicknessMm ?? ""}`;
     if (seenKeys.has(dedupKey)) continue;
     seenKeys.add(dedupKey);
     const hasPhoto = !!el.material!.photo_path;
     const imageIdx = elementToImageIdx[el.nodeId] ?? null;
     materialDescriptions.push(
-      describeElementMaterial(el.material!, el.colorHex, el.thicknessMm, hasPhoto, imageIdx, hasBg)
+      describeElementMaterial(el.material!, el.colorHex, el.thicknessMm, hasPhoto, imageIdx, hasBg, target)
     );
   }
   if (materialDescriptions.length > 0) {
@@ -645,14 +745,6 @@ export function assemblePromptFragments(
         materialDescriptions.join("; ") +
         ".",
     });
-  }
-
-  // Warstwowość: jeśli user przypisał role, dorzuć opis hierarchii warstw
-  // (backplate → dekoracje → logo → napisy). Bez tego AI dostaje płaską mapę
-  // kolorów i napisy lądują w jednej płaszczyźnie z tłem.
-  const layerStructure = buildLayerStructure(config.elements, productNoun);
-  if (layerStructure) {
-    fragments.push({ id: FRAGMENT_IDS.LAYERS, text: layerStructure });
   }
 
   const distanceEl = elementsWithMaterial.find((el) => el.material?.category === "dystans");

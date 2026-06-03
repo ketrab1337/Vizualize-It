@@ -29,10 +29,14 @@ import { CanvasToolbar } from "./canvas/CanvasToolbar";
 import { ZoomWidget } from "./canvas/ZoomWidget";
 import { CanvasContextMenu, type CtxMenuState } from "./canvas/CanvasContextMenu";
 import { DragOverlay, type DragOverKind } from "./canvas/DragOverlay";
+import { PerspectiveOverlay } from "./canvas/PerspectiveOverlay";
 import { useCanvasHistory } from "./canvas/useCanvasHistory";
 import { useZoomActions } from "./canvas/useZoomActions";
 import type { LayerItem } from "./LayersPanel";
-import type { NodeOverride, Project, ElementRole } from "../../types";
+import type { NodeOverride, Project, ElementRole, PerspectiveCorners } from "../../types";
+import { DEFAULT_PERSPECTIVE_CORNERS } from "../../types";
+import { warpCanvasToQuad, computeHomography, applyHomography, type Quad } from "../../lib/perspectiveWarp";
+import { useProject } from "../../hooks/useProject";
 
 function setBoundsRecursive(
   item: paper.Item,
@@ -144,6 +148,9 @@ export function Canvas({ project }: CanvasProps) {
   const bgLayerRef = useRef<paper.Layer | null>(null);
   const pageRectRef = useRef<paper.Shape | null>(null);
   const nodeOverridesRef = useRef<Record<string, NodeOverride>>({});
+  // Ref do narożników perspektywy — captureCanvas wczytuje go bez rerenderów
+  // (rejestracja captureCanvasFnRef jest jednorazowa, useEffect bez deps).
+  const perspectiveCornersRef = useRef<PerspectiveCorners | null>(null);
   // Wartość ostatnio zapisanego svgContent (przez nasze save flow). Reimport useEffect
   // porównuje `svgContent === lastSavedContentRef.current` — jeśli równe, pomija reimport.
   // Wcześniej był tu `isSavingRef` z `setTimeout(50)` — czas-based dedup był fragile
@@ -222,12 +229,15 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     selectedElementIds: _sel, setSelectedElementIds,
     backgroundDataUrl, backgroundPath, setBackground, clearBackground,
     nodeOverrides, setNodeOverride, renameNodeOverride, removeNodeOverride, clearNodeOverrides,
+    perspectiveCorners, perspectiveEditing, setPerspectiveCorners, setPerspectiveEditing,
   } = useEditorStore();
   void _sel; // używane tylko przez ElementPanel przez store
   const addToast = useToastStore((s) => s.addToast);
+  const { activeProjectId, updatePerspectiveCorners } = useProject();
 
   svgContentRef.current = svgContent;
   nodeOverridesRef.current = nodeOverrides;
+  perspectiveCornersRef.current = perspectiveCorners;
 
   // Synchronizuj wypełnienie i obramowanie prostokąta strony z obecnością tła
   useEffect(() => {
@@ -722,7 +732,76 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         const dy = (ch - dh) / 2;
         ctx.drawImage(bgImg!, dx, dy, dw, dh);
 
-        ctx.drawImage(canvas, 0, 0);
+        // ── Warp perspektywy ────────────────────────────────────────────────
+        // KONCEPCJA: 4 narożniki = krawędzie ŚCIANY na zdjęciu (sufit-ściana,
+        // podłoga-ściana). Edytor canvas Paper.js traktujemy jako fronto-paralelny
+        // widok tej ściany. SVG w edytorze ma swoją proporcjonalną pozycję i skalę.
+        //
+        // ALGORYTM:
+        //   1. Homografia H: canvas-corners (fronto-paralelnym widokiem) → wallQuad
+        //      (perspektywiczny widok ściany na zdjęciu)
+        //   2. SVG-bbox w canvas pixels → 4 narożniki
+        //   3. Apply H do każdego narożnika SVG-bbox → warpedSvgQuad
+        //   4. Bilinear warp canvas[svgBBox] → warpedSvgQuad
+        //
+        // WYNIK: SVG zachowuje swoją proporcjonalną pozycję i skalę względem
+        // ściany (= canvas Paper.js), ALE jest umieszczony z perspektywą ściany.
+        // Mały szyld w canvas → mały szyld na ścianie. Duży → duży. Środek →
+        // środek. Lewy górny róg → lewy górny róg ściany.
+        const corners = perspectiveCornersRef.current;
+        const svgLayer = svgLayerRef.current;
+        if (corners && svgLayer) {
+          try {
+            const bounds = (svgLayer as unknown as { bounds: paper.Rectangle }).bounds;
+            if (bounds && bounds.width > 0 && bounds.height > 0) {
+              // Wall quad — 4 narożniki ściany w pikselach offscreen canvas
+              // (po BG cover transform). Te same współrzędne, co PerspectiveOverlay.
+              const wallQuad: Quad = [
+                [dx + corners[0][0] * dw, dy + corners[0][1] * dh],
+                [dx + corners[1][0] * dw, dy + corners[1][1] * dh],
+                [dx + corners[2][0] * dw, dy + corners[2][1] * dh],
+                [dx + corners[3][0] * dw, dy + corners[3][1] * dh],
+              ];
+              // Canvas corners — pełne wymiary Paper.js canvas (= fronto-paralelnym
+              // widokiem ściany). Homografia mapuje "ścianę bez perspektywy" na "ścianę
+              // ze zdjęcia z perspektywą".
+              const canvasCorners: Quad = [
+                [0, 0],
+                [canvas.width, 0],
+                [canvas.width, canvas.height],
+                [0, canvas.height],
+              ];
+              const H = computeHomography(canvasCorners, wallQuad);
+              if (H) {
+                // SVG-bbox w canvas pixels (z paper view coords)
+                const tl = paper.view.projectToView(bounds.topLeft);
+                const br = paper.view.projectToView(bounds.bottomRight);
+                const sx0 = tl.x;
+                const sy0 = tl.y;
+                const sx1 = br.x;
+                const sy1 = br.y;
+                // Apply homografię do 4 narożników SVG-bbox → warped quad NA ŚCIANIE
+                const warpedSvgQuad: Quad = [
+                  applyHomography(H, [sx0, sy0]),
+                  applyHomography(H, [sx1, sy0]),
+                  applyHomography(H, [sx1, sy1]),
+                  applyHomography(H, [sx0, sy1]),
+                ];
+                const srcRect = { x: sx0, y: sy0, w: sx1 - sx0, h: sy1 - sy0 };
+                warpCanvasToQuad(ctx, canvas, srcRect, warpedSvgQuad, 30);
+              } else {
+                // Punkty zdegenerowane — fallback na płaski kompozyt
+                ctx.drawImage(canvas, 0, 0);
+              }
+            } else {
+              ctx.drawImage(canvas, 0, 0);
+            }
+          } catch {
+            ctx.drawImage(canvas, 0, 0);
+          }
+        } else {
+          ctx.drawImage(canvas, 0, 0);
+        }
 
         const pngBase64 = off.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
         return { pngBase64 };
@@ -2211,11 +2290,31 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         backgroundDataUrl={backgroundDataUrl}
         backgroundFilename={bgFilename}
         isNestingOpen={isNestingPanelOpen}
+        perspectiveActive={perspectiveEditing || !!perspectiveCorners}
         onImportSvg={handleImportSvg}
         onExportSvg={handleExportSvg}
         onImportBackground={handleImportBackground}
         onRemoveBackground={handleRemoveBackground}
         onToggleNesting={() => setIsNestingPanelOpen((v) => !v)}
+        onTogglePerspective={() => {
+          // Trzy stany: (off) → (editing+domyślne narożniki) → (off+wyzeruj DB)
+          if (perspectiveCorners || perspectiveEditing) {
+            // Wyłącz: skasuj narożniki w storze i w DB
+            setPerspectiveEditing(false);
+            setPerspectiveCorners(null);
+            if (activeProjectId) {
+              void updatePerspectiveCorners(activeProjectId, null);
+            }
+          } else {
+            // Włącz: ustaw domyślne narożniki + tryb edycji
+            const defaults = DEFAULT_PERSPECTIVE_CORNERS.map((p) => [p[0], p[1]]) as PerspectiveCorners;
+            setPerspectiveCorners(defaults);
+            setPerspectiveEditing(true);
+            if (activeProjectId) {
+              void updatePerspectiveCorners(activeProjectId, defaults);
+            }
+          }
+        }}
       />
 
       {/* Obszar kanwasu z linijkami */}
@@ -2245,6 +2344,21 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
               className="absolute inset-0 w-full h-full"
               style={{ background: backgroundDataUrl ? "transparent" : BG_COLOR }}
             />
+
+            {/* Overlay 4 narożników perspektywy ściany (tylko gdy aktywny tryb edycji) */}
+            {perspectiveEditing && perspectiveCorners && backgroundDataUrl && (
+              <PerspectiveOverlay
+                corners={perspectiveCorners}
+                bgRef={backgroundImgRef}
+                containerRef={containerRef}
+                onChange={setPerspectiveCorners}
+                onCommit={(c) => {
+                  if (activeProjectId) {
+                    void updatePerspectiveCorners(activeProjectId, c);
+                  }
+                }}
+              />
+            )}
 
         {/* Przycisk toggle panelu obiektów */}
         {hasSvg && (

@@ -117,6 +117,12 @@ pub fn run() {
             sql: include_str!("db/migrations/017_drop_cutting_rates.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 18,
+            description: "perspective_corners",
+            sql: include_str!("db/migrations/018_perspective_corners.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

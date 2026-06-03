@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { NodeOverride, SignElement } from "../types";
+import type { NodeOverride, SignElement, PerspectiveCorners } from "../types";
 
 export type ProjectTab = "edytor" | "generowanie" | "galeria";
 
@@ -38,6 +38,18 @@ interface EditorStore {
   backgroundPath: string | null;
   nodeOverrides: Record<string, NodeOverride>;
   ledConfig: LedProjectConfig;
+  /**
+   * 4 punkty perspektywy ściany (znormalizowane 0..1 do wymiarów tła).
+   * `null` = bez warpu (SVG na płasko). Persystencja per projekt w
+   * `projects.perspective_corners` (migracja 018).
+   */
+  perspectiveCorners: PerspectiveCorners | null;
+  /**
+   * UI flag — czy pokazywać overlay z 4 handlami w edytorze. Stan UI, NIE
+   * persystowany. Odpalany togglem w toolbarze. Sam `perspectiveCorners`
+   * decyduje czy captureCanvas() warpuje (UI mode pokazuje tylko narożniki).
+   */
+  perspectiveEditing: boolean;
   setElements: (elements: SignElement[]) => void;
   setSelectedElement: (id: string | null) => void;
   setSelectedItemBounds: (bounds: SelectedItemBounds | null) => void;
@@ -58,6 +70,8 @@ interface EditorStore {
   removeNodeOverride: (id: string) => void;
   clearNodeOverrides: () => void;
   setLedConfig: (patch: Partial<LedProjectConfig>) => void;
+  setPerspectiveCorners: (corners: PerspectiveCorners | null) => void;
+  setPerspectiveEditing: (active: boolean) => void;
   resetEditor: () => void;
 }
 
@@ -73,6 +87,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
   backgroundPath: null,
   nodeOverrides: {},
   ledConfig: { ...LED_CONFIG_DEFAULT },
+  perspectiveCorners: null,
+  perspectiveEditing: false,
   selectedElementIds: [],
   setSelectedElementIds: (ids) => set({ selectedElementIds: ids }),
   setElements: (elements) => set({ elements }),
@@ -139,6 +155,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
   clearNodeOverrides: () => set({ nodeOverrides: {} }),
   setLedConfig: (patch) =>
     set((state) => ({ ledConfig: { ...state.ledConfig, ...patch } })),
+  setPerspectiveCorners: (corners) => set({ perspectiveCorners: corners }),
+  setPerspectiveEditing: (active) => set({ perspectiveEditing: active }),
   resetEditor: () =>
     // UWAGA: NIE resetujemy `activeTab` — to nawigacja UI, nie dane projektu.
     // Reset tutaj powodował bug: po wyjściu z Ustawień MainArea się remountował,
@@ -156,5 +174,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       backgroundPath: null,
       nodeOverrides: {},
       ledConfig: { ...LED_CONFIG_DEFAULT },
+      perspectiveCorners: null,
+      perspectiveEditing: false,
     }),
 }));

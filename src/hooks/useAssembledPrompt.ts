@@ -34,7 +34,7 @@ function useAssembleArgs() {
   const { materials } = useMaterialsStore();
   const {
     led, camera, cameraDirty, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
-    referenceImages, activePresetIds, presetAnchors, presetTextOverrides,
+    referenceImages, activePresetIds, presetAnchors, presetTextOverrides, model,
   } = useGenerationStore();
   // productType pochodzi z aktywnego projektu (per projekt, nie per generowanie).
   const { projects, activeProjectId } = useProjectStore();
@@ -119,15 +119,17 @@ function useAssembleArgs() {
         ? { text: todText, anchor: timeOfDayAnchor }
         : null;
 
+    const targetModel: "gemini" | "openai" = model === "gpt-image-2" ? "openai" : "gemini";
+
     return {
       signConfig,
       visualInputs,
-      options: { cameraDirty, presets: presetEntries, timeOfDayPreset },
+      options: { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel },
     };
   }, [
     nodeOverrides, materials, led, camera, cameraDirty, backgroundPath,
     svgContent, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
-    referenceImages, activePresetIds, presetAnchors, presetTextOverrides, presets, productType,
+    referenceImages, activePresetIds, presetAnchors, presetTextOverrides, presets, productType, model,
   ]);
 }
 

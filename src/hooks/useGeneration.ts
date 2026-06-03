@@ -197,8 +197,9 @@ export function useGeneration() {
           ? { text: todText, anchor: timeOfDayAnchor }
           : null;
 
+      const targetModel = model === "gpt-image-2" ? "openai" : "gemini";
       const finalPrompt =
-        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presets: presetEntries, timeOfDayPreset });
+        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel });
 
       const generationInput = {
         project_slug: project.slug,

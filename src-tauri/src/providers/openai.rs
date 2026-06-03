@@ -236,7 +236,7 @@ impl ImageGenerator for OpenAiProvider {
             prompt: config.prompt.clone(),
             n: config.count,
             size,
-            quality: "auto".to_string(),
+            quality: "high".to_string(),
         };
 
         let client = build_client()?;
@@ -326,7 +326,7 @@ impl ImageGenerator for OpenAiProvider {
                 "prompt": config.prompt.clone(),
                 "n": config.count,
                 "size": size,
-                "quality": "auto",
+                "quality": "high",
             });
             vec![serde_json::json!({
                 "custom_id": "vizualizeit-request",
@@ -636,12 +636,13 @@ impl OpenAiProvider {
             .map_err(|e| format!("Błąd budowania formularza: {e}"))?;
 
         // BEZ response_format — gpt-image-2 odrzuca to pole (analogicznie do /generations).
-        // quality="auto" dla spójności z live generation (Playground też tak wysyła).
+        // quality="high" wymusza maksimum detali i lepszą wierność (gpt-image-2 nie ma
+        // temperature ani input_fidelity — quality to jedyny lever wierności).
         let mut form = reqwest::multipart::Form::new()
             .part("image[]", main_part)
             .text("prompt", prompt)
             .text("model", MODEL)
-            .text("quality", "auto");
+            .text("quality", "high");
 
         // Dodaj zdjęcia referencyjne (dekoduj z base64)
         for (idx, r) in references.into_iter().enumerate() {
@@ -724,12 +725,17 @@ async fn generate_via_edits(config: &GenerationConfig) -> Result<Vec<GeneratedIm
         format!("{} {}", config.prompt, format_suffix)
     };
 
+    // quality="high" — gpt-image-2 nie ma temperature ani input_fidelity (docs OpenAI:
+    // "for gpt-image-2, the API doesn't allow changing input fidelity; model processes
+    // every image input at high fidelity automatically"). Jedyny lever na "ściślejsze
+    // trzymanie się promptu" to quality. "auto" często schodzi do "medium" — "high"
+    // wymusza maksimum detali i lepszą wierność instrukcjom.
     let mut form = reqwest::multipart::Form::new()
         .text("model", MODEL)
         .text("prompt", full_prompt)
         .text("n", config.count.to_string())
         .text("size", size)
-        .text("quality", "auto".to_string());
+        .text("quality", "high".to_string());
 
     // Helper do dodawania obrazu w base64 jako part `image[]`
     let add_image_part = |form: reqwest::multipart::Form,
@@ -901,7 +907,7 @@ fn build_responses_body(config: &GenerationConfig) -> (serde_json::Value, u32, u
         "type": "image_generation",
         "model": MODEL,
         "size": size_str,
-        "quality": "auto",
+        "quality": "high",
     });
 
     // Top-level model MUSI być chat-modelem (gpt-4o, gpt-5...). gpt-image-2 tu zwraca

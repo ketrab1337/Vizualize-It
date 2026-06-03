@@ -1,4 +1,4 @@
-import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid } from "lucide-react";
+import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Square } from "lucide-react";
 
 interface CanvasToolbarProps {
   hasSvg: boolean;
@@ -7,19 +7,21 @@ interface CanvasToolbarProps {
   backgroundDataUrl: string | null;
   backgroundFilename: string;
   isNestingOpen: boolean;
+  perspectiveActive: boolean;
   onImportSvg: () => void;
   onExportSvg: () => void;
   onImportBackground: () => void;
   onRemoveBackground: () => void;
   onToggleNesting: () => void;
+  onTogglePerspective: () => void;
 }
 
 export function CanvasToolbar({
   hasSvg, isImportingSvg, isImportingBg,
   backgroundDataUrl, backgroundFilename,
-  isNestingOpen,
+  isNestingOpen, perspectiveActive,
   onImportSvg, onExportSvg, onImportBackground, onRemoveBackground,
-  onToggleNesting,
+  onToggleNesting, onTogglePerspective,
 }: CanvasToolbarProps) {
   return (
     <div className="h-10 bg-[#1a1a1a] border-b border-gray-800 flex items-center gap-1 px-3 shrink-0 flex-wrap">
@@ -84,6 +86,25 @@ export function CanvasToolbar({
             Nesting
           </button>
         </>
+      )}
+
+      {backgroundDataUrl && (
+        <button
+          onClick={onTogglePerspective}
+          title={
+            "Wskaż 4 narożniki ŚCIANY na zdjęciu (np. TL = styk sufit-ściana lewa góra, " +
+            "BR = styk podłoga-ściana prawa dół). Szyld zachowa swój rozmiar z edytora, " +
+            "ale dostanie perspektywę zgodną z tą ścianą."
+          }
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm border transition-colors ${
+            perspectiveActive
+              ? "text-amber-300 bg-amber-950/50 border-amber-800"
+              : "text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border-gray-700 hover:border-gray-600"
+          }`}
+        >
+          <Square className="w-3.5 h-3.5" />
+          Perspektywa ściany
+        </button>
       )}
     </div>
   );
