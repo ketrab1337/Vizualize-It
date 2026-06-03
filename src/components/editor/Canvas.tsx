@@ -35,7 +35,7 @@ import { useZoomActions } from "./canvas/useZoomActions";
 import type { LayerItem } from "./LayersPanel";
 import type { NodeOverride, Project, ElementRole, PerspectiveCorners } from "../../types";
 import { DEFAULT_PERSPECTIVE_CORNERS } from "../../types";
-import { warpCanvasToQuad, computeHomography, applyHomography, type Quad } from "../../lib/perspectiveWarp";
+import { warpCanvasToQuad, computeHomography, computeWarpedQuadSizePreserved, type Quad } from "../../lib/perspectiveWarp";
 import { useProject } from "../../hooks/useProject";
 
 function setBoundsRecursive(
@@ -780,13 +780,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
                 const sy0 = tl.y;
                 const sx1 = br.x;
                 const sy1 = br.y;
-                // Apply homografię do 4 narożników SVG-bbox → warped quad NA ŚCIANIE
-                const warpedSvgQuad: Quad = [
-                  applyHomography(H, [sx0, sy0]),
-                  applyHomography(H, [sx1, sy0]),
-                  applyHomography(H, [sx1, sy1]),
-                  applyHomography(H, [sx0, sy1]),
-                ];
+                // Warpuj SVG-bbox na ścianę — rozmiar z canvasa zachowany,
+                // aplikowany tylko kąt perspektywy (Jacobian bez skali).
+                const warpedSvgQuad = computeWarpedQuadSizePreserved(H, sx0, sy0, sx1, sy1);
                 const srcRect = { x: sx0, y: sy0, w: sx1 - sx0, h: sy1 - sy0 };
                 warpCanvasToQuad(ctx, canvas, srcRect, warpedSvgQuad, 30);
               } else {

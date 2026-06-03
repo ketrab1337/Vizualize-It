@@ -1,54 +1,35 @@
 import type { SignConfig, CameraConfig, TimeOfDay, Material, SignElement, LedConfig } from "../types";
 import { PRODUCT_TYPE_PRESETS } from "../types";
 
-/**
- * Polskie odmiany rzeczownika dla typu produktu — mianownik + dopełniacz.
- * `productType` to wartość z `projects.product_type`: ID presetu z listy LUB
- * dowolny tekst (gdy user wybrał "Inne"). NULL/undefined → "szyld" jako default.
- *
- * Dla wartości spoza presetów (custom z "Inne") oba pola zwracają ten sam tekst —
- * AI dostaje surową frazę bez odmiany (lepsze niż żadna informacja).
- */
-export function getProductNoun(productType: string | null | undefined): { nominative: string; genitive: string } {
-  if (!productType) return { nominative: "szyld", genitive: "szyldu" };
+const PRODUCT_TYPE_NOUN_EN: Record<string, string> = {
+  szyld: "sign",
+  tabliczka_informacyjna: "information plaque",
+  numer_na_dom: "house number sign",
+  tablica_weselna: "wedding board",
+  dekoracja_scienna: "wall decoration",
+  litery_3d: "3D letters",
+};
+
+export function getProductNoun(productType: string | null | undefined): {
+  nominative: string;
+  genitive: string;
+  en: string;
+} {
+  if (!productType) return { nominative: "szyld", genitive: "szyldu", en: "sign" };
   const preset = PRODUCT_TYPE_PRESETS.find((p) => p.id === productType);
-  if (preset) return { nominative: preset.nounNominative, genitive: preset.nounGenitive };
-  // Custom text z "Inne" — bez polskiej odmiany
-  return { nominative: productType, genitive: productType };
+  const en = PRODUCT_TYPE_NOUN_EN[productType] ?? productType;
+  if (preset) return { nominative: preset.nounNominative, genitive: preset.nounGenitive, en };
+  return { nominative: productType, genitive: productType, en: productType };
 }
 
 export interface VisualInputs {
   hasBackground: boolean;
   hasSvg: boolean;
-  /** Liczba zdjęć materiałów dołączonych do żądania — wpływa na opis "Obraz N" w prompcie. */
-  materialImageCount?: number;
-  /** Liczba zdjęć referencyjnych dołączonych do żądania. */
   referenceImageCount?: number;
-  /**
-   * Opisy zdjęć referencyjnych (user-defined). Indeks w tej tablicy odpowiada
-   * indeksowi w `reference_images` wysyłanym do AI. Pusta tablica lub brak opisu
-   * → generyczny "dodatkowa inspiracja stylistyczna".
-   */
   referenceDescriptions?: string[];
-  /** Teksty wyciągnięte z SVG (z <text> i <tspan>) — AI ma odwzorować DOSŁOWNIE. */
   svgTexts?: string[];
-  /**
-   * Mapa materialId → relatywny indeks w tablicy material_images (0-based).
-   * Wykorzystywane do deduplikacji — wiele elementów z tym samym materiałem dzieli
-   * jeden Image N, zamiast każdy mieć osobne zdjęcie.
-   */
-  materialIdToImageIdx?: Record<string, number>;
 }
 
-/**
- * Aktywny preset z anchorem — pozycją w prompcie. Anchor to ID auto-fragmentu
- * po którym preset ma być wstawiony, albo specjalna wartość:
- *   - `__start__` — przed pierwszym fragmentem
- *   - `__end__` — na samym końcu (default)
- * Jeśli anchor odnosi się do fragmentu który NIE istnieje w bieżącym składaniu
- * (np. preset ma anchor "led-backlit", ale LED jest wyłączone), preset spada
- * na koniec.
- */
 export interface PresetEntry {
   id: string;
   label: string;
@@ -58,44 +39,23 @@ export interface PresetEntry {
 
 export interface AssembleOptions {
   cameraDirty?: boolean;
-  /** Teksty włączonych presetów — dołączane na końcu (legacy, gdy brak `presets`). */
+  /** Preset texts without anchors — appended at end (legacy). */
   presetTexts?: string[];
-  /** Aktywne presety z anchorami — wstawiane na konkretnych pozycjach. */
   presets?: PresetEntry[];
-  /**
-   * Pseudo-preset "Środowisko" — wstawiany jak zwykły preset (przeciągalny, edytowalny).
-   * Null/undefined = brak środowiska w prompcie.
-   */
   timeOfDayPreset?: { text: string; anchor?: string } | null;
-  /**
-   * Model docelowy — wpływa na etykiety obrazów i dodatkowe imperatywy:
-   *   - "openai" → "Image N" + angielski imperatyw w ścieżce ze zdjęciem materiału
-   *     (GPT-Image-2 nie koreluje polskich "Obraz N" z nazwami plików multipart)
-   *   - "gemini" (default) → "Obraz N", brak dodatkowych instrukcji
-   */
   targetModel?: "gemini" | "openai";
+  /** True when SVG was perspective-warped to match the wall quad before compositing. */
+  hasPerspective?: boolean;
 }
 
-/** Etykieta obrazu w prompcie — różni się per model docelowy. */
-function imgLabel(n: number, target?: "gemini" | "openai"): string {
-  return target === "openai" ? `Image ${n}` : `Obraz ${n}`;
+function imgLabel(n: number): string {
+  return `Image ${n}`;
 }
 
-/** Pierwszą literą dużą — reszta bez zmian. Polskie znaki obsługiwane. */
-function capitalize(s: string): string {
-  if (!s) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-/**
- * Element promptu — auto-generowany fragment lub wstawiony preset. UI używa tej
- * struktury do renderowania promptu jako sekwencji tekstu i klikalnych badges.
- */
 export type PromptItem =
   | { kind: "fragment"; id: string; text: string }
   | { kind: "preset"; presetId: string; label: string; text: string };
 
-/** Identyfikatory auto-fragmentów — stabilne między rerenderami (do anchorów presetów). */
 export const FRAGMENT_IDS = {
   TASK: "task",
   SVG_TEXTS: "svg-texts",
@@ -108,349 +68,210 @@ export const FRAGMENT_IDS = {
   TIME_OF_DAY: "time-of-day",
 } as const;
 
-/**
- * Polskie opisy powierzchni materiału. Wcześniejsze wersje były dwujęzyczne PL+EN —
- * założenie było, że modele lepiej rozumieją angielskie terminy techniczne. Przy
- * ujednoliceniu języka aplikacji zostają same polskie opisy (modele Gemini / GPT-Image
- * radzą sobie z polskim i odbiorca-użytkownik czyta podgląd promptu).
- */
 const MATERIAL_TYPE_DESCRIPTIONS: Record<string, string> = {
-  matowa: "matowy, nieprzezierny panel z akrylu o gładkim, aksamitnym wykończeniu",
-  mleczna: "mleczny, półprzezroczysty panel z akrylu o miękkiej dyfuzji światła",
-  polysk: "panel z akrylu z połyskiem, polerowany, z gładkimi lustrzanymi odbiciami",
-  lustro: "panel z akrylu o wykończeniu lustrzanym, w pełni refleksyjny, odbijający otoczenie",
+  matowa: "matte acrylic panel, smooth velvety finish, diffuse light, no specular highlights",
+  mleczna: "frosted/opal acrylic panel, semi-transparent, soft diffused light, gentle internal glow",
+  polysk: "high-gloss acrylic panel, polished smooth surface, sharp specular highlights and crisp reflections",
+  lustro: "mirror-finish acrylic panel, fully reflective, reflects surrounding environment",
 };
 
-/** Opisy materiału po kategorii — używane gdy material_type jest puste. */
 const MATERIAL_CATEGORY_HINTS: Record<string, string> = {
-  pleksa: "panel z plexy (szkła akrylowego)",
-  dibond: "panel Dibond — szczotkowany aluminiowy kompozyt",
-  hdf: "panel HDF — twarda płyta drewnopochodna o gładkiej, lakierowanej powierzchni",
-  metal: "polerowany panel metalowy o subtelnej, szczotkowanej fakturze",
-  dystans: "polerowane metalowe dystanse montażowe",
-  inne: "sztywny materiał konstrukcyjny szyldu",
+  pleksa: "acrylic (plexiglass) panel",
+  dibond: "Dibond panel — brushed aluminum composite",
+  hdf: "HDF panel — hard fiberboard with smooth lacquered surface",
+  metal: "polished metal panel with subtle brushed texture",
+  dystans: "polished metal standoff mounts",
+  inne: "rigid structural sign material",
 };
 
 /**
- * Mapowanie grubości materiału w mm → opis względny dla AI.
- *
- * KRYTYCZNE: modele generatywne NIE rozumieją milimetrów jako jednostki fizycznej —
- * "3mm thick" to dla nich tylko fraza. Reagują na PROPORCJE na obrazie. Dlatego
- * mapujemy wartość liczbową na opis względny ("cienki", "średni", "gruby"), który
- * AI rozumie wizualnie. Wartość mm zostaje dorzucona jako wskazówka liczbowa
- * (`(3mm)`) ale głównym sygnałem jest słowo opisowe.
+ * Maps material thickness in mm to a relative visual description.
+ * AI models don't interpret mm as physical units — they react to proportions.
+ * The relative descriptor is the primary signal; the mm value is a secondary hint.
  */
 function describeThickness(thicknessMm: number | null): string | null {
   if (thicknessMm == null || thicknessMm <= 0) return null;
-  if (thicknessMm < 5) {
-    return `cienki profil (${thicknessMm}mm), subtelnie widoczna krawędź boczna`;
-  }
-  if (thicknessMm < 15) {
-    return `średnia grubość (${thicknessMm}mm), wyraźnie widoczna krawędź boczna jako pasek`;
-  }
-  if (thicknessMm < 30) {
-    return `gruby profil (${thicknessMm}mm), wyraźna trójwymiarowa głębia, mocno widoczna krawędź boczna`;
-  }
-  return `bardzo gruby, masywny profil (${thicknessMm}mm), dominująca głębia 3D, krawędź boczna jako duży pas`;
+  if (thicknessMm < 5) return `thin profile (${thicknessMm}mm), subtle visible side edge`;
+  if (thicknessMm < 15) return `medium thickness (${thicknessMm}mm), clearly visible side edge`;
+  if (thicknessMm < 30) return `thick profile (${thicknessMm}mm), prominent 3D depth, wide visible side edge`;
+  return `very thick profile (${thicknessMm}mm), dominant 3D depth, large visible side edge`;
 }
 
-/**
- * Buduje opis warstwowości produktu dla AI. Bez tego model dostaje płaską mapę
- * kolorów i renderuje napisy w jednej płaszczyźnie z tłem, bez głębi.
- *
- * Struktura: backplate na spodzie, dekoracje, logo, napisy na wierzchu (z głębią).
- * Jeśli są dystanse — cały produkt stoi na nich, oddalony od ściany.
- */
 function buildLayerStructure(
   elements: SignElement[],
-  productNoun: { nominative: string; genitive: string }
+  productNounEn: string
 ): string | null {
   const byRole: Record<string, SignElement[]> = {
-    backplate: [],
-    decoration: [],
-    logo: [],
-    text: [],
-    distance: [],
-    cutout: [],
+    backplate: [], decoration: [], logo: [], text: [], distance: [], cutout: [],
   };
   for (const el of elements) {
     if (el.role) byRole[el.role]?.push(el);
   }
-
-  // Mapa nodeId → element (do rozwiązywania cutoutBackingId → kolor warstwy pod spodem)
   const byNodeId = new Map(elements.map((el) => [el.nodeId, el]));
-
   const lines: string[] = [];
-
-  const nn = productNoun.nominative;
-  const gg = productNoun.genitive;
+  const nn = productNounEn;
 
   if (byRole.distance.length > 0) {
     lines.push(
-      `- Dystanse: cały ${nn} zamontowany na metalowych dystansach, odsunięty od ściany ` +
-      `o około 20–30 mm, rzucający miękki cień na ścianę za ${gg}`
+      `- Standoffs: the entire ${nn} is mounted on metal standoffs, offset from the wall by approx. 20–30 mm, casting a soft shadow on the wall behind it`
     );
   }
-
   if (byRole.backplate.length > 0) {
-    const colors = [...new Set(byRole.backplate.map((e) => e.colorHex ?? "domyślny"))].join(", ");
-    lines.push(`- Tło ${gg} (backplate, warstwa najgłębsza): regiony ${colors} w SVG, płaski panel bazowy`);
+    const colors = [...new Set(byRole.backplate.map((e) => e.colorHex ?? "default"))].join(", ");
+    lines.push(`- Base panel (backplate, deepest layer): SVG regions ${colors}, flat base panel`);
   }
-
   if (byRole.decoration.length > 0) {
-    const colors = [...new Set(byRole.decoration.map((e) => e.colorHex ?? "domyślny"))].join(", ");
+    const colors = [...new Set(byRole.decoration.map((e) => e.colorHex ?? "default"))].join(", ");
     lines.push(
-      `- Dekoracje (warstwa nad tłem): regiony ${colors} w SVG, nałożone NA tło ${gg}, ` +
-      `delikatnie wystające, rzucające subtelny cień na backplate poniżej`
+      `- Decorations (layer above backplate): SVG regions ${colors}, layered ON TOP of the backplate, slightly raised, casting a subtle shadow on the backplate below`
     );
   }
-
   if (byRole.logo.length > 0) {
-    const colors = [...new Set(byRole.logo.map((e) => e.colorHex ?? "domyślny"))].join(", ");
+    const colors = [...new Set(byRole.logo.map((e) => e.colorHex ?? "default"))].join(", ");
     lines.push(
-      `- Logo (warstwa nad tłem): regiony ${colors} w SVG, zamontowane NA tle ${gg} jako ` +
-      `wystający, przestrzenny element, rzucające widoczny cień na backplate poniżej`
+      `- Logo (layer above backplate): SVG regions ${colors}, mounted ON the backplate as a raised spatial element, casting a visible shadow on the backplate below`
     );
   }
-
   if (byRole.text.length > 0) {
-    const colors = [...new Set(byRole.text.map((e) => e.colorHex ?? "domyślny"))].join(", ");
+    const colors = [...new Set(byRole.text.map((e) => e.colorHex ?? "default"))].join(", ");
     lines.push(
-      `- Napisy (warstwa wierzchnia): regiony ${colors} w SVG, litery jako OSOBNE wystające ` +
-      `elementy zamontowane NA tle ${gg}, rzucające wyraźny cień na backplate pod nimi — ` +
-      `wyraźnie widoczna głębia liter`
+      `- Text (top layer): SVG regions ${colors}, letters as SEPARATE raised elements mounted ON the backplate, casting clear shadows on the backplate below — pronounced letter depth clearly visible`
     );
   }
-
-  // CUTOUT — warstwa z fizycznie wyciętymi otworami, przez które widać warstwę
-  // pod spodem. Krytyczne dla typowych szyldów wielowarstwowych (np. niebieska
-  // plexa z wyciętymi literami, przez które widać czerwoną plexę spodnią).
   if (byRole.cutout.length > 0) {
     for (const el of byRole.cutout) {
-      const myColor = el.colorHex ?? "domyślny";
+      const myColor = el.colorHex ?? "default";
       const backing = el.cutoutBackingId ? byNodeId.get(el.cutoutBackingId) : null;
-      const backingColor = backing?.colorHex ?? "warstwy pod spodem";
+      const backingColor = backing?.colorHex ?? "the layer below";
       lines.push(
-        `- Warstwa z wycięciem: region ${myColor} w SVG to plexa nałożona NA inną plexę ` +
-        `(${backingColor}) z FIZYCZNIE WYCIĘTYMI otworami w kształcie widocznych w niej elementów. ` +
-        `Krawędzie wycięć są ostre (cięte laserem), wyraźne. Przez wycięte otwory widać ` +
-        `dolną plexę w kolorze ${backingColor}. Warstwa górna (${myColor}) ma własną grubość — ` +
-        `wycięcia wyglądają jak okienka z widoczną głębią ścianek bocznych, lekki cień rzucany ` +
-        `od krawędzi wycięcia na warstwę dolną.`
+        `- Cutout layer: SVG region ${myColor} is an acrylic panel layered ON another acrylic panel (${backingColor}) with PHYSICALLY CUT openings. ` +
+        `Cut edges are sharp (laser-cut). Through the cutouts, the lower acrylic in color ${backingColor} is visible. ` +
+        `The upper layer (${myColor}) has its own thickness — cutouts look like windows with visible side wall depth, slight shadow cast from cut edges onto the lower layer.`
       );
     }
   }
 
   if (lines.length === 0) return null;
 
-  // Licznik kompozycji — model wie ILE elementów ma renderować i w ilu kolorach.
-  // Bez tego przy 20+ elementach AI improwizuje liczbę napisów/dekoracji.
   const countedRoles = elements.filter((el) => el.role && el.role !== "distance");
   const totalEls = countedRoles.length;
   const uniqueColors = new Set(
     countedRoles.map((el) => el.colorHex).filter((c): c is string => !!c)
   );
+  const capNn = nn.charAt(0).toUpperCase() + nn.slice(1);
   const header =
     totalEls > 0
-      ? `Warstwy ${gg} (od spodu do wierzchu, łącznie ${totalEls} ` +
-        `${totalEls === 1 ? "element" : "elementów"} w ${uniqueColors.size} ` +
-        `${uniqueColors.size === 1 ? "kolorze" : "kolorach"}):`
-      : `Warstwy ${gg} (od spodu do wierzchu):`;
+      ? `${capNn} layer structure (bottom to top, ${totalEls} element${totalEls === 1 ? "" : "s"} in ${uniqueColors.size} color${uniqueColors.size === 1 ? "" : "s"}):`
+      : `${capNn} layer structure (bottom to top):`;
   return `${header}\n${lines.join("\n")}`;
 }
 
-/**
- * Buduje techniczny opis materiału dla AI — BEZ polskiej nazwy z biblioteki.
- *
- * KRYTYCZNE: NIE używać `m.name`. Polskie nazwy typu "Plexa czerwona" / "Niebieska"
- * były interpretowane przez Gemini jako TEKST do narysowania na szyldzie (zobaczone
- * w generowanych obrazach: "CZERWONA NIEBIESKA" jako wielkie litery).
- */
 function describeMaterial(m: Material): string {
   const surface = m.material_type ? MATERIAL_TYPE_DESCRIPTIONS[m.material_type] : null;
   const categoryHint = MATERIAL_CATEGORY_HINTS[m.category];
-  return surface ?? categoryHint ?? "sztywny materiał konstrukcyjny szyldu";
+  return surface ?? categoryHint ?? "rigid structural sign material";
 }
 
 /**
- * Buduje opis elementu szyldu dla AI: kolor hex + typ powierzchni + grubość +
- * ewentualne zdjęcie referencyjne + ewentualny opis refleksji.
+ * Builds the material description for a single sign element.
  *
- * Kolejność priorytetów (KRYTYCZNE — wcześniej zdjęcie zawsze wygrywało, co
- * łamało lustro/połysk: zdjęcie referencyjne lustra to płaski "tint hue", a AI
- * traktowała go jako "tak ma wyglądać powierzchnia"):
+ * Two special cases:
+ *  - mirror: the dominant visual effect is environmental reflection; hex acts as tint only
+ *  - glossy: hex IS the material color; AI adds specular highlights on top
+ * Everything else: hex is material color + surface description from material type.
  *
- *   1. material_type=lustro/polysk → ścieżka refleksyjna ZAWSZE wygrywa; ewentualne
- *      zdjęcie idzie tylko jako "tint hue reference"
- *   2. inne typy + zdjęcie referencyjne → zdjęcie ma PRIORYTET
- *   3. inne typy + brak zdjęcia → opis materiału + kolor hex
+ * Reference photos removed — glossy/mirror acrylic photos contain reflections and
+ * lighting artifacts that confuse the model. Pure hex + physical description is more reliable.
  */
 function describeElementMaterial(
   m: Material,
   colorHex: string | null,
   thicknessMm: number | null,
-  hasReferencePhoto: boolean,
-  referenceImageIndex: number | null,
-  hasBackground: boolean,
-  targetModel?: "gemini" | "openai"
+  hasBackground: boolean
 ): string {
-  const color = colorHex ?? "domyślny";
+  const color = colorHex ?? "default";
   const thicknessDesc = describeThickness(thicknessMm);
   const thicknessSuffix = thicknessDesc ? `, ${thicknessDesc}` : "";
-  const sceneRef = imgLabel(1, targetModel);
+  const sceneRef = imgLabel(1);
 
-  // ── Ścieżka 1a: lustro — w pełni refleksyjna powierzchnia ──────────────
-  // Lustro nie ma własnej barwy; jego dominującym efektem jest odbicie otoczenia.
-  // Zdjęcie / kolor hex służy WYŁĄCZNIE jako tint hue, nie jako tekstura powierzchni.
   if (m.material_type === "lustro") {
-    const surface = "wysokopolerowany, lustrzany panel akrylowy, w pełni refleksyjny";
     const reflectionDesc = hasBackground
-      ? `odbijający otoczenie z ${sceneRef} (ściana, sufit, światła, meble) — refleksy spójne z tą sceną`
-      : `z miękkimi rozbłyskami światła otoczenia, neutralne studyjne tło`;
-    const tintRef = hasReferencePhoto && referenceImageIndex != null
-      ? ` z subtelnym tintem w tonie z ${imgLabel(referenceImageIndex, targetModel)} (${imgLabel(referenceImageIndex, targetModel)} = dominujący odcień refleksji, nie tekstura)`
-      : colorHex
-        ? ` z subtelnym tintem w tonie ${color}`
-        : "";
-    return `region ${color} w SVG → ${surface}, ${reflectionDesc},${tintRef}${thicknessSuffix} (większość powierzchni to odbicia, kolor ${color} pełni rolę tintu)`;
+      ? `reflecting the surroundings from ${sceneRef} (wall, ceiling, lights, furniture) — reflections consistent with the scene`
+      : "with soft ambient light reflections, neutral studio background";
+    const tintDesc = colorHex ? ` with a subtle ${color} tint` : "";
+    return `SVG region ${color} → mirror-finish acrylic, fully reflective${tintDesc}, ${reflectionDesc}${thicknessSuffix} (surface is predominantly reflections, ${color} acts as tint only)`;
   }
 
-  // ── Ścieżka 1b: połysk — kolorowa plexa z błyszczącą powierzchnią ──────
-  // KRYTYCZNE: jeśli materiał ma zdjęcie referencyjne, hex jest WYŁĄCZNIE
-  // lokalizatorem regionu — nie pojawia się jako "dominujący kolor". Wcześniejsza
-  // wersja pisała "polerowana plexa w nasyconym, dominującym kolorze #X" PLUS
-  // "dokładny odcień pobierz z Obraz N" — dwa sprzeczne sygnały, model zawsze
-  // wybierał pierwszy (mocniejsza gramatyka) i renderował kolor z color pickera
-  // zamiast koloru ze zdjęcia. Color picker w aplikacji to TYLKO identyfikator
-  // regionów SVG — nigdy nie jest sugestią faktycznego koloru materiału.
-  const reflectionDesc = hasBackground
-    ? `wyraźne błyski światła i refleksy odpowiadające oświetleniu sceny z ${sceneRef}`
-    : `wyraźne błyski światła otoczenia, neutralne studyjne oświetlenie`;
   if (m.material_type === "polysk") {
-    if (hasReferencePhoto && referenceImageIndex != null) {
-      const refLabel = imgLabel(referenceImageIndex, targetModel);
-      // Pozytywna konstrukcja: kolor pochodzi ze zdjęcia, hex pełni rolę locatora.
-      // Bez negacji typu "nie traktuj jako koloru" — to było paradoksalnie szkodliwe.
-      const polishPart =
-        `region ${color} w SVG → polerowana plexa, gładka błyszcząca powierzchnia. ` +
-        `Kolor i odcień materiału: identyczny jak na ${refLabel} ` +
-        `(zdjęcie referencyjne). Hex ${color} pełni rolę identyfikatora regionu w SVG. ` +
-        `${reflectionDesc}${thicknessSuffix}`;
-      // Dla GPT-Image-2 dorzucamy krótki EN imperatyw — model słabiej reaguje na
-      // polskie etykiety "Obraz N" niż Gemini i potrzebuje wzmocnienia.
-      if (targetModel === "openai") {
-        return (
-          polishPart +
-          `. Color source for region ${color}: copy directly from ${refLabel} ` +
-          `(material reference photo). The hex value is a region identifier in the SVG`
-        );
-      }
-      return polishPart;
-    }
-    // Bez zdjęcia: hex JEST jedynym źródłem koloru (intencja użytkownika z color pickera)
-    return `region ${color} w SVG → polerowana plexa w nasyconym, dominującym kolorze ${color}, gładka błyszcząca powierzchnia, ${reflectionDesc}${thicknessSuffix}`;
+    const reflectionDesc = hasBackground
+      ? `sharp specular highlights and reflections matching the scene lighting from ${sceneRef}`
+      : "sharp specular highlights, neutral studio lighting";
+    return `SVG region ${color} → high-gloss acrylic, material color ${color}, polished smooth surface, ${reflectionDesc}${thicknessSuffix}`;
   }
 
-  // ── Ścieżka 2: zdjęcie referencyjne ma PRIORYTET (nie-lustro/połysk) ───
-  // KRYTYCZNE dla GPT-Image-2: dorzucamy angielski imperatyw, bo polskie etykiety
-  // "Obraz N" są dla niego słabszym sygnałem niż dla Gemini; GPT bez tego wraca
-  // do hexu z SVG i renderuje plastikowy kolor z color pickera zamiast tekstury
-  // ze zdjęcia referencyjnego.
-  if (hasReferencePhoto && referenceImageIndex != null) {
-    const refLabel = imgLabel(referenceImageIndex, targetModel);
-    // Pozytywna wersja: jedno zdanie pokazujące skąd brać kolor + rola hexu jako locator.
-    const polishPart =
-      `region o kolorze ${color} w SVG → kolor, tekstura i wykończenie identyczne jak na ${refLabel} ` +
-      `(zdjęcie referencyjne materiału)${thicknessSuffix}. Hex ${color} pełni rolę identyfikatora regionu w SVG`;
-    if (targetModel === "openai") {
-      return (
-        polishPart +
-        `. Color and texture source for region ${color}: copy directly from ${refLabel}`
-      );
-    }
-    return polishPart;
-  }
-
-  // ── Ścieżka 3: standard ────────────────────────────────────────────────
-  return `region o kolorze ${color} w SVG → ${describeMaterial(m)} w kolorze ${color}${thicknessSuffix}`;
+  return `SVG region ${color} → ${describeMaterial(m)}, color ${color}${thicknessSuffix}`;
 }
 
-/**
- * Opis pory dnia / oświetlenia. Gdy `hasBackground = true`, opisy są wyłączone dla
- * "wnętrza" i mocno przycięte dla pozostałych — istniejące tło już DEFINIUJE scenę,
- * a dorzucanie "profesjonalnej aranżacji architektonicznej" sprawia, że AI generuje
- * nową scenę zamiast zachować tę z input image.
- */
 export function buildTimeOfDayPrompt(
   timeOfDay: TimeOfDay,
   ledActive: boolean,
   hasBackground: boolean = false,
-  productNoun: { nominative: string; genitive: string } = { nominative: "szyld", genitive: "szyldu" }
+  productNoun: { nominative: string; genitive: string; en: string } = { nominative: "szyld", genitive: "szyldu", en: "sign" }
 ): string {
-  const gg = productNoun.genitive;
-  const nn = productNoun.nominative;
+  const nn = productNoun.en;
   const capNn = nn.charAt(0).toUpperCase() + nn.slice(1);
   switch (timeOfDay) {
     case "brak":
       return "";
     case "dzien":
       if (hasBackground) {
-        return "Styl renderowania: jasne dzienne światło naturalne, ostre cienie spójne z istniejącą sceną.";
+        return "Rendering style: bright natural daylight, sharp shadows consistent with the existing scene.";
       }
-      return (
-        "Zdjęcie wykonane w ciągu dnia przy pełnym naturalnym świetle słonecznym. " +
-        "Błękitne niebo, wyraźne ostre cienie, jasna i kontrastowa ekspozycja."
-      );
+      return "Shot during daytime in full natural sunlight. Blue sky, sharp shadows, bright and high-contrast exposure.";
     case "wieczor":
       if (hasBackground) {
         return (
-          "Styl renderowania: ciepłe światło złotej godziny. " +
+          "Rendering style: warm golden hour light. " +
           (ledActive
-            ? `Podświetlenie LED ${gg} jest wyraźnie widoczne i kontrastuje z ciepłym światłem otoczenia.`
-            : "Miękkie, ciepłe światło otoczenia spójne z istniejącą sceną.")
+            ? `The ${nn}'s LED lighting is clearly visible and contrasts with the warm ambient light.`
+            : "Soft warm ambient light consistent with the existing scene.")
         );
       }
       return (
-        "Ujęcie o zmierzchu podczas złotej godziny zachodzącego słońca. " +
-        "Niebo w odcieniach pomarańczu, różu i fioletu. Miękkie, ciepłe oświetlenie otoczenia. " +
+        "Shot at dusk during golden hour. Sky in shades of orange, pink, and purple. Soft warm ambient lighting. " +
         (ledActive
-          ? `Oświetlenie ${gg} wyraźnie widoczne i kontrastowe na tle ciemniejącego nieba.`
-          : "Fasada budynku oświetlona ciepłą, zmierzchową poświatą.")
+          ? `The ${nn}'s illumination is clearly visible and contrasts against the darkening sky.`
+          : `${capNn} lit by soft warm twilight.`)
       );
     case "noc":
       if (hasBackground) {
         return (
-          "Styl renderowania: noc, ciemne otoczenie. " +
+          "Rendering style: night, dark surroundings. " +
           (ledActive
-            ? `Podświetlenie LED ${gg} jest głównym źródłem światła — rzuca miękką poświatę na sąsiednie powierzchnie.`
-            : "Subtelne światło sztuczne spójne z istniejącą sceną.")
+            ? `The ${nn}'s LED lighting is the main light source — casting a soft glow on adjacent surfaces.`
+            : "Subtle artificial light consistent with the existing scene.")
         );
       }
       return (
-        "Ujęcie nocne. Ciemne niebo, sztuczne oświetlenie miejskie — latarnie, refleksy okien. " +
+        "Night shot. Dark sky, artificial urban lighting — streetlights, window reflections. " +
         (ledActive
-          ? `${capNn} intensywnie podświetlony LED, wyraźna poświata i aureola światła wokół liter, ` +
-            "refleksy na mokrym asfalcie poniżej."
-          : `${capNn} widoczny w świetle ulicznym, ciemne, dramatyczne otoczenie nocnego miasta.`)
+          ? `${capNn} intensely illuminated by LED, pronounced glow and halo of light around letters, reflections on wet pavement below.`
+          : `${capNn} visible in street light, dark dramatic urban night surroundings.`)
       );
     case "wnetrze":
-      // KRYTYCZNE: gdy jest tło, NIE generujemy idealnego wnętrza. Tło z input image
-      // już DEFINIUJE wnętrze; dodanie "profesjonalnej aranżacji architektonicznej"
-      // powodowało, że AI tworzyła nową scenę (recepcję zamiast biura użytkownika).
-      if (hasBackground) {
-        return "";
-      }
+      // CRITICAL: when a background photo is present, it already defines the interior.
+      // Adding "professional architectural arrangement" causes AI to generate a new scene.
+      if (hasBackground) return "";
       return (
-        "Szyld zamontowany wewnątrz pomieszczenia — przestrzeń biurowa, sklep lub reprezentacyjny " +
-        "hall wejściowy. Sztuczne oświetlenie sufitowe, neutralne lub ciepłe światło wnętrza, " +
-        "czyste tło architektoniczne, profesjonalna aranżacja."
+        `${capNn} mounted inside a room — office space, shop or representative entrance hall. ` +
+        "Artificial ceiling lighting, neutral or warm interior light, clean architectural background."
       );
   }
 }
 
 /**
- * Imperatywny opis ustawienia kamery — wzorowany na Qwen-Image-Edit-Angles, ale po
- * polsku. Granularność co 15° dla rotacji, opisy intensywności dla forward i tilt.
+ * Imperative camera direction prompt.
+ * Granularity: 15° steps for rotation, relative descriptors for forward/tilt.
  */
 export function buildCameraPrompt(
   rotateDeg: CameraConfig["rotateDeg"],
@@ -459,49 +280,42 @@ export function buildCameraPrompt(
 ): string {
   const parts: string[] = [];
 
-  // ── Rotacja ─────────────────────────────────────────────────────────────
   const absR = Math.abs(rotateDeg);
   if (absR >= 1) {
-    const dirPl = rotateDeg > 0 ? "lewo" : "prawo";
-    parts.push(`Obróć kamerę o ${absR}° w ${dirPl}.`);
+    const dir = rotateDeg > 0 ? "left" : "right";
+    parts.push(`Rotate camera ${absR}° to the ${dir}.`);
   }
 
-  // ── Forward (odległość / zoom) ──────────────────────────────────────────
   if (moveForward >= 9) {
-    parts.push("Przesuń kamerę bardzo blisko — bardzo bliskie zbliżenie.");
+    parts.push("Move camera very close — extreme close-up.");
   } else if (moveForward >= 7) {
-    parts.push("Przesuń kamerę blisko — zbliżenie.");
+    parts.push("Move camera close — close-up shot.");
   } else if (moveForward >= 5) {
-    parts.push("Ujęcie z bliska, kamera lekko przybliżona.");
+    parts.push("Close shot, camera slightly zoomed in.");
   } else if (moveForward >= 3) {
-    parts.push("Średnia odległość kamery.");
+    parts.push("Medium camera distance.");
   } else if (moveForward >= 1) {
-    parts.push("Większa odległość kamery, ujęcie szersze.");
+    parts.push("Wider camera distance, broader shot.");
   } else {
-    parts.push("Kamera z daleka, perspektywa uliczna.");
+    parts.push("Camera far away, wide perspective.");
   }
 
-  // ── Pochylenie pionowe ──────────────────────────────────────────────────
   if (verticalTilt <= -0.7) {
-    parts.push("Mocno pochyl kamerę z góry — widok ptasi.");
+    parts.push("Tilt camera strongly downward — bird's eye view.");
   } else if (verticalTilt <= -0.3) {
-    parts.push("Lekko pochyl kamerę z góry.");
+    parts.push("Tilt camera slightly downward.");
   } else if (verticalTilt >= 0.7) {
-    parts.push("Mocno pochyl kamerę z dołu — widok żabi.");
+    parts.push("Tilt camera strongly upward — worm's eye view.");
   } else if (verticalTilt >= 0.3) {
-    parts.push("Lekko pochyl kamerę z dołu.");
+    parts.push("Tilt camera slightly upward.");
   }
 
   return parts.join(" ");
 }
 
 /**
- * Buduje listę auto-fragmentów promptu (bez presetów). Każdy fragment ma stabilne
- * ID — używane do anchorowania presetów ("wstaw po fragmencie X"). Brak fragmentu
- * (np. LED wyłączone) → presety z tym anchorem spadają na koniec.
- *
- * @internal — zewnętrznie używaj `assemblePromptItems` (zwraca listę z presetami
- * w odpowiednich miejscach) lub `assemblePrompt` (zwraca string).
+ * Builds the list of auto-generated prompt fragments (without presets).
+ * Each fragment has a stable ID used for preset anchoring.
  */
 export function assemblePromptFragments(
   config: SignConfig,
@@ -511,12 +325,7 @@ export function assemblePromptFragments(
   const fragments: Array<{ id: string; text: string }> = [];
 
   const CATEGORY_ORDER: Record<string, number> = {
-    pleksa: 0,
-    dibond: 1,
-    hdf: 2,
-    metal: 3,
-    inne: 4,
-    dystans: 5,
+    pleksa: 0, dibond: 1, hdf: 2, metal: 3, inne: 4, dystans: 5,
   };
 
   const elementsWithMaterial = config.elements
@@ -527,268 +336,152 @@ export function assemblePromptFragments(
       return oa - ob;
     });
 
-  // Polskie odmiany nazwy produktu — używane w opisach dla AI ("szyldu" →
-  // "tabliczki informacyjnej", "numeru na dom", ...). Default = "szyld".
   const productNoun = getProductNoun(config.productType);
-  const target = options?.targetModel;
-
-  // ── STRUKTURA PROMPTU ───────────────────────────────────────────────────
-  // Wzorzec mockup od Google Cloud (oficjalny guide Nano Banana, 2026):
-  //   "Using the attached [sketch] as the structure and the attached [sample]
-  //    as the texture, transform this into a high-fidelity [object] render."
-  //
-  // KRYTYCZNE: pozytywny język ("Zachowaj X dokładnie jak widać"), NIE negatywny
-  // ("Nie zmieniaj X"). Modele transformerowe gorzej radzą sobie z negacjami.
-  // ────────────────────────────────────────────────────────────────────────
-
-  // Mapowanie: nodeId → numer obrazu w prompcie (dla elementów ze zdjęciem materiału).
-  const elementToImageIdx: Record<string, number> = {};
+  const nn = productNoun.en;
+  const capNn = nn.charAt(0).toUpperCase() + nn.slice(1);
 
   if (visualInputs) {
     const imgRefs: string[] = [];
     let imgIdx = 1;
 
     if (visualInputs.hasSvg && visualInputs.hasBackground) {
-      // KOMPOZYT — najczęstszy przypadek (tło + schematyczny SVG nałożony).
-      // Zwięzła, pozytywna instrukcja. Google docs (Nano Banana guide) i Anthropic
-      // research zgodnie pokazują: krótszy, pozytywny prompt > długi prompt z negacjami.
-      // Każda negacja ("NIE zmieniaj X") rozcieńcza sygnał i czasem działa odwrotnie.
-      const sceneLabel = imgLabel(imgIdx, target);
+      const sceneLabel = imgLabel(imgIdx);
+      const perspectiveNote = options?.hasPerspective
+        ? `The SVG overlay is already perspective-warped to match the wall plane — preserve this perspective exactly as shown in ${sceneLabel}.`
+        : `The ${nn} is mounted flat on the wall — render it with correct perspective matching the wall visible in ${sceneLabel}.`;
       imgRefs.push(
-        `ZADANIE: fotorealistyczna wizualizacja ${productNoun.genitive} (mockup). ` +
-          `${sceneLabel} to PRAWDZIWE ZDJĘCIE wnętrza z półprzezroczystą nakładką SVG, ` +
-          `która pokazuje gdzie ma być ${productNoun.nominative}, jaki ma kształt i jakie kolory ` +
-          `mają poszczególne regiony.` +
-          `\n\n` +
-          `Wyrenderuj zdjęcie identyczne jak ${sceneLabel}, ale z nakładką SVG zastąpioną ` +
-          `gotowym, fotorealistycznym renderem ${productNoun.genitive}. ` +
-          `Cała reszta sceny pozostaje IDENTYCZNA (pixel-perfect): ściana, sufit, podłoga, ` +
-          `meble, osoby, rośliny, oświetlenie, perspektywa, kąt kamery.` +
-          `\n\n` +
-          `${capitalize(productNoun.nominative)} jest TRÓJWYMIAROWYM obiektem fizycznie ` +
-          `zamontowanym na ścianie: ma głębię, rzuca naturalne cienie, realistycznie odbija ` +
-          `światło sceny, a jego krawędzie podążają za perspektywą ściany widocznej na ${sceneLabel}. ` +
-          `Mapa kolorów na nakładce SVG pokazuje DOKŁADNE przypisanie koloru do regionu — ` +
-          `każdy region zachowuje swoją pozycję, kształt i kolor (zmienia się tylko forma: ` +
-          `z płaskiego kształtu na fotorealistyczny materiał).`
+        `TASK: photorealistic ${nn} visualization (mockup). ` +
+        `${sceneLabel} is a REAL PHOTO of an interior with a semi-transparent SVG overlay showing where the ${nn} should be placed, its shape, and the color assigned to each region.` +
+        `\n\n` +
+        `Render an image identical to ${sceneLabel}, but with the SVG overlay replaced by a photorealistic, three-dimensional render of the ${nn}. ` +
+        `The rest of the scene remains IDENTICAL (pixel-perfect): wall, ceiling, floor, furniture, people, plants, lighting, perspective, camera angle.` +
+        `\n\n` +
+        `The ${nn} is a THREE-DIMENSIONAL physical object mounted on the wall: it has depth, casts natural shadows, realistically reflects the scene's light. ` +
+        `${perspectiveNote} ` +
+        `The color map on the SVG overlay shows the EXACT color assignment for each region — every region keeps its position, shape and color (only the form changes: from flat shape to photorealistic material).`
       );
       imgIdx++;
     } else if (visualInputs.hasSvg) {
-      const sceneLabel = imgLabel(imgIdx, target);
+      const sceneLabel = imgLabel(imgIdx);
       imgRefs.push(
-        `ZADANIE: fotorealistyczny render ${productNoun.genitive}. ` +
-          `${sceneLabel} to schematyczny projekt SVG (płaskie, kolorowe kształty pokazujące układ ${productNoun.genitive}). ` +
-          `Wyrenderuj go jako fotorealistyczny ${productNoun.nominative} wykonany z materiałów opisanych poniżej, ` +
-          `z naturalnym studyjnym oświetleniem i czystym, neutralnym tłem.`
+        `TASK: photorealistic ${nn} render. ` +
+        `${sceneLabel} is a schematic SVG design (flat colored shapes showing the ${nn} layout). ` +
+        `Render it as a photorealistic ${nn} made from the materials described below, with natural studio lighting and a clean neutral background.`
       );
       imgIdx++;
     } else if (visualInputs.hasBackground) {
-      const sceneLabel = imgLabel(imgIdx, target);
+      const sceneLabel = imgLabel(imgIdx);
       imgRefs.push(
-        `ZADANIE: dodaj ${productNoun.nominative} do istniejącego zdjęcia. ` +
-          `${sceneLabel} to PRAWDZIWE ZDJĘCIE ściany wnętrza. ` +
-          `Zachowaj CAŁĄ scenę dokładnie tak, jak jest widoczna — tę samą ścianę, ten sam sufit, tę samą podłogę, ` +
-          `te same meble, to samo światło i cienie. ` +
-          `Dodaj opisany poniżej ${productNoun.nominative} na ścianę — z naturalnymi cieniami zgodnymi z istniejącym ` +
-          `oświetleniem i z realistycznymi refleksami światła otoczenia.`
+        `TASK: add a ${nn} to an existing photo. ` +
+        `${sceneLabel} is a REAL PHOTO of an interior wall. ` +
+        `Keep the entire scene exactly as shown — same wall, ceiling, floor, furniture, lighting and shadows. ` +
+        `Add the ${nn} described below onto the wall — with natural shadows matching the existing lighting and realistic reflections of ambient light.`
       );
       imgIdx++;
     }
 
-    // DEDUPLIKACJA materiałów: jedna wzmianka per unikalny materiał (zamiast per element).
-    const matIdMap = visualInputs.materialIdToImageIdx ?? {};
-    if (elementsWithMaterial.length > 0 && Object.keys(matIdMap).length > 0) {
-      const materialGroups = new Map<
-        string,
-        { material: typeof elementsWithMaterial[number]["material"]; regions: string[]; nodeIds: string[] }
-      >();
-      for (const el of elementsWithMaterial) {
-        const mat = el.material;
-        if (!mat?.id || !mat.photo_path) continue;
-        const existing = materialGroups.get(mat.id);
-        const region = el.colorHex ?? "domyślny";
-        if (existing) {
-          if (!existing.regions.includes(region)) existing.regions.push(region);
-          existing.nodeIds.push(el.nodeId);
-        } else {
-          materialGroups.set(mat.id, { material: mat, regions: [region], nodeIds: [el.nodeId] });
-        }
-      }
-
-      const matRefs: string[] = [];
-      for (const [matId, group] of materialGroups) {
-        const relativeIdx = matIdMap[matId];
-        if (relativeIdx == null) continue;
-        const thisImgIdx = imgIdx + relativeIdx;
-        const regions = group.regions.join(", ");
-        const elementToken = group.regions.length > 1 ? "elementów" : "elementu";
-        // KRYTYCZNE: dla materiałów połysk/lustro NIE pisz "nałóż dokładnie tę teksturę" —
-        // ten opis JEST SPRZECZNY z opisem w `describeElementMaterial`, który mówi że
-        // zdjęcie to tylko "tint hue reference" (większość powierzchni to refleksy
-        // otoczenia, nie tekstura ze zdjęcia). Dwie sprzeczne instrukcje powodowały
-        // że AI losowo wybierała jedną interpretację. Dla połysku/lustra zostawiamy
-        // tylko opis z `describeElementMaterial` (pełniejszy i spójny).
-        const mat = group.material;
-        if (mat?.material_type === "lustro" || mat?.material_type === "polysk") {
-          // Mapowanie nodeId → imgIdx zachowane (potrzebne w describeElementMaterial),
-          // ale wzmianki w `imgRefs` (sekcji wprowadzającej) pomijamy.
-          for (const nid of group.nodeIds) {
-            elementToImageIdx[nid] = thisImgIdx;
-          }
-          continue;
-        }
-        const matLabel = imgLabel(thisImgIdx, target);
-        const matLine =
-          `${matLabel} to próbka tekstury materiału — nałóż dokładnie tę teksturę, kolor i ` +
-          `wykończenie na ${elementToken} odpowiadającego regionowi SVG ${regions}`;
-        // Krótki EN imperatyw dla GPT-Image-2 — pozytywnie, bez „NOT the material color".
-        const matLineWithCta = target === "openai"
-          ? `${matLine}. Texture and color source for SVG region ${regions}: ${matLabel}`
-          : matLine;
-        matRefs.push(matLineWithCta);
-        for (const nid of group.nodeIds) {
-          elementToImageIdx[nid] = thisImgIdx;
-        }
-      }
-      if (matRefs.length > 0) {
-        imgRefs.push(matRefs.join("; "));
-      }
-      imgIdx += Object.keys(matIdMap).length;
-    }
     const refCount = visualInputs.referenceImageCount ?? 0;
     if (refCount > 0) {
       const descs = visualInputs.referenceDescriptions ?? [];
       const refStart = imgIdx;
-      // Jeśli user dał choć jeden opis, opisujemy każdą referencję osobno z jej opisem.
-      // Inaczej zbiorczy fallback "dodatkowe inspiracje stylistyczne".
       const hasAnyDesc = descs.some((d) => d && d.trim().length > 0);
       if (hasAnyDesc) {
         const refLines: string[] = [];
         for (let i = 0; i < refCount; i++) {
-          const idx = refStart + i;
+          const lbl = imgLabel(refStart + i);
           const desc = (descs[i] ?? "").trim();
-          const lbl = imgLabel(idx, target);
-          if (desc) {
-            refLines.push(`${lbl}: ${desc}`);
-          } else {
-            refLines.push(`${lbl}: dodatkowa inspiracja stylistyczna`);
-          }
+          refLines.push(desc ? `${lbl}: ${desc}` : `${lbl}: additional style reference`);
         }
         imgRefs.push(refLines.join("; "));
       } else {
         const refEnd = refStart + refCount - 1;
-        const startLbl = imgLabel(refStart, target);
-        const range = refStart === refEnd
-          ? startLbl
-          : `${startLbl}–${imgLabel(refEnd, target).split(" ")[1]}`;
-        imgRefs.push(
-          `${range} to dodatkowe inspiracje stylistyczne (użyj jako referencji dla jakości wykończenia i światła)`
-        );
+        const range =
+          refStart === refEnd ? imgLabel(refStart) : `${imgLabel(refStart)}–${imgLabel(refEnd)}`;
+        imgRefs.push(`${range}: additional style references (use for finishing quality and lighting reference)`);
       }
     }
+
     if (imgRefs.length > 0) {
       fragments.push({ id: FRAGMENT_IDS.TASK, text: imgRefs.join(". ") + "." });
     }
   }
 
-  // TEKSTY z SVG — Gemini (Nano Banana) bardzo często mutuje teksty:
-  // "Green-partners.pl" → "Green Partnership", "Green ENGINEERS", "G&N partners".
-  // Pozytywna instrukcja + przykład w cudzysłowach + niska temperatura (0.35)
-  // wspólnie dają wierność. Wersja z listą "NIE skracaj, NIE tłumacz..." była dłuższa
-  // i — paradoksalnie — gorsza, bo każda wzmianka mutacji aktywuje ją u modelu.
+  // SVG texts — AI models often mutate text ("Green-partners.pl" → "GREEN PARTNER INTL").
+  // Literal copy instruction with quoted examples is the most reliable fix.
   const svgTexts = visualInputs?.svgTexts ?? [];
   if (svgTexts.length > 0) {
     const quoted = svgTexts.map((t) => `"${t}"`).join(", ");
     fragments.push({
       id: FRAGMENT_IDS.SVG_TEXTS,
       text:
-        `Teksty na ${productNoun.genitive} (skopiuj DOSŁOWNIE, znak po znaku): ${quoted}. ` +
-        `Zachowaj identyczną pisownię, wielkość liter, łączniki i znaki interpunkcyjne. ` +
-        `Użyj krojów pisma i rozmiarów liter zgodnych z projektem SVG.`,
+        `Sign texts (copy LITERALLY, character by character): ${quoted}. ` +
+        `Preserve identical spelling, capitalization, hyphens and punctuation marks. ` +
+        `Use typefaces and letter sizes matching the SVG design.`,
     });
   }
 
-  // KOLEJNOŚĆ: warstwy PRZED materiałami — model musi wiedzieć "co buduje"
-  // (backplate → napisy → logo → dystanse) zanim usłyszy "z czego". Wcześniej
-  // materiały lądowały pierwsze, a "Warstwy" na końcu — AI traktowała listę
-  // hexów jako płaską mapę kolorów bez głębi.
-  const layerStructure = buildLayerStructure(config.elements, productNoun);
+  // Layer structure before materials — model must know WHAT it's building
+  // (backplate → text → logo → standoffs) before learning WHAT it's made of.
+  const layerStructure = buildLayerStructure(config.elements, nn);
   if (layerStructure) {
     fragments.push({ id: FRAGMENT_IDS.LAYERS, text: layerStructure });
   }
 
-  // Materiały elementów — trzy ścieżki w `describeElementMaterial`.
-  // Deduplikacja po (colorHex + thicknessMm) — opis materiału jest funkcją
-  // KOLORU + GRUBOŚCI + materiału, NIE roli. Rola jest opisywana osobno
-  // w `buildLayerStructure` (tam każdy hex trafia do swojej warstwy). Wcześniej
-  // dedup obejmował też rolę — przez co ten sam hex używany w 2 rolach (np.
-  // #3ab238 jako napis I logo) dostawał IDENTYCZNY długi opis 2 razy.
+  // Material descriptions — deduplicated by (colorHex + thicknessMm).
   const hasBg = !!visualInputs?.hasBackground;
   const seenKeys = new Set<string>();
   const materialDescriptions: string[] = [];
   for (const el of elementsWithMaterial) {
-    const colorKey = el.colorHex ?? "domyślny";
+    const colorKey = el.colorHex ?? "default";
     const dedupKey = `${colorKey}|${el.thicknessMm ?? ""}`;
     if (seenKeys.has(dedupKey)) continue;
     seenKeys.add(dedupKey);
-    const hasPhoto = !!el.material!.photo_path;
-    const imageIdx = elementToImageIdx[el.nodeId] ?? null;
     materialDescriptions.push(
-      describeElementMaterial(el.material!, el.colorHex, el.thicknessMm, hasPhoto, imageIdx, hasBg, target)
+      describeElementMaterial(el.material!, el.colorHex, el.thicknessMm, hasBg)
     );
   }
   if (materialDescriptions.length > 0) {
     fragments.push({
       id: FRAGMENT_IDS.MATERIALS,
       text:
-        `Materiały elementów ${productNoun.genitive} (identyfikuj każdy element po jego kolorze hex w SVG): ` +
-        materialDescriptions.join("; ") +
-        ".",
+        `Sign element materials (identify each element by its hex color in the SVG): ` +
+        materialDescriptions.join("; ") + ".",
     });
   }
 
-  const distanceEl = elementsWithMaterial.find((el) => el.material?.category === "dystans");
-  // Pierwsza litera dużą — zaczyna nowe zdanie. Reszta zostaje w nominative.
-  const capProductNoun = productNoun.nominative.charAt(0).toUpperCase() + productNoun.nominative.slice(1);
+  const distanceEl = elementsWithMaterial.find((el) => el.hasDistances);
   if (distanceEl?.material) {
     fragments.push({
       id: FRAGMENT_IDS.DISTANCE,
-      text: `${capProductNoun} montowany na dystansach: ${describeMaterial(distanceEl.material)}.`,
+      text: `${capNn} mounted on standoffs: ${describeMaterial(distanceEl.material)}.`,
     });
   } else if (config.hasDistances) {
-    fragments.push({ id: FRAGMENT_IDS.DISTANCE, text: `${capProductNoun} montowany na dystansach.` });
+    fragments.push({ id: FRAGMENT_IDS.DISTANCE, text: `${capNn} mounted on standoffs.` });
   }
 
-  // ── LED ─────────────────────────────────────────────────────────────────
-  // Logika: per-element flagi wygrywają z globalnym toggle. Gdy CHOĆ JEDEN element
-  // ma ustawiony `ledBacklit` lub `ledFrontlit`, opisujemy LED jako listę konkretnych
-  // elementów (po hex). Gdy żaden element nie ma per-element flag, działa globalny
-  // toggle `config.led.backlit.enabled` / `frontlit.enabled` (backward-compat).
+  // LED — per-element flags take priority over global toggle.
   const perElementBacklit = config.elements.filter((el) => el.ledBacklit && el.colorHex);
   const perElementFrontlit = config.elements.filter((el) => el.ledFrontlit && el.colorHex);
   const anyPerElementLed = perElementBacklit.length > 0 || perElementFrontlit.length > 0;
 
   function ledSpec(cfg: LedConfig["backlit"]): string {
-    const parts2: string[] = [`kolor ${cfg.color}`];
+    const parts2: string[] = [`color ${cfg.color}`];
     if (cfg.kelvin != null) parts2.push(`${cfg.kelvin}K`);
     if (cfg.lumens != null) parts2.push(`${cfg.lumens} lm`);
     return parts2.join(", ");
   }
 
   if (perElementBacklit.length > 0) {
-    // Per-element: lista konkretnych elementów świecących backlit
     const hexes = [...new Set(perElementBacklit.map((el) => el.colorHex!))].join(", ");
     fragments.push({
       id: FRAGMENT_IDS.LED_BACKLIT,
       text:
-        `Podświetlenie LED od TYŁU (backlit) świeci tylko w elementach o kolorach SVG: ${hexes} ` +
-        `(${ledSpec(config.led.backlit)}). Pozostałe elementy NIE są podświetlone od tyłu.`,
+        `Rear LED backlighting active only on SVG color elements: ${hexes} (${ledSpec(config.led.backlit)}). All other elements are NOT rear-lit.`,
     });
   } else if (!anyPerElementLed && config.led.backlit.enabled) {
-    // Fallback: globalny toggle backlit dla całego produktu
     fragments.push({
       id: FRAGMENT_IDS.LED_BACKLIT,
-      text: `Podświetlenie od tyłu LED (${ledSpec(config.led.backlit)}).`,
+      text: `Rear LED backlighting (${ledSpec(config.led.backlit)}).`,
     });
   }
 
@@ -797,13 +490,12 @@ export function assemblePromptFragments(
     fragments.push({
       id: FRAGMENT_IDS.LED_FRONTLIT,
       text:
-        `Podświetlenie LED od PRZODU (front-lit) świeci tylko w elementach o kolorach SVG: ${hexes} ` +
-        `(${ledSpec(config.led.frontlit)}). Pozostałe elementy NIE są podświetlone od przodu.`,
+        `Front LED lighting active only on SVG color elements: ${hexes} (${ledSpec(config.led.frontlit)}). All other elements are NOT front-lit.`,
     });
   } else if (!anyPerElementLed && config.led.frontlit.enabled) {
     fragments.push({
       id: FRAGMENT_IDS.LED_FRONTLIT,
-      text: `Litery podświetlone LED od frontu (${ledSpec(config.led.frontlit)}).`,
+      text: `Front LED lighting (${ledSpec(config.led.frontlit)}).`,
     });
   }
 
@@ -820,14 +512,13 @@ export function assemblePromptFragments(
 }
 
 /**
- * Składa pełną listę elementów promptu (auto-fragmenty + presety w odpowiednich
- * pozycjach). UI używa tej funkcji do renderowania promptu z badgami presetów
- * wstawionymi między fragmenty. Brak `presets`/`presetTexts` → tylko fragmenty.
+ * Assembles the full prompt item list (auto-fragments + presets at their anchor positions).
+ * UI uses this to render the prompt with preset badges between fragments.
  *
- * Mapowanie anchorów:
- *   - anchor = ID fragmentu → preset wstawia się PO tym fragmencie
- *   - anchor = "__start__" → przed pierwszym fragmentem
- *   - anchor = "__end__" lub brak fragmentu o tym ID → na końcu
+ * Anchor mapping:
+ *   - anchor = fragment ID → preset inserted AFTER that fragment
+ *   - anchor = "__start__" → before all fragments
+ *   - anchor = "__end__" or missing fragment → at end
  */
 export function assemblePromptItems(
   config: SignConfig,
@@ -838,7 +529,6 @@ export function assemblePromptItems(
   const presets = options?.presets ?? [];
   const legacyTexts = options?.presetTexts ?? [];
 
-  // Mapa: anchor → lista presetów do wstawienia PO fragmencie o tym ID.
   const presetsByAnchor = new Map<string, PromptItem[]>();
   const validAnchors = new Set(fragments.map((f) => f.id));
   validAnchors.add("__start__");
@@ -856,7 +546,6 @@ export function assemblePromptItems(
     presetsByAnchor.set(anchor, existing);
   }
 
-  // Pseudo-preset "Środowisko" — wstawiany jak prawdziwy preset (przeciągalny, edytowalny).
   const todPreset = options?.timeOfDayPreset;
   if (todPreset?.text) {
     const todItem: PromptItem = {
@@ -872,7 +561,6 @@ export function assemblePromptItems(
     presetsByAnchor.set(todAnchor, existing);
   }
 
-  // Legacy: presetTexts bez anchorów lecą na koniec.
   for (const t of legacyTexts) {
     const trimmed = t.trim();
     if (!trimmed) continue;
@@ -888,16 +576,11 @@ export function assemblePromptItems(
   }
 
   const items: PromptItem[] = [];
-
-  // Preset z anchorem "__start__" → przed wszystkimi fragmentami
   for (const p of presetsByAnchor.get("__start__") ?? []) items.push(p);
-
   for (const frag of fragments) {
     items.push({ kind: "fragment", id: frag.id, text: frag.text });
     for (const p of presetsByAnchor.get(frag.id) ?? []) items.push(p);
   }
-
-  // Preset z anchorem "__end__" → po wszystkich fragmentach
   for (const p of presetsByAnchor.get("__end__") ?? []) items.push(p);
 
   return items;

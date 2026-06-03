@@ -123,6 +123,12 @@ pub fn run() {
             sql: include_str!("db/migrations/018_perspective_corners.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 19,
+            description: "is_distance_category",
+            sql: include_str!("db/migrations/019_is_distance_category.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

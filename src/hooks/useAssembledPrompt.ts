@@ -30,8 +30,8 @@ import type { SignConfig } from "../types";
  * z aktualnego stanu stores. Używany przez oba hooki niżej (string + items).
  */
 function useAssembleArgs() {
-  const { nodeOverrides, backgroundPath, svgContent } = useEditorStore();
-  const { materials } = useMaterialsStore();
+  const { nodeOverrides, backgroundPath, svgContent, perspectiveCorners } = useEditorStore();
+  const { materials, categories } = useMaterialsStore();
   const {
     led, camera, cameraDirty, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
     referenceImages, activePresetIds, presetAnchors, presetTextOverrides, model,
@@ -45,7 +45,7 @@ function useAssembleArgs() {
   }, [loadPresets]);
 
   return useMemo(() => {
-    const elements = buildElements(nodeOverrides, materials);
+    const elements = buildElements(nodeOverrides, materials, categories);
     const signConfig: SignConfig = {
       elements,
       hasDistances: elements.some((el) => el.hasDistances),
@@ -70,23 +70,9 @@ function useAssembleArgs() {
       }
     }
 
-    // Deduplikacja identyczna jak w useGeneration.ts — jeden obraz per unikalne material_id.
-    // Bez tego podgląd promptu miał inną numerację "Obraz N" niż faktyczne żądanie do AI.
-    const materialIdToImageIdx: Record<string, number> = {};
-    let matIdx = 0;
-    for (const el of elements) {
-      const matId = el.material?.id;
-      if (matId && el.material?.photo_path && !(matId in materialIdToImageIdx)) {
-        materialIdToImageIdx[matId] = matIdx++;
-      }
-    }
-    const materialImageCount = matIdx; // liczba unikalnych materiałów ze zdjęciem
-
     const visualInputs: VisualInputs = {
       hasBackground: !!backgroundPath,
       hasSvg: !!svgContent,
-      materialImageCount,
-      materialIdToImageIdx,
       referenceImageCount: referenceImages.length,
       referenceDescriptions: referenceImages.map((img) => img.description ?? ""),
       svgTexts,
@@ -124,11 +110,11 @@ function useAssembleArgs() {
     return {
       signConfig,
       visualInputs,
-      options: { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel },
+      options: { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel, hasPerspective: !!perspectiveCorners },
     };
   }, [
-    nodeOverrides, materials, led, camera, cameraDirty, backgroundPath,
-    svgContent, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
+    nodeOverrides, materials, categories, led, camera, cameraDirty, backgroundPath,
+    svgContent, perspectiveCorners, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
     referenceImages, activePresetIds, presetAnchors, presetTextOverrides, presets, productType, model,
   ]);
 }

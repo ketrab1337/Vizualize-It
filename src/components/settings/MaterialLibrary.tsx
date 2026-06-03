@@ -159,7 +159,7 @@ interface CategoryManagerModalProps {
 }
 
 function CategoryManagerModal({ categories, onClose, onChanged }: CategoryManagerModalProps) {
-  const { createCategory, updateCategory, deleteCategory } = useCategories();
+  const { createCategory, updateCategory, toggleCategoryDistance, deleteCategory } = useCategories();
   const addToast = useToastStore((s) => s.addToast);
   const [newName, setNewName] = useState("");
   const [isAdding, setIsAdding] = useState(false);
@@ -202,6 +202,15 @@ function CategoryManagerModal({ categories, onClose, onChanged }: CategoryManage
       addToast(`Błąd zmiany nazwy: ${e}`, "error");
     } finally {
       setEditingId(null);
+    }
+  }
+
+  async function handleToggleDistance(id: string, newValue: boolean) {
+    try {
+      await toggleCategoryDistance(id, newValue);
+      onChanged();
+    } catch (e) {
+      addToast(`Błąd zmiany flagi dystansu: ${e}`, "error");
     }
   }
 
@@ -256,6 +265,18 @@ function CategoryManagerModal({ categories, onClose, onChanged }: CategoryManage
                   <>
                     <Tag className="w-3.5 h-3.5 text-gray-600 shrink-0" />
                     <span className="flex-1 text-gray-200 text-sm truncate">{cat.name}</span>
+
+                    <button
+                      onClick={() => handleToggleDistance(cat.id, cat.is_distance !== 1)}
+                      title={cat.is_distance ? "Kategoria oznaczona jako dystans — kliknij aby wyłączyć" : "Oznacz jako dystans (standoffy, elementy montażowe)"}
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-colors shrink-0 ${
+                        cat.is_distance
+                          ? "bg-blue-900/50 text-blue-400 hover:bg-red-900/40 hover:text-red-400"
+                          : "text-gray-700 hover:text-gray-400 border border-gray-800 hover:border-gray-600"
+                      }`}
+                    >
+                      dystans
+                    </button>
 
                     {confirmDeleteId === cat.id ? (
                       <div className="flex items-center gap-1.5 shrink-0">

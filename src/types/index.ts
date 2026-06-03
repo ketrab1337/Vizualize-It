@@ -95,6 +95,8 @@ export interface MaterialCategory {
   name: string;
   slug: string;
   is_system: number;
+  /** 1 = kategoria używana jako dystans (odpowiednik ról "distance" w prompcie). */
+  is_distance: number;
   sort_order: number;
   created_at: string;
 }

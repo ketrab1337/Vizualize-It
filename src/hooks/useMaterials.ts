@@ -30,7 +30,7 @@ export function useCategories() {
       "INSERT INTO material_categories (id, name, slug, is_system, sort_order, created_at) VALUES ($1,$2,$3,0,$4,$5)",
       [id, name.trim(), slug, nextOrder, now]
     );
-    return { id, name: name.trim(), slug, is_system: 0, sort_order: nextOrder, created_at: now };
+    return { id, name: name.trim(), slug, is_system: 0, is_distance: 0, sort_order: nextOrder, created_at: now };
   }, []);
 
   const updateCategory = useCallback(async (id: string, name: string): Promise<void> => {
@@ -38,12 +38,17 @@ export function useCategories() {
     await db.execute("UPDATE material_categories SET name=$1 WHERE id=$2", [name.trim(), id]);
   }, []);
 
+  const toggleCategoryDistance = useCallback(async (id: string, isDistance: boolean): Promise<void> => {
+    const db = await getDb();
+    await db.execute("UPDATE material_categories SET is_distance=$1 WHERE id=$2", [isDistance ? 1 : 0, id]);
+  }, []);
+
   const deleteCategory = useCallback(async (id: string): Promise<void> => {
     const db = await getDb();
     await db.execute("DELETE FROM material_categories WHERE id=$1", [id]);
   }, []);
 
-  return { createCategory, updateCategory, deleteCategory };
+  return { createCategory, updateCategory, toggleCategoryDistance, deleteCategory };
 }
 
 export function useMaterials() {

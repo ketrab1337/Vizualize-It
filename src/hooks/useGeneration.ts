@@ -75,8 +75,8 @@ export function useGeneration() {
   const [generating, setGenerating] = useState(false);
 
   const { projects, activeProjectId } = useProjectStore();
-  const { nodeOverrides, backgroundPath, backgroundDataUrl, svgContent, setActiveTab } = useEditorStore();
-  const { materials } = useMaterialsStore();
+  const { nodeOverrides, backgroundPath, backgroundDataUrl, svgContent, perspectiveCorners, setActiveTab } = useEditorStore();
+  const { materials, categories } = useMaterialsStore();
   const {
     model,
     format,
@@ -108,34 +108,7 @@ export function useGeneration() {
 
       // buildElements używa nodeId jako label — te same identyfikatory trafiają do
       // promptu, AI rozpoznaje elementy po kolorach hex (nie po wizualnych etykietach).
-      const elements = buildElements(nodeOverrides, materials);
-
-      // Zbierz zdjęcia referencyjne materiałów — DEDUPLIKACJA per material_id.
-      // Wcześniej każdy element z tym samym materiałem wysyłał osobne zdjęcie,
-      // przez co dla szyldu z 7 literami plexy "Niebieska" AI dostawała 7 kopii tego
-      // samego obrazu. Teraz: jeden materiał = jeden Image, wszystkie elementy
-      // używające tego materiału referują do tego samego numeru.
-      const materialImages: { data: string; mime_type: string }[] = [];
-      const materialIdToImageIdx: Record<string, number> = {};
-      const seenMaterialIds = new Set<string>();
-      for (const el of elements) {
-        const matId = el.material?.id;
-        if (!matId || !el.material?.photo_path) continue;
-        if (seenMaterialIds.has(matId)) continue;
-        seenMaterialIds.add(matId);
-        try {
-          const dataUrl = await invoke<string>("get_material_photo", {
-            path: el.material.photo_path,
-          });
-          const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
-          if (match) {
-            materialIdToImageIdx[matId] = materialImages.length; // relatywny indeks w tablicy
-            materialImages.push({ data: match[2], mime_type: match[1] });
-          }
-        } catch {
-          // brak zdjęcia nie blokuje generowania
-        }
-      }
+      const elements = buildElements(nodeOverrides, materials, categories);
 
       // Przygotuj obrazy wejściowe.
       // WAŻNE: captureCanvas() zwraca KOMPOZYT (tło + SVG) gdy jest tło.
@@ -166,11 +139,9 @@ export function useGeneration() {
       const visualInputs: VisualInputs = {
         hasBackground: !!backgroundDataUrl,
         hasSvg: !!svgImageInput,
-        materialImageCount: materialImages.length,
         referenceImageCount: referenceImageInputs.length,
         referenceDescriptions: referenceImages.map((img) => img.description ?? ""),
         svgTexts: extractSvgTexts(svgContent),
-        materialIdToImageIdx,
       };
       const signConfig: SignConfig = {
         elements,
@@ -199,7 +170,7 @@ export function useGeneration() {
 
       const targetModel = model === "gpt-image-2" ? "openai" : "gemini";
       const finalPrompt =
-        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel });
+        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel, hasPerspective: !!perspectiveCorners });
 
       const generationInput = {
         project_slug: project.slug,
@@ -207,7 +178,7 @@ export function useGeneration() {
         model,
         format,
         count,
-        material_images: materialImages,
+        material_images: [] as { data: string; mime_type: string }[],
         background_image: backgroundImageInput,
         svg_image: svgImageInput,
         reference_images: referenceImageInputs,
@@ -308,6 +279,7 @@ export function useGeneration() {
     backgroundPath,
     backgroundDataUrl,
     svgContent,
+    perspectiveCorners,
     model,
     format,
     count,

@@ -115,7 +115,7 @@ function MaterialPicker({ label, selectedMaterialId, onChange }: MaterialPickerP
 
 function PropertiesTab() {
   const { selectedElementId, selectedElementIds, selectedItemBounds, nodeOverrides, setNodeOverride } = useEditorStore();
-  const { refresh, materials, globalCuttingRates } = useMaterialsStore();
+  const { refresh, categories, materials, globalCuttingRates } = useMaterialsStore();
 
   const [materialId, setMaterialId] = useState("");
   const [widthInput, setWidthInput] = useState("");
@@ -147,7 +147,8 @@ function PropertiesTab() {
 
   const selectedMaterial = materials.find((m) => m.id === materialId) ?? null;
   const override = selectedElementId ? nodeOverrides[selectedElementId] : null;
-  const isDistans = selectedMaterial?.category === "dystans";
+  const selectedCat = categories.find((c) => c.slug === selectedMaterial?.category);
+  const isDistans = selectedCat?.is_distance === 1;
 
   // Globalne stawki cięcia dla kategorii wybranego materiału (zawsze, niezależnie od pricing_unit)
   const categoryRates = selectedMaterial

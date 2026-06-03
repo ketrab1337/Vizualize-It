@@ -188,6 +188,78 @@ export function warpCanvasToQuad(
   }
 }
 
+/**
+ * Computes the warped destination quad for a source rectangle, preserving the
+ * source rectangle's SIZE in the output — only perspective rotation/shear is applied.
+ *
+ * Problem it solves: the standard approach (applyHomography to all 4 corners) scales
+ * the sign proportionally with the wall quad size. If the user marks a large wall area
+ * the sign shrinks; a small area → sign enlarges. Unintuitive when the user wants to
+ * define only the perspective ANGLE, not the scale.
+ *
+ * Algorithm:
+ *   1. Map source CENTER through H → correct wall position (wcx, wcy)
+ *   2. Compute local Jacobian J of H at center
+ *   3. Normalize J to remove scale factor (preserves rotation + shear only)
+ *   4. Apply J_norm to corner offsets from center → size-preserved warped corners
+ *
+ * Fallback: if Jacobian is degenerate (|det| < ε), returns the standard H-warped quad.
+ */
+export function computeWarpedQuadSizePreserved(
+  H: Mat3,
+  sx0: number, sy0: number,
+  sx1: number, sy1: number
+): Quad {
+  const scx = (sx0 + sx1) / 2;
+  const scy = (sy0 + sy1) / 2;
+  const [wcx, wcy] = applyHomography(H, [scx, scy]);
+
+  // Denominator at center point
+  const denom = H[6] * scx + H[7] * scy + H[8];
+
+  // Jacobian of H at (scx, scy):
+  //   ∂X/∂x = (h0 − X·h6) / denom   ∂X/∂y = (h1 − X·h7) / denom
+  //   ∂Y/∂x = (h3 − Y·h6) / denom   ∂Y/∂y = (h4 − Y·h7) / denom
+  const j00 = (H[0] - wcx * H[6]) / denom;
+  const j01 = (H[1] - wcx * H[7]) / denom;
+  const j10 = (H[3] - wcy * H[6]) / denom;
+  const j11 = (H[4] - wcy * H[7]) / denom;
+
+  const det = j00 * j11 - j01 * j10;
+  const s = Math.sqrt(Math.abs(det));
+
+  if (s < 1e-9) {
+    // Degenerate Jacobian — fall back to standard homography warp
+    return [
+      applyHomography(H, [sx0, sy0]),
+      applyHomography(H, [sx1, sy0]),
+      applyHomography(H, [sx1, sy1]),
+      applyHomography(H, [sx0, sy1]),
+    ];
+  }
+
+  // Scale-normalized Jacobian: preserves rotation + shear, removes global scale
+  const j00n = j00 / s;
+  const j01n = j01 / s;
+  const j10n = j10 / s;
+  const j11n = j11 / s;
+
+  const hw = (sx1 - sx0) / 2;
+  const hh = (sy1 - sy0) / 2;
+
+  const applyJnorm = (dx: number, dy: number): Pt => [
+    wcx + j00n * dx + j01n * dy,
+    wcy + j10n * dx + j11n * dy,
+  ];
+
+  return [
+    applyJnorm(-hw, -hh),  // TL
+    applyJnorm(hw,  -hh),  // TR
+    applyJnorm(hw,   hh),  // BR
+    applyJnorm(-hw,  hh),  // BL
+  ];
+}
+
 /** Rysuje pojedynczy trójkąt z `src` na `ctx` przez affine + clip. */
 function drawTriangle(
   ctx: CanvasRenderingContext2D,
