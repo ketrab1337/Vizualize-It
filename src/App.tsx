@@ -1,17 +1,16 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { Sidebar } from "./components/layout/Sidebar";
 import { MainArea } from "./components/layout/MainArea";
 import { SettingsView } from "./components/settings/SettingsView";
 import { NewProjectModal } from "./components/layout/NewProjectModal";
+import { UpdateModal } from "./components/layout/UpdateModal";
 import { ToastContainer } from "./components/ui/Toast";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { useProject } from "./hooks/useProject";
+import { useAppUpdate } from "./hooks/useAppUpdate";
 import { useKeysStore } from "./stores/keysStore";
 import { useSettingsStore } from "./stores/settingsStore";
-import { useToastStore } from "./stores/toastStore";
 
 export function App() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -19,7 +18,7 @@ export function App() {
   const { loadProjects } = useProject();
   const { refreshKeys } = useKeysStore();
   const loadSettings = useSettingsStore((s) => s.loadSettings);
-  const addToast = useToastStore((s) => s.addToast);
+  const updateState = useAppUpdate();
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -33,30 +32,7 @@ export function App() {
     loadProjects();
     refreshKeys();
     loadSettings();
-
-    const timer = setTimeout(async () => {
-      try {
-        const update = await check();
-        if (!update?.available) return;
-        addToast(
-          `Dostępna aktualizacja ${update.version} — kliknij by zainstalować`,
-          "info",
-          {
-            label: "Zainstaluj",
-            fn: async () => {
-              addToast("Pobieranie aktualizacji...", "info");
-              await update.downloadAndInstall();
-              await relaunch();
-            },
-          }
-        );
-      } catch {
-        // ignoruj błędy sprawdzania aktualizacji
-      }
-    }, 3000);
-
-    return () => clearTimeout(timer);
-  }, [loadProjects, refreshKeys, loadSettings, addToast]);
+  }, [loadProjects, refreshKeys, loadSettings]);
 
   return (
     <ErrorBoundary>
@@ -83,6 +59,7 @@ export function App() {
           open={newProjectOpen}
           onClose={() => setNewProjectOpen(false)}
         />
+        <UpdateModal state={updateState} />
         <ToastContainer />
       </div>
     </ErrorBoundary>

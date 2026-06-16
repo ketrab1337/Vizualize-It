@@ -48,7 +48,10 @@
     ],
     "windows": {
       "nsis": {
-        "installerIcon": "icons/installer.ico"
+        "installerIcon": "icons/installer.ico",
+        "languages": ["Polish"],
+        "displayLanguageSelector": false,
+        "installMode": "currentUser"
       }
     }
   }
