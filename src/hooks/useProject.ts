@@ -7,23 +7,7 @@ import { useGenerationStore, type GenerationSnapshot } from "../stores/generatio
 import { useToastStore } from "../stores/toastStore";
 import { updateSvgWithOverrides } from "../lib/svgHelpers";
 import { getDb } from "../lib/db";
-import type { Project, PerspectiveCorners } from "../types";
-import { parsePerspectiveCorners, serializePerspectiveCorners } from "../types";
-
-/**
- * DB-row shape — `perspective_corners` jest TEXT (JSON-string) lub NULL.
- * Po `db.select` musimy zparsować na typowany obiekt zanim trafi do store.
- */
-type ProjectRow = Omit<Project, "perspective_corners"> & {
-  perspective_corners: string | null;
-};
-
-function rowToProject(row: ProjectRow): Project {
-  return {
-    ...row,
-    perspective_corners: parsePerspectiveCorners(row.perspective_corners),
-  };
-}
+import type { Project } from "../types";
 
 export function useProject() {
   const { projects, setProjects, activeProjectId, setActiveProject } = useProjectStore();
@@ -58,17 +42,12 @@ export function useProject() {
           svg_content: string | null;
           background_path: string | null;
           led_config_json: string | null;
-          perspective_corners: string | null;
         }[]>(
-          "SELECT svg_content, background_path, led_config_json, perspective_corners FROM projects WHERE id = $1",
+          "SELECT svg_content, background_path, led_config_json FROM projects WHERE id = $1",
           [projectId]
         );
         const row = rows[0];
         if (!row) return;
-
-        // Perspektywa ściany — odczyt z DB (per-projekt). Null = brak warpu.
-        const corners = parsePerspectiveCorners(row.perspective_corners);
-        useEditorStore.getState().setPerspectiveCorners(corners);
 
         if (row.svg_content) {
           setSvgContent(row.svg_content);
@@ -106,10 +85,10 @@ export function useProject() {
   const loadProjects = useCallback(async () => {
     try {
       const db = await getDb();
-      const rows = await db.select<ProjectRow[]>(
+      const rows = await db.select<Project[]>(
         "SELECT * FROM projects ORDER BY updated_at DESC"
       );
-      setProjects(rows.map(rowToProject));
+      setProjects(rows);
     } catch (e) {
       addToast(`Nie można wczytać projektów: ${e}`, "error");
     }
@@ -273,35 +252,6 @@ export function useProject() {
     [projects, setProjects, addToast]
   );
 
-  /**
-   * Aktualizuje 4 punkty perspektywy ściany dla projektu. `corners = null`
-   * wyłącza warpowanie (SVG kompozytowany na płasko). Trafia do
-   * `projects.perspective_corners` (TEXT JSON; patrz migracja 018).
-   */
-  const updatePerspectiveCorners = useCallback(
-    async (id: string, corners: PerspectiveCorners | null): Promise<boolean> => {
-      try {
-        const db = await getDb();
-        const value = serializePerspectiveCorners(corners);
-        const now = new Date().toISOString();
-        await db.execute(
-          "UPDATE projects SET perspective_corners = $1, updated_at = $2 WHERE id = $3",
-          [value, now, id]
-        );
-        setProjects(
-          projects.map((p) =>
-            p.id === id ? { ...p, perspective_corners: corners, updated_at: now } : p
-          )
-        );
-        return true;
-      } catch (e) {
-        addToast(`Błąd zapisu perspektywy: ${e}`, "error");
-        return false;
-      }
-    },
-    [projects, setProjects, addToast]
-  );
-
   // ── Per-projekt stan generowania (prompt + presety + ustawienia panelu) ─────
   // JSON w `projects.generation_state_json` — patrz migracja 014. Powód: bez tego
   // wybór presetów i prompt wyciekały między projektami (cały generationStore był
@@ -357,7 +307,6 @@ export function useProject() {
     deleteProject,
     renameProject,
     updateProductType,
-    updatePerspectiveCorners,
     saveEditorState,
     loadEditorState,
     saveGenerationState,
