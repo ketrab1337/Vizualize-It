@@ -13,6 +13,8 @@ import type { BatchJob, PollBatchResult } from "../types";
  * Pierwsze sprawdzenie po wczytaniu hooka odbywa się od razu.
  */
 const POLL_INTERVAL_MS = 30_000;
+/** Po tylu kolejnych błędach pollowania job przechodzi w stan error (zamiast wisieć w running). */
+const POLL_ERROR_THRESHOLD = 5;
 
 interface SubmitBatchOutput {
   batch_id: string;
@@ -23,6 +25,8 @@ export function useBatchJobs(projectId: string | null) {
   const [jobs, setJobs] = useState<BatchJob[]>([]);
   /** Set ID zadań aktualnie przetwarzanych (submit lub poll w toku) — zapobiega podwójnym wywołaniom. */
   const inFlightRef = useRef<Set<string>>(new Set());
+  /** Licznik kolejnych błędów pollowania per job_id. Po POLL_ERROR_THRESHOLD błędów → status error. */
+  const pollErrorsRef = useRef<Map<string, number>>(new Map());
 
   const loadJobs = useCallback(async () => {
     if (!projectId) return;
@@ -113,8 +117,11 @@ export function useBatchJobs(projectId: string | null) {
 
       if (result.status === "pending" || result.status === "running") {
         // brak zmiany — spróbujemy ponownie przy następnym polling
+        pollErrorsRef.current.delete(job.id);
         return;
       }
+      // poll zakończony sukcesem (jakikolwiek stan terminalny) — reset licznika błędów
+      pollErrorsRef.current.delete(job.id);
 
       const db = await getDb();
       const now = new Date().toISOString();
@@ -190,8 +197,30 @@ export function useBatchJobs(projectId: string | null) {
           prev.map((j) => (j.id === job.id ? { ...j, status: "cancelled", updated_at: now } : j))
         );
       }
-    } catch {
-      // błędy sieciowe ignorujemy — następny polling spróbuje ponownie
+    } catch (e) {
+      // Błąd pollowania: zliczamy kolejne awarie. Po POLL_ERROR_THRESHOLD próbach
+      // oznaczamy job jako error zamiast wisieć w running w nieskończoność.
+      const prev = pollErrorsRef.current.get(job.id) ?? 0;
+      const next = prev + 1;
+      if (next >= POLL_ERROR_THRESHOLD) {
+        pollErrorsRef.current.delete(job.id);
+        const errText = `Błąd pollowania po ${POLL_ERROR_THRESHOLD} próbach: ${String(e)}`;
+        const errAt = new Date().toISOString();
+        try {
+          const db = await getDb();
+          await db.execute(
+            `UPDATE batch_jobs SET status='error', error_text=$1, updated_at=$2 WHERE id=$3`,
+            [errText, errAt, job.id]
+          );
+        } catch {}
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.id === job.id ? { ...j, status: "error", error_text: errText, updated_at: errAt } : j
+          )
+        );
+      } else {
+        pollErrorsRef.current.set(job.id, next);
+      }
     } finally {
       inFlightRef.current.delete(job.id);
     }

@@ -26,14 +26,14 @@ function buildEditPrompt(cam: CameraConfig): string {
   // Pozytywne sformułowanie wzorowane na Google Cloud guide dla Nano Banana:
   // "Keep X exactly as is. Change only Y." (zamiast list negacji "Don't change X")
   const base =
-    "Re-render this exact sign from a new camera angle. " +
-    "Keep the sign's materials, colors, surface finish, text content, fonts, logo design, " +
-    "element layout, lighting, and background exactly as visible in the input image. " +
-    "Change only the camera perspective.";
+    "Wyrenderuj dokładnie ten sam szyld z nowego kąta kamery. " +
+    "Zachowaj materiały, kolory, wykończenie powierzchni, treść tekstu, kroje pisma, projekt logo, " +
+    "układ elementów, oświetlenie i tło dokładnie tak, jak widać na obrazie wejściowym. " +
+    "Zmień wyłącznie perspektywę kamery.";
   if (camText) {
-    return `${base} New camera angle: ${camText}.`;
+    return `${base} Nowy kąt kamery: ${camText}.`;
   }
-  return `${base} Set the camera to a frontal view at medium distance.`;
+  return `${base} Ustaw kamerę na widok frontalny ze średniej odległości.`;
 }
 
 
@@ -49,6 +49,7 @@ export function ChangeAngleModal({
   const [error, setError] = useState<string | null>(null);
   const addToast = useToastStore((s) => s.addToast);
   const changeAngleModel = useSettingsStore((s) => s.changeAngleModel);
+  const gptImageQuality = useSettingsStore((s) => s.gptImageQuality);
 
   const handleClose = useCallback(() => {
     if (generating) return;
@@ -71,6 +72,7 @@ export function ChangeAngleModal({
             file_path: img.file_path,
             camera_prompt: prompt,
             model: changeAngleModel,
+            quality: gptImageQuality,
           },
         }
       );
@@ -135,7 +137,7 @@ export function ChangeAngleModal({
     } finally {
       setGenerating(false);
     }
-  }, [camera, img, projectSlug, onNewImage, addToast, onClose, changeAngleModel]);
+  }, [camera, img, projectSlug, onNewImage, addToast, onClose, changeAngleModel, gptImageQuality]);
 
   return (
     <Modal title="Zmień kąt kamery" open={open} onClose={handleClose} size="lg">

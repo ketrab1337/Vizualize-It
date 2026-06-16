@@ -116,6 +116,7 @@ export function EditImageModal({
 
   const addToast = useToastStore((s) => s.addToast);
   const editTextModel = useSettingsStore((s) => s.editTextModel);
+  const gptImageQuality = useSettingsStore((s) => s.gptImageQuality);
 
   async function handleAddReferenceImage() {
     try {
@@ -538,6 +539,7 @@ export function EditImageModal({
               file_path: img.file_path,
               mask_base64: maskB64,
               prompt: trimmed,
+              quality: gptImageQuality,
               reference_images: refsForBackend,
             },
           });
@@ -578,6 +580,7 @@ export function EditImageModal({
             file_path: img.file_path,
             camera_prompt: trimmed,
             model: editTextModel,
+            quality: gptImageQuality,
             reference_images: refsForBackend,
           },
         });

@@ -1,4 +1,5 @@
 import { useGenerationStore } from "../../stores/generationStore";
+import { useSettingsStore, type GptImageQuality } from "../../stores/settingsStore";
 import type { AiModel, ImageFormat } from "../../types";
 
 const MODELS: { id: AiModel; label: string; desc: string; disabled?: boolean }[] = [
@@ -29,9 +30,22 @@ const FORMATS: { id: ImageFormat; label: string }[] = [
 
 const COUNTS = [1, 2, 3, 4] as const;
 
+const QUALITY_OPTIONS: { value: GptImageQuality; label: string }[] = [
+  { value: "low", label: "Niska" },
+  { value: "medium", label: "Średnia" },
+  { value: "high", label: "Wysoka" },
+];
+
 export function ModelSelector() {
   const { model, format, count, batchMode, setModel, setFormat, setCount, setBatchMode } =
     useGenerationStore();
+  const {
+    gptImageQuality,
+    nanoBananaTemperature,
+    setGptImageQuality,
+    setNanoBananaTemperature,
+  } = useSettingsStore();
+  const isNanoBanana = model === "nano-banana-2" || model === "nano-banana-pro";
 
   return (
     <div className="bg-[#1a1a1a] rounded-lg p-4 space-y-5">
@@ -69,6 +83,57 @@ export function ModelSelector() {
         ))}
       </div>
 
+
+      {/* Jakość gpt-image-2 (zależna od modelu) */}
+      {model === "gpt-image-2" && (
+        <div className="border-t border-gray-800 pt-4">
+          <p className="text-xs text-gray-400 font-medium mb-2">Jakość (wpływa na koszt)</p>
+          <div className="flex gap-1">
+            {QUALITY_OPTIONS.map((q) => (
+              <button
+                key={q.value}
+                onClick={() => void setGptImageQuality(q.value)}
+                className={`flex-1 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
+                  gptImageQuality === q.value
+                    ? "bg-blue-600 text-white"
+                    : "bg-[#222] text-gray-400 hover:text-gray-200 hover:bg-[#2a2a2a]"
+                }`}
+              >
+                {q.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
+            Wyższa jakość = więcej detali, ale wyższy koszt (Wysoka ≈ ~4× Średnia). Średnia
+            do szkiców i iteracji, Wysoka do finalnej wizualizacji dla klienta.
+          </p>
+        </div>
+      )}
+
+      {/* Temperatura Nano Banana (zależna od modelu) */}
+      {isNanoBanana && (
+        <div className="border-t border-gray-800 pt-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs text-gray-400 font-medium">Temperatura</p>
+            <span className="text-xs text-gray-300 tabular-nums">
+              {nanoBananaTemperature.toFixed(2)}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={nanoBananaTemperature}
+            onChange={(e) => void setNanoBananaTemperature(Number.parseFloat(e.target.value))}
+            className="w-full accent-blue-500"
+          />
+          <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
+            Niższa = stabilniej i wierniej (mniej mutacji tekstu na szyldzie). Wyższa = więcej
+            wariancji. Zalecane ok. 0,35.
+          </p>
+        </div>
+      )}
 
       {/* Tryb batch */}
       <div className="border-t border-gray-800 pt-4 flex items-center justify-between">
