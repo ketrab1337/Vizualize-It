@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { MaterialLibrary } from "./MaterialLibrary";
+import { BackgroundLibrary } from "./BackgroundLibrary";
 import { ApiKeys } from "./ApiKeys";
 import { Templates } from "./Templates";
 import { PricingSettings } from "./PricingSettings";
 import { ModelSettings } from "./ModelSettings";
 
-type SettingsTab = "materialy" | "api" | "szablony" | "wycena" | "modele";
+type SettingsTab = "materialy" | "tla" | "api" | "szablony" | "wycena" | "modele";
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "materialy", label: "Biblioteka materiałów" },
+  { id: "tla", label: "Biblioteka teł" },
   { id: "api", label: "Klucze API" },
   { id: "szablony", label: "Szablony" },
   { id: "wycena", label: "Stawki" },
@@ -44,6 +46,7 @@ export function SettingsView() {
       {/* Zawartość zakładki */}
       <div className="flex-1 overflow-hidden">
         {activeTab === "materialy" && <MaterialLibrary />}
+        {activeTab === "tla" && <BackgroundLibrary />}
         {activeTab === "api" && <ApiKeys />}
         {activeTab === "szablony" && <Templates />}
         {activeTab === "wycena" && <PricingSettings />}

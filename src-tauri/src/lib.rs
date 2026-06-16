@@ -129,6 +129,24 @@ pub fn run() {
             sql: include_str!("db/migrations/019_is_distance_category.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 20,
+            description: "material_use_photo",
+            sql: include_str!("db/migrations/020_material_use_photo.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 21,
+            description: "drop_material_photos",
+            sql: include_str!("db/migrations/021_drop_material_photos.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 22,
+            description: "background_library",
+            sql: include_str!("db/migrations/022_background_library.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -146,7 +164,6 @@ pub fn run() {
             let data_dir = docs_dir.join("VizualizeIt");
 
             std::fs::create_dir_all(data_dir.join("projects"))?;
-            std::fs::create_dir_all(data_dir.join("library"))?;
 
             app.manage(AppState { data_dir });
             Ok(())
@@ -160,8 +177,8 @@ pub fn run() {
             commands::projects::delete_project,
             commands::projects::import_svg,
             commands::projects::import_background,
-            commands::materials::copy_material_photo,
-            commands::materials::get_material_photo,
+            commands::backgrounds::add_background,
+            commands::backgrounds::delete_background,
             commands::generation::generate_image,
             commands::generation::edit_image_angle,
             commands::generation::edit_background_angle,

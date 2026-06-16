@@ -1,27 +1,29 @@
-import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Square } from "lucide-react";
+import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Library, Save } from "lucide-react";
 
 interface CanvasToolbarProps {
   hasSvg: boolean;
   isImportingSvg: boolean;
   isImportingBg: boolean;
+  isSavingBgToLibrary: boolean;
   backgroundDataUrl: string | null;
   backgroundFilename: string;
   isNestingOpen: boolean;
-  perspectiveActive: boolean;
   onImportSvg: () => void;
   onExportSvg: () => void;
   onImportBackground: () => void;
+  onPickBackgroundFromLibrary: () => void;
+  onSaveBackgroundToLibrary: () => void;
   onRemoveBackground: () => void;
   onToggleNesting: () => void;
-  onTogglePerspective: () => void;
 }
 
 export function CanvasToolbar({
-  hasSvg, isImportingSvg, isImportingBg,
+  hasSvg, isImportingSvg, isImportingBg, isSavingBgToLibrary,
   backgroundDataUrl, backgroundFilename,
-  isNestingOpen, perspectiveActive,
-  onImportSvg, onExportSvg, onImportBackground, onRemoveBackground,
-  onToggleNesting, onTogglePerspective,
+  isNestingOpen,
+  onImportSvg, onExportSvg, onImportBackground, onPickBackgroundFromLibrary,
+  onSaveBackgroundToLibrary, onRemoveBackground,
+  onToggleNesting,
 }: CanvasToolbarProps) {
   return (
     <div className="h-10 bg-[#1a1a1a] border-b border-gray-800 flex items-center gap-1 px-3 shrink-0 flex-wrap">
@@ -47,20 +49,38 @@ export function CanvasToolbar({
       <div className="h-5 w-px bg-gray-800 mx-1" />
 
       {!backgroundDataUrl ? (
-        <button
-          onClick={onImportBackground}
-          disabled={isImportingBg}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border border-gray-700 hover:border-gray-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {isImportingBg ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
-          Dodaj tło
-        </button>
+        <>
+          <button
+            onClick={onImportBackground}
+            disabled={isImportingBg}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border border-gray-700 hover:border-gray-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {isImportingBg ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
+            Dodaj tło
+          </button>
+          <button
+            onClick={onPickBackgroundFromLibrary}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border border-gray-700 hover:border-gray-600 transition-colors"
+            title="Wybierz tło z biblioteki"
+          >
+            <Library className="w-3.5 h-3.5" />
+            Z biblioteki
+          </button>
+        </>
       ) : (
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-blue-950/40 border border-blue-900/50">
           <ImageIcon className="w-3 h-3 text-blue-400 shrink-0" />
           <span className="text-xs text-blue-300 max-w-[140px] truncate" title={backgroundFilename}>
             {backgroundFilename}
           </span>
+          <button
+            onClick={onSaveBackgroundToLibrary}
+            disabled={isSavingBgToLibrary}
+            className="p-0.5 rounded text-blue-400 hover:text-blue-200 transition-colors disabled:opacity-40"
+            title="Zapisz to tło do biblioteki"
+          >
+            {isSavingBgToLibrary ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+          </button>
           <button
             onClick={onRemoveBackground}
             className="p-0.5 rounded text-blue-500 hover:text-red-400 transition-colors"
@@ -88,24 +108,6 @@ export function CanvasToolbar({
         </>
       )}
 
-      {backgroundDataUrl && (
-        <button
-          onClick={onTogglePerspective}
-          title={
-            "Wskaż 4 narożniki ŚCIANY na zdjęciu (np. TL = styk sufit-ściana lewa góra, " +
-            "BR = styk podłoga-ściana prawa dół). Szyld zachowa swój rozmiar z edytora, " +
-            "ale dostanie perspektywę zgodną z tą ścianą."
-          }
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm border transition-colors ${
-            perspectiveActive
-              ? "text-amber-300 bg-amber-950/50 border-amber-800"
-              : "text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border-gray-700 hover:border-gray-600"
-          }`}
-        >
-          <Square className="w-3.5 h-3.5" />
-          Perspektywa ściany
-        </button>
-      )}
     </div>
   );
 }
