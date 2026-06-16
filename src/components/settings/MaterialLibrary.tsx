@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, ImageIcon, Pencil, Trash2, Loader2, X, Upload, Tag, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, ImageIcon, Pencil, Trash2, Loader2, X, Tag, ChevronDown, ChevronRight } from "lucide-react";
 import { useMaterials, useCategories, type MaterialInput } from "../../hooks/useMaterials";
 import { useMaterialsStore } from "../../stores/materialsStore";
 import { ColorPicker } from "../ui/ColorPicker";
@@ -14,7 +14,6 @@ interface FormState {
   category: string;
   material_type: "matowa" | "mleczna" | "polysk" | "lustro" | null;
   color_hex: string;
-  photo_path: string | null;
   pricing_unit: "per_piece" | "per_m2" | "per_mb_cut" | "none";
   base_price: string;
 }
@@ -24,7 +23,6 @@ const DEFAULT_FORM: FormState = {
   category: "plexa",
   material_type: "matowa",
   color_hex: "#ffffff",
-  photo_path: null,
   pricing_unit: "per_m2",
   base_price: "",
 };
@@ -47,25 +45,17 @@ const TYPE_LABELS: Record<string, string> = {
 
 interface MaterialCardProps {
   material: Material;
-  photoUrl: string | undefined;
   onEdit: (m: Material) => void;
 }
 
-function MaterialCard({ material, photoUrl, onEdit }: MaterialCardProps) {
+function MaterialCard({ material, onEdit }: MaterialCardProps) {
   return (
     <button
       onClick={() => onEdit(material)}
       className="group relative bg-[#1e1e1e] border border-gray-800 rounded-lg overflow-hidden hover:border-gray-600 transition-colors text-left"
     >
       <div className="aspect-square bg-[#161616] flex items-center justify-center relative overflow-hidden">
-        {photoUrl ? (
-          <img
-            src={photoUrl}
-            alt={material.name}
-            className="w-full h-full object-cover"
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-          />
-        ) : material.color_hex ? (
+        {material.color_hex ? (
           <div className="w-full h-full" style={{ backgroundColor: material.color_hex }} />
         ) : (
           <ImageIcon className="w-8 h-8 text-gray-700" />
@@ -99,12 +89,11 @@ function MaterialCard({ material, photoUrl, onEdit }: MaterialCardProps) {
 interface CategorySectionProps {
   category: MaterialCategory;
   materials: Material[];
-  photoCache: Record<string, string>;
   onEdit: (m: Material) => void;
   onAddInCategory: (categorySlug: string) => void;
 }
 
-function CategorySection({ category, materials, photoCache, onEdit, onAddInCategory }: CategorySectionProps) {
+function CategorySection({ category, materials, onEdit, onAddInCategory }: CategorySectionProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -139,7 +128,6 @@ function CategorySection({ category, materials, photoCache, onEdit, onAddInCateg
               <MaterialCard
                 key={mat.id}
                 material={mat}
-                photoUrl={photoCache[mat.id]}
                 onEdit={onEdit}
               />
             ))}
@@ -366,8 +354,7 @@ interface MaterialModalProps {
 }
 
 function MaterialModal({ material, defaultCategory, categories, onClose, onSaved }: MaterialModalProps) {
-  const { createMaterial, updateMaterial, deleteMaterial, pickAndCopyPhoto, getPhotoDataUrl } =
-    useMaterials();
+  const { createMaterial, updateMaterial, deleteMaterial } = useMaterials();
   const { refresh } = useMaterialsStore();
   const addToast = useToastStore((s) => s.addToast);
   useEscapeKey(true, onClose);
@@ -381,42 +368,16 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
           category: material.category,
           material_type: material.material_type as FormState["material_type"],
           color_hex: material.color_hex ?? "#ffffff",
-          photo_path: material.photo_path ?? null,
           pricing_unit: (material.pricing_unit ?? "none") as FormState["pricing_unit"],
           base_price: material.base_price != null ? String(material.base_price) : "",
         }
       : { ...DEFAULT_FORM, category: initialCategory }
   );
-  const [photoPreview, setPhotoPreview] = useState<string>("");
-  const [isPickingPhoto, setIsPickingPhoto] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  useEffect(() => {
-    if (material?.photo_path) {
-      getPhotoDataUrl(material.photo_path)
-        .then(setPhotoPreview)
-        .catch(() => setPhotoPreview(""));
-    }
-  }, [material?.photo_path]); // eslint-disable-line react-hooks/exhaustive-deps
-
   function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
-  }
-
-  async function handlePickPhoto() {
-    setIsPickingPhoto(true);
-    try {
-      const path = await pickAndCopyPhoto();
-      if (!path) return;
-      setField("photo_path", path);
-      const preview = await getPhotoDataUrl(path);
-      setPhotoPreview(preview);
-    } catch (e) {
-      addToast(`Błąd wczytywania zdjęcia: ${e}`, "error");
-    } finally {
-      setIsPickingPhoto(false);
-    }
   }
 
   async function handleSave() {
@@ -433,7 +394,6 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
         category: form.category,
         material_type: form.category === "plexa" ? form.material_type : null,
         color_hex: form.color_hex || null,
-        photo_path: form.photo_path,
         pricing_unit: pricingUnit,
         base_price: pricingUnit != null && basePrice != null && isFinite(basePrice) ? basePrice : null,
         default_thickness_mm: null,
@@ -541,40 +501,6 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
             />
           </div>
 
-          {/* Zdjęcie referencyjne */}
-          <div>
-            <label className="block text-gray-400 text-xs mb-1.5">Zdjęcie referencyjne</label>
-            <div className="flex items-start gap-3">
-              <button
-                onClick={handlePickPhoto}
-                disabled={isPickingPhoto}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border border-gray-700 transition-colors disabled:opacity-50 shrink-0"
-              >
-                {isPickingPhoto ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Upload className="w-3.5 h-3.5" />
-                )}
-                Wybierz plik
-              </button>
-              {photoPreview ? (
-                <div className="relative w-14 h-14 rounded-md overflow-hidden border border-gray-700 shrink-0">
-                  <img src={photoPreview} alt="Podgląd" className="w-full h-full object-cover" />
-                  <button
-                    onClick={() => { setField("photo_path", null); setPhotoPreview(""); }}
-                    className="absolute top-0.5 right-0.5 bg-black/70 rounded text-white p-0.5"
-                  >
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </div>
-              ) : (
-                <div className="w-14 h-14 rounded-md border border-gray-800 bg-[#161616] flex items-center justify-center shrink-0">
-                  <ImageIcon className="w-5 h-5 text-gray-700" />
-                </div>
-              )}
-            </div>
-          </div>
-
           {/* ── Wycena ─────────────────────────────────────────────── */}
           <div className="border-t border-gray-800 pt-4 space-y-3">
             <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Wycena</p>
@@ -668,7 +594,7 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
 // ── MaterialLibrary (główny komponent) ────────────────────────────────────────
 
 export function MaterialLibrary() {
-  const { categories, materials, photoCache, isLoading, refresh } = useMaterialsStore();
+  const { categories, materials, isLoading, refresh } = useMaterialsStore();
   const addToast = useToastStore((s) => s.addToast);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -746,7 +672,6 @@ export function MaterialLibrary() {
               key={cat.id}
               category={cat}
               materials={materials.filter((m) => m.category === cat.slug)}
-              photoCache={photoCache}
               onEdit={openEdit}
               onAddInCategory={openAdd}
             />

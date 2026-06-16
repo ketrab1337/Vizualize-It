@@ -11,7 +11,7 @@ pub struct GeneratedImage {
     pub format: String,
 }
 
-/// Zdjęcie referencyjne materiału dołączane do żądania AI.
+/// Obraz (base64) dołączany do żądania AI — tło, kompozyt SVG lub zdjęcie referencyjne.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MaterialImage {
     pub data: String,      // base64 (bez prefiksu data URL)
@@ -28,13 +28,18 @@ pub struct GenerationConfig {
     pub model: String,
     pub format: ImageFormat,
     pub count: u8,
-    pub material_images: Vec<MaterialImage>,
     /// Tło (zdjęcie ściany/lokalizacji) — opcjonalne, wysyłane przed promptem
     pub background_image: Option<MaterialImage>,
     /// Projekt SVG wyrenderowany do PNG — opcjonalne, wysyłane przed promptem
     pub svg_image: Option<MaterialImage>,
     /// Zdjęcia referencyjne dodane ręcznie przez użytkownika
     pub reference_images: Vec<MaterialImage>,
+    /// Jakość gpt-image-2 ("low" | "medium" | "high"). None → "medium". Ignorowane przez Gemini.
+    #[serde(default)]
+    pub quality: Option<String>,
+    /// Temperatura Gemini / Nano Banana. None → 0.35. Ignorowane przez OpenAI.
+    #[serde(default)]
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../lib/db";
 import type { Material, MaterialCategory, GlobalCuttingRate } from "../types";
 
@@ -7,18 +6,15 @@ interface MaterialsState {
   categories: MaterialCategory[];
   materials: Material[];
   globalCuttingRates: GlobalCuttingRate[];
-  photoCache: Record<string, string>;
   isLoading: boolean;
   refresh: () => Promise<void>;
   refreshGlobalRates: () => Promise<void>;
-  ensurePhoto: (materialId: string, photoPath: string) => Promise<void>;
 }
 
-export const useMaterialsStore = create<MaterialsState>((set, get) => ({
+export const useMaterialsStore = create<MaterialsState>((set) => ({
   categories: [],
   materials: [],
   globalCuttingRates: [],
-  photoCache: {},
   isLoading: false,
 
   refreshGlobalRates: async () => {
@@ -52,39 +48,8 @@ export const useMaterialsStore = create<MaterialsState>((set, get) => ({
         // Tabela jeszcze nie istnieje (migracja 009 nie uruchomiona)
       }
       set({ categories, materials, globalCuttingRates });
-
-      // Przeładuj zdjęcia dla materiałów które ich jeszcze nie mają w cache
-      const { photoCache } = get();
-      const toLoad = materials.filter((m) => m.photo_path && !photoCache[m.id]);
-      if (toLoad.length > 0) {
-        const entries = await Promise.all(
-          toLoad.map(async (m) => {
-            try {
-              const url = await invoke<string>("get_material_photo", { path: m.photo_path });
-              return [m.id, url] as [string, string];
-            } catch {
-              return null;
-            }
-          })
-        );
-        const newEntries = entries.filter(Boolean) as [string, string][];
-        if (newEntries.length > 0) {
-          set((s) => ({ photoCache: { ...s.photoCache, ...Object.fromEntries(newEntries) } }));
-        }
-      }
     } finally {
       set({ isLoading: false });
-    }
-  },
-
-  ensurePhoto: async (materialId, photoPath) => {
-    const { photoCache } = get();
-    if (photoCache[materialId]) return;
-    try {
-      const url = await invoke<string>("get_material_photo", { path: photoPath });
-      set((s) => ({ photoCache: { ...s.photoCache, [materialId]: url } }));
-    } catch {
-      // brak podglądu — ignoruj
     }
   },
 }));

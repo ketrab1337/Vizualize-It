@@ -10,53 +10,6 @@ export interface Project {
    * NULL = domyślnie "szyld" (kompat-wstecz; istniejące projekty bez ustawionego typu).
    */
   product_type: string | null;
-  /**
-   * 4 punkty perspektywy ściany — znormalizowane (0..1) do wymiarów obrazu tła.
-   * Kolejność: TL, TR, BR, BL. Używane do warpowania SVG na płaszczyznę ściany
-   * w `captureCanvas()` przed wysłaniem do AI.
-   * NULL = brak warpu (SVG kompozytowany na płasko, default).
-   */
-  perspective_corners: PerspectiveCorners | null;
-}
-
-/** 4 znormalizowane punkty (0..1) — kolejność: TL, TR, BR, BL. */
-export type PerspectiveCorners = [
-  [number, number],
-  [number, number],
-  [number, number],
-  [number, number],
-];
-
-/** Domyślne narożniki przy aktywacji trybu — lekko wciągnięte od krawędzi tła. */
-export const DEFAULT_PERSPECTIVE_CORNERS: PerspectiveCorners = [
-  [0.15, 0.15],
-  [0.85, 0.15],
-  [0.85, 0.85],
-  [0.15, 0.85],
-];
-
-/**
- * Parsuje string JSON z DB do `PerspectiveCorners`. Zwraca null gdy dane są
- * puste/nieprawidłowe/uszkodzone — wtedy SVG kompozytowany na płasko (bezpieczny fallback).
- */
-export function parsePerspectiveCorners(json: string | null): PerspectiveCorners | null {
-  if (!json) return null;
-  try {
-    const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed) || parsed.length !== 4) return null;
-    for (const p of parsed) {
-      if (!Array.isArray(p) || p.length !== 2) return null;
-      if (typeof p[0] !== "number" || typeof p[1] !== "number") return null;
-    }
-    return parsed as PerspectiveCorners;
-  } catch {
-    return null;
-  }
-}
-
-/** Serializuje `PerspectiveCorners` do stringa JSON dla DB (null → null). */
-export function serializePerspectiveCorners(corners: PerspectiveCorners | null): string | null {
-  return corners ? JSON.stringify(corners) : null;
 }
 
 /**
@@ -107,7 +60,6 @@ export interface Material {
   category: string;
   material_type: "matowa" | "mleczna" | "polysk" | "lustro" | null;
   color_hex: string | null;
-  photo_path: string | null;
   created_at: string;
   pricing_unit: "per_piece" | "per_m2" | "per_mb_cut" | null;
   base_price: number | null;
@@ -119,6 +71,14 @@ export interface GlobalCuttingRate {
   category: string;
   thickness_mm: number;
   price_per_m: number;
+}
+
+/** Wpis globalnej biblioteki teł (Ustawienia → Biblioteka teł). */
+export interface BackgroundItem {
+  id: string;
+  name: string;
+  file_path: string;
+  created_at: string;
 }
 
 export interface GenerationSession {

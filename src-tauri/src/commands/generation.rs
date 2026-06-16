@@ -16,10 +16,15 @@ pub struct GoogleGenerateInput {
     pub model: String,
     pub format: String,
     pub count: u8,
-    pub material_images: Vec<MaterialImageInput>,
     pub background_image: Option<MaterialImageInput>,
     pub svg_image: Option<MaterialImageInput>,
     pub reference_images: Vec<MaterialImageInput>,
+    /// Jakość gpt-image-2 ("low" | "medium" | "high"). Ignorowane przez Gemini.
+    #[serde(default)]
+    pub quality: Option<String>,
+    /// Temperatura Gemini / Nano Banana. Ignorowane przez OpenAI.
+    #[serde(default)]
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,11 +62,6 @@ pub async fn generate_image(
         model: input.model.clone(),
         format,
         count: input.count,
-        material_images: input
-            .material_images
-            .into_iter()
-            .map(|m| MaterialImage { data: m.data, mime_type: m.mime_type })
-            .collect(),
         background_image: input
             .background_image
             .map(|m| MaterialImage { data: m.data, mime_type: m.mime_type }),
@@ -73,6 +73,8 @@ pub async fn generate_image(
             .into_iter()
             .map(|m| MaterialImage { data: m.data, mime_type: m.mime_type })
             .collect(),
+        quality: input.quality,
+        temperature: input.temperature,
     };
 
     let images = provider.generate(config).await?;
@@ -120,6 +122,9 @@ pub struct EditAngleInput {
     /// Model AI do edycji. Domyślnie `nano-banana-2`. Akceptuje też `nano-banana-pro`, `gpt-image-2`.
     #[serde(default)]
     pub model: Option<String>,
+    /// Jakość gpt-image-2 (low/medium/high). Ignorowane przez Google.
+    #[serde(default)]
+    pub quality: Option<String>,
     /// Opcjonalne zdjęcia referencyjne dołączane do żądania edycji.
     #[serde(default)]
     pub reference_images: Vec<MaterialImageInput>,
@@ -132,7 +137,11 @@ fn map_reference_images(refs: Vec<MaterialImageInput>) -> Vec<crate::providers::
 }
 
 /// Buduje providera dla operacji edycji obrazu (text + opcjonalna maska).
-fn build_edit_provider(model: Option<&str>) -> Result<Box<dyn crate::providers::ImageGenerator>, String> {
+/// `quality` dotyczy tylko gpt-image-2 (Google ignoruje); None → "medium" po stronie providera.
+fn build_edit_provider(
+    model: Option<&str>,
+    quality: Option<String>,
+) -> Result<Box<dyn crate::providers::ImageGenerator>, String> {
     use crate::providers::google_ai::GoogleAiProvider;
     use crate::providers::openai::OpenAiProvider;
     use crate::providers::ImageGenerator;
@@ -140,7 +149,7 @@ fn build_edit_provider(model: Option<&str>) -> Result<Box<dyn crate::providers::
     let provider: Box<dyn ImageGenerator> = match m {
         "nano-banana-pro" => Box::new(GoogleAiProvider::nano_banana_pro()),
         "nano-banana-2" => Box::new(GoogleAiProvider::nano_banana_2()),
-        "gpt-image-2" => Box::new(OpenAiProvider::new()),
+        "gpt-image-2" => Box::new(OpenAiProvider::with_quality(quality)),
         other => return Err(format!("Nieznany model edycji: '{other}'.")),
     };
     Ok(provider)
@@ -160,7 +169,7 @@ pub async fn edit_image_angle(
     let image_bytes = std::fs::read(&abs_src)
         .map_err(|e| format!("Nie można odczytać obrazu źródłowego: {e}"))?;
 
-    let provider = build_edit_provider(input.model.as_deref())?;
+    let provider = build_edit_provider(input.model.as_deref(), input.quality.clone())?;
     let refs = map_reference_images(input.reference_images);
     let result = provider.edit(image_bytes, input.camera_prompt, refs).await?;
 
@@ -196,6 +205,8 @@ pub struct EditAngleAbsInput {
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
+    pub quality: Option<String>,
+    #[serde(default)]
     pub reference_images: Vec<MaterialImageInput>,
 }
 
@@ -212,7 +223,7 @@ pub async fn edit_background_angle(
     let image_bytes = std::fs::read(&input.abs_path)
         .map_err(|e| format!("Nie można odczytać pliku tła: {e}"))?;
 
-    let provider = build_edit_provider(input.model.as_deref())?;
+    let provider = build_edit_provider(input.model.as_deref(), input.quality.clone())?;
     let refs = map_reference_images(input.reference_images);
     let result = provider.edit(image_bytes, input.camera_prompt, refs).await?;
 
@@ -247,6 +258,9 @@ pub struct InpaintInput {
     /// PNG maski jako base64 (bez prefiksu data URL). Piksele przezroczyste = obszar do zmiany.
     pub mask_base64: String,
     pub prompt: String,
+    /// Jakość gpt-image-2 (low/medium/high). None → "medium".
+    #[serde(default)]
+    pub quality: Option<String>,
     #[serde(default)]
     pub reference_images: Vec<MaterialImageInput>,
 }
@@ -271,7 +285,7 @@ pub async fn edit_image_inpaint(
         .decode(&input.mask_base64)
         .map_err(|e| format!("Błąd dekodowania maski base64: {e}"))?;
 
-    let provider = OpenAiProvider::new();
+    let provider = OpenAiProvider::with_quality(input.quality.clone());
     let refs = map_reference_images(input.reference_images);
     let result = provider
         .edit_with_mask_inner(image_bytes, Some(mask_bytes), input.prompt, refs)
@@ -318,6 +332,9 @@ pub struct InpaintMarkedInput {
     /// Model AI. Dla Google: `nano-banana-2` / `nano-banana-pro`. Default: `nano-banana-2`.
     #[serde(default)]
     pub model: Option<String>,
+    /// Jakość gpt-image-2 (low/medium/high). Ignorowane przez Google.
+    #[serde(default)]
+    pub quality: Option<String>,
     #[serde(default)]
     pub reference_images: Vec<MaterialImageInput>,
 }
@@ -336,7 +353,7 @@ pub async fn edit_image_marked(
         .decode(&input.image_base64)
         .map_err(|e| format!("Błąd dekodowania obrazu base64: {e}"))?;
 
-    let provider = build_edit_provider(input.model.as_deref())?;
+    let provider = build_edit_provider(input.model.as_deref(), input.quality.clone())?;
     let refs = map_reference_images(input.reference_images);
     let result = provider.edit(image_bytes, input.prompt, refs).await?;
 

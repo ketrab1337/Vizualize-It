@@ -216,15 +216,6 @@ fn build_request(config: &GenerationConfig) -> GeminiRequest {
         });
     }
 
-    for img in &config.material_images {
-        parts.push(GeminiPart::Inline {
-            inline_data: GeminiInlineData {
-                mime_type: img.mime_type.clone(),
-                data: img.data.clone(),
-            },
-        });
-    }
-
     for img in &config.reference_images {
         parts.push(GeminiPart::Inline {
             inline_data: GeminiInlineData {
@@ -248,7 +239,9 @@ fn build_request(config: &GenerationConfig) -> GeminiRequest {
             // wspierają candidateCount > 1 ("Multiple candidates is not enabled for this
             // model"). Dla count > 1 robimy N osobnych wywołań w `generate()` / submit_batch.
             candidate_count: None,
-            temperature: Some(0.35),
+            // Temperatura z ustawień użytkownika; brak → 0.35 (default 1.0 powodował
+            // mutację tekstów na szyldzie).
+            temperature: config.temperature.or(Some(0.35)),
         },
     }
 }
@@ -561,18 +554,21 @@ impl ImageGenerator for GoogleAiProvider {
         };
 
         // Aktualne API używa prefiksu BATCH_STATE_*, starsze JOB_STATE_* — akceptujemy oba.
+        // Niektóre wersje API zwracają stany bez prefiksu (np. "SUCCEEDED").
         match state {
             "JOB_STATE_QUEUED" | "JOB_STATE_PENDING"
-            | "BATCH_STATE_QUEUED" | "BATCH_STATE_PENDING" => return Ok(BatchPoll::Pending),
-            "JOB_STATE_RUNNING" | "BATCH_STATE_RUNNING" => return Ok(BatchPoll::Running),
+            | "BATCH_STATE_QUEUED" | "BATCH_STATE_PENDING"
+            | "QUEUED" | "PENDING" => return Ok(BatchPoll::Pending),
+            "JOB_STATE_RUNNING" | "BATCH_STATE_RUNNING" | "RUNNING" => return Ok(BatchPoll::Running),
             "JOB_STATE_CANCELLING" | "JOB_STATE_CANCELLED"
-            | "BATCH_STATE_CANCELLING" | "BATCH_STATE_CANCELLED" => return Ok(BatchPoll::Cancelled),
-            "JOB_STATE_EXPIRED" | "BATCH_STATE_EXPIRED" => {
+            | "BATCH_STATE_CANCELLING" | "BATCH_STATE_CANCELLED"
+            | "CANCELLING" | "CANCELLED" => return Ok(BatchPoll::Cancelled),
+            "JOB_STATE_EXPIRED" | "BATCH_STATE_EXPIRED" | "EXPIRED" => {
                 return Ok(BatchPoll::Failed {
                     error: "Zadanie wygasło (przekroczone okno 24h).".to_string(),
                 });
             }
-            "JOB_STATE_FAILED" | "BATCH_STATE_FAILED" => {
+            "JOB_STATE_FAILED" | "BATCH_STATE_FAILED" | "FAILED" => {
                 let err_msg = op
                     .error
                     .as_ref()
@@ -587,6 +583,7 @@ impl ImageGenerator for GoogleAiProvider {
         let done = op.done.unwrap_or(false);
         let is_succeeded = state == "JOB_STATE_SUCCEEDED"
             || state == "BATCH_STATE_SUCCEEDED"
+            || state == "SUCCEEDED"
             || (done && op.response.is_some());
         if !is_succeeded {
             // Operation nieukończone, nieznany stan — traktujemy jako running
@@ -598,7 +595,8 @@ impl ImageGenerator for GoogleAiProvider {
             .ok_or_else(|| "Brak pola response w ukończonym batchu.".to_string())?;
 
         // Wyciągamy inlinedResponses ze wszystkich możliwych ścieżek (aktualnie i historycznie):
-        // - response.output.inlinedResponses.inlinedResponses[]  (AKTUALNA struktura — maj 2026)
+        // - response.output.inlinedResponses.inlinedResponses[]  (głęboka wersja — maj 2026)
+        // - response.output.inlinedResponses[]                   (płaska wersja — output.inlinedResponses jest tablicą)
         // - response.inlinedResponses.inlinedResponses[]         (starsza struktura)
         // - response.responses.inlinedResponses[]                (jeszcze starsza)
         // - response.inlinedResponses[]                          (fallback flat)
@@ -606,6 +604,12 @@ impl ImageGenerator for GoogleAiProvider {
             .get("output")
             .and_then(|o| o.get("inlinedResponses"))
             .and_then(|v| v.get("inlinedResponses"))
+            .or_else(|| {
+                // output.inlinedResponses jako bezpośrednia tablica (bez dodatkowego zagnieżdżenia)
+                response
+                    .get("output")
+                    .and_then(|o| o.get("inlinedResponses"))
+            })
             .or_else(|| {
                 response
                     .get("inlinedResponses")

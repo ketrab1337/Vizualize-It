@@ -4,7 +4,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { useGenerationStore } from "../../stores/generationStore";
 import { useEditorStore } from "../../stores/editorStore";
-import { useMaterialsStore } from "../../stores/materialsStore";
 
 function uint8ToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -16,8 +15,8 @@ function uint8ToBase64(bytes: Uint8Array): string {
 }
 
 /**
- * Sekcja zdjęć referencyjnych dołączanych do żądania AI (osobno od zdjęć materiałów —
- * te dolatują automatycznie z biblioteki). Tutaj użytkownik dorzuca własne inspiracje.
+ * Sekcja zdjęć referencyjnych dołączanych do żądania AI. Tutaj użytkownik dorzuca
+ * własne inspiracje (styl, kolorystyka, oświetlenie).
  */
 export function ReferenceImagesPanel() {
   const {
@@ -26,17 +25,15 @@ export function ReferenceImagesPanel() {
     removeReferenceImage,
     setReferenceDescription,
   } = useGenerationStore();
-  const { nodeOverrides, svgContent, backgroundDataUrl } = useEditorStore();
-  const { materials } = useMaterialsStore();
+  const { svgContent, backgroundDataUrl } = useEditorStore();
 
   /**
    * Wylicza numer "Obraz N" pierwszego zdjęcia referencyjnego w prompcie.
    * Kolejność obrazów wysyłanych do AI:
    *   1. Kompozyt (tło + SVG) lub samo tło — jeśli jest
-   *   2. Zdjęcia materiałów (deduplikowane per material_id)
-   *   3. Zdjęcia referencyjne
+   *   2. Zdjęcia referencyjne
    * Bez tej numeracji user nie wie którym "Obrazem N" w prompcie jest jego
-   * referencja — istotne gdy chce pisać własny opis ("jak na Obrazie 5...").
+   * referencja — istotne gdy chce pisać własny opis ("jak na Obrazie 3...").
    *
    * WAŻNE: używamy backgroundDataUrl (obraz w pamięci), nie backgroundPath
    * (ścieżka z bazy). useGeneration.ts sprawdza backgroundDataUrl — jeśli
@@ -45,15 +42,8 @@ export function ReferenceImagesPanel() {
    */
   const firstRefImageIdx = useMemo(() => {
     const hasComposite = !!svgContent || !!backgroundDataUrl;
-    const uniqueMaterialIds = new Set<string>();
-    for (const ov of Object.values(nodeOverrides)) {
-      if (ov.materialId) uniqueMaterialIds.add(ov.materialId);
-    }
-    const materialPhotoCount = [...uniqueMaterialIds].filter(
-      (id) => materials.find((m) => m.id === id)?.photo_path
-    ).length;
-    return (hasComposite ? 1 : 0) + materialPhotoCount + 1;
-  }, [svgContent, backgroundDataUrl, nodeOverrides, materials]);
+    return (hasComposite ? 1 : 0) + 1;
+  }, [svgContent, backgroundDataUrl]);
 
   async function handleAdd() {
     const path = await open({

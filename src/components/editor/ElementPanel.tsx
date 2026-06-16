@@ -31,7 +31,7 @@ interface MaterialPickerProps {
 }
 
 function MaterialPicker({ label, selectedMaterialId, onChange }: MaterialPickerProps) {
-  const { categories, materials, photoCache, isLoading } = useMaterialsStore();
+  const { categories, materials, isLoading } = useMaterialsStore();
 
   const selectedMaterial = materials.find((m) => m.id === selectedMaterialId) ?? null;
   const [categorySlug, setCategorySlug] = useState<string>(
@@ -101,12 +101,6 @@ function MaterialPicker({ label, selectedMaterialId, onChange }: MaterialPickerP
           <option key={m.id} value={m.id}>{m.name}</option>
         ))}
       </select>
-
-      {selectedMaterialId && photoCache[selectedMaterialId] && (
-        <div className="rounded overflow-hidden border border-gray-800 h-14 bg-[#111]">
-          <img src={photoCache[selectedMaterialId]} alt="" className="w-full h-full object-cover" />
-        </div>
-      )}
     </div>
   );
 }

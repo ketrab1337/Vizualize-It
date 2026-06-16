@@ -40,10 +40,13 @@ struct StoredPayload {
     model: String,
     format: String,
     count: u8,
-    material_images: Vec<PayloadMaterialImage>,
     background_image: Option<PayloadMaterialImage>,
     svg_image: Option<PayloadMaterialImage>,
     reference_images: Vec<PayloadMaterialImage>,
+    #[serde(default)]
+    quality: Option<String>,
+    #[serde(default)]
+    temperature: Option<f32>,
 }
 
 fn payload_to_config(p: StoredPayload) -> Result<GenerationConfig, String> {
@@ -53,11 +56,6 @@ fn payload_to_config(p: StoredPayload) -> Result<GenerationConfig, String> {
         model: p.model,
         format,
         count: p.count,
-        material_images: p
-            .material_images
-            .into_iter()
-            .map(|m| MaterialImage { data: m.data, mime_type: m.mime_type })
-            .collect(),
         background_image: p
             .background_image
             .map(|m| MaterialImage { data: m.data, mime_type: m.mime_type }),
@@ -69,6 +67,8 @@ fn payload_to_config(p: StoredPayload) -> Result<GenerationConfig, String> {
             .into_iter()
             .map(|m| MaterialImage { data: m.data, mime_type: m.mime_type })
             .collect(),
+        quality: p.quality,
+        temperature: p.temperature,
     })
 }
 

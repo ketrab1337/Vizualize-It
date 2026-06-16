@@ -117,11 +117,21 @@ struct BatchOutputError {
 
 // ── Provider ─────────────────────────────────────────────────────────────
 
-pub struct OpenAiProvider;
+pub struct OpenAiProvider {
+    /// Jakość dla ścieżki EDYCJI (edit_with_mask_inner). None → "medium".
+    /// Generowanie (`generate`/`submit_batch`) bierze jakość z `GenerationConfig`, nie stąd.
+    quality: Option<String>,
+}
 
 impl OpenAiProvider {
     pub fn new() -> Self {
-        Self
+        Self { quality: None }
+    }
+
+    /// Provider z konkretną jakością — używany na ścieżce edycji (modal edycji / zmiana kąta),
+    /// która nie przechodzi przez `GenerationConfig`.
+    pub fn with_quality(quality: Option<String>) -> Self {
+        Self { quality }
     }
 }
 
@@ -173,7 +183,12 @@ fn map_api_error(status: u16, body: &str) -> String {
 
 fn build_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        // gpt-image-2 z quality="high" + obrazami wejściowymi generuje często 2–4 min
+        // (przy count>1 lub formacie 1536px nawet dłużej). Stary timeout 120s wystrzeliwał
+        // i reqwest zwracał "error sending request for url (...)" — mylące, bo to nie brak
+        // sieci, tylko przekroczony czas. 300s daje zapas; poll/cancel/upload kończą się
+        // szybko, więc wyższy sufit ich nie dotyczy.
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("Błąd inicjalizacji klienta HTTP: {e}"))
 }
@@ -210,18 +225,23 @@ fn build_size_str(config: &GenerationConfig) -> (String, u32, u32) {
     (format!("{width}x{height}"), width, height)
 }
 
+/// Jakość gpt-image-2 z ustawień użytkownika ("low" | "medium" | "high").
+/// Brak → "medium" (domyślna, tańsza niż "high"; "high" zostawiamy do finalnych wizualizacji).
+fn quality_str(config: &GenerationConfig) -> String {
+    config.quality.clone().unwrap_or_else(|| "medium".to_string())
+}
+
 #[async_trait::async_trait]
 impl ImageGenerator for OpenAiProvider {
     async fn generate(&self, config: GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
         // Routing: są obrazy wejściowe → /v1/images/edits (multipart z image[] = scena
-        // + materiały + referencje). Inaczej → /v1/images/generations (text-only).
+        // + referencje). Inaczej → /v1/images/generations (text-only).
         //
         // WAŻNE: /v1/responses NIE jest opcją bo top-level `model` musi tam być chat-modelem
         // (gpt-4o, gpt-5...), a `gpt-image-2` to image model — OpenAI zwraca wtedy 400
         // "model not found" co przez długi czas wyglądało jak brak dostępu do modelu.
         let has_inputs = config.background_image.is_some()
             || config.svg_image.is_some()
-            || !config.material_images.is_empty()
             || !config.reference_images.is_empty();
 
         if has_inputs {
@@ -236,7 +256,7 @@ impl ImageGenerator for OpenAiProvider {
             prompt: config.prompt.clone(),
             n: config.count,
             size,
-            quality: "high".to_string(),
+            quality: quality_str(&config),
         };
 
         let client = build_client()?;
@@ -302,7 +322,6 @@ impl ImageGenerator for OpenAiProvider {
         // Bez obrazów — text-only `/v1/images/generations` zarówno live jak i batch (spójne).
         let has_inputs = config.background_image.is_some()
             || config.svg_image.is_some()
-            || !config.material_images.is_empty()
             || !config.reference_images.is_empty();
 
         let lines: Vec<serde_json::Value> = if has_inputs {
@@ -326,7 +345,7 @@ impl ImageGenerator for OpenAiProvider {
                 "prompt": config.prompt.clone(),
                 "n": config.count,
                 "size": size,
-                "quality": "high",
+                "quality": quality_str(&config),
             });
             vec![serde_json::json!({
                 "custom_id": "vizualizeit-request",
@@ -636,13 +655,14 @@ impl OpenAiProvider {
             .map_err(|e| format!("Błąd budowania formularza: {e}"))?;
 
         // BEZ response_format — gpt-image-2 odrzuca to pole (analogicznie do /generations).
-        // quality="high" wymusza maksimum detali i lepszą wierność (gpt-image-2 nie ma
-        // temperature ani input_fidelity — quality to jedyny lever wierności).
+        // Jakość z ustawień użytkownika (self.quality; None → "medium"). gpt-image-2 nie ma
+        // temperature ani input_fidelity — quality to jedyny lever wierności/detalu.
+        let quality = self.quality.clone().unwrap_or_else(|| "medium".to_string());
         let mut form = reqwest::multipart::Form::new()
             .part("image[]", main_part)
             .text("prompt", prompt)
             .text("model", MODEL)
-            .text("quality", "high");
+            .text("quality", quality);
 
         // Dodaj zdjęcia referencyjne (dekoduj z base64)
         for (idx, r) in references.into_iter().enumerate() {
@@ -725,17 +745,16 @@ async fn generate_via_edits(config: &GenerationConfig) -> Result<Vec<GeneratedIm
         format!("{} {}", config.prompt, format_suffix)
     };
 
-    // quality="high" — gpt-image-2 nie ma temperature ani input_fidelity (docs OpenAI:
-    // "for gpt-image-2, the API doesn't allow changing input fidelity; model processes
-    // every image input at high fidelity automatically"). Jedyny lever na "ściślejsze
-    // trzymanie się promptu" to quality. "auto" często schodzi do "medium" — "high"
-    // wymusza maksimum detali i lepszą wierność instrukcjom.
+    // quality — gpt-image-2 nie ma temperature ani input_fidelity (docs OpenAI: "model
+    // processes every image input at high fidelity automatically"). quality to jedyny lever
+    // na koszt/jakość: "high" = maksimum detali (drogie), "medium"/"low" tańsze. Wartość
+    // pochodzi z ustawień użytkownika (domyślnie "medium").
     let mut form = reqwest::multipart::Form::new()
         .text("model", MODEL)
         .text("prompt", full_prompt)
         .text("n", config.count.to_string())
         .text("size", size)
-        .text("quality", "high".to_string());
+        .text("quality", quality_str(config));
 
     // Helper do dodawania obrazu w base64 jako part `image[]`
     let add_image_part = |form: reqwest::multipart::Form,
@@ -753,22 +772,13 @@ async fn generate_via_edits(config: &GenerationConfig) -> Result<Vec<GeneratedIm
         Ok(form.part("image[]", part))
     };
 
-    // Kolejność: scena (svg composite albo tło) → materiały → referencje.
+    // Kolejność: scena (svg composite albo tło) → referencje.
     // Pierwszy obraz to "główna" scena którą model będzie modyfikował.
     // Composite (svg_image) ma priorytet bo zawiera tło + nałożony szyld.
     if let Some(svg) = &config.svg_image {
         form = add_image_part(form, &svg.data, &svg.mime_type, "scene.png".to_string())?;
     } else if let Some(bg) = &config.background_image {
         form = add_image_part(form, &bg.data, &bg.mime_type, "scene.png".to_string())?;
-    }
-
-    for (idx, m) in config.material_images.iter().enumerate() {
-        let ext = match m.mime_type.as_str() {
-            "image/jpeg" | "image/jpg" => "jpg",
-            "image/webp" => "webp",
-            _ => "png",
-        };
-        form = add_image_part(form, &m.data, &m.mime_type, format!("material_{}.{ext}", idx + 1))?;
     }
 
     for (idx, r) in config.reference_images.iter().enumerate() {
@@ -885,12 +895,6 @@ fn build_responses_body(config: &GenerationConfig) -> (serde_json::Value, u32, u
             image_url: material_to_data_url(svg),
         });
     }
-    for m in &config.material_images {
-        user_content.push(ResponsesContent::Image {
-            kind: "input_image",
-            image_url: material_to_data_url(m),
-        });
-    }
     for r in &config.reference_images {
         user_content.push(ResponsesContent::Image {
             kind: "input_image",
@@ -907,7 +911,7 @@ fn build_responses_body(config: &GenerationConfig) -> (serde_json::Value, u32, u
         "type": "image_generation",
         "model": MODEL,
         "size": size_str,
-        "quality": "high",
+        "quality": quality_str(config),
     });
 
     // Top-level model MUSI być chat-modelem (gpt-4o, gpt-5...). gpt-image-2 tu zwraca
