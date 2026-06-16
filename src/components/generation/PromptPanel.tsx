@@ -2,6 +2,7 @@ import { useState, useRef, Fragment } from "react";
 import { RotateCcw, PenLine, X, Pencil, Check } from "lucide-react";
 import { useGenerationStore } from "../../stores/generationStore";
 import { useAssembledPrompt, useAssembledPromptItems } from "../../hooks/useAssembledPrompt";
+import { providerForModel, PROVIDER_LABEL } from "../../lib/provider";
 
 /**
  * Pojedyncze pole promptu w dwóch trybach:
@@ -27,10 +28,11 @@ export function PromptPanel() {
   const {
     prompt, setPrompt, togglePresetId, setPresetAnchor,
     setPresetTextOverride, reorderActivePresetId, activePresetIds,
-    setTimeOfDay, setTimeOfDayTextOverride, setTimeOfDayAnchor,
+    setTimeOfDay, setTimeOfDayTextOverride, setTimeOfDayAnchor, model,
   } = useGenerationStore();
   const autoPrompt = useAssembledPrompt();
   const items = useAssembledPromptItems();
+  const providerLabel = PROVIDER_LABEL[providerForModel(model)];
 
   // Drag state — pointer-based, bez HTML5 DnD
   const draggingPresetId = useRef<string | null>(null);
@@ -396,8 +398,11 @@ export function PromptPanel() {
     return (
       <div className="flex flex-col flex-1 min-h-0 gap-1.5">
         <div className="flex items-center justify-between shrink-0">
-          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide">
+          <label className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
             Prompt (tryb ręczny)
+            <span className="inline-flex items-center rounded bg-[#2a2a2a] px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-blue-300" title="Prompt jest osobny dla każdego dostawcy">
+              {providerLabel}
+            </span>
           </label>
           <button
             onClick={handleResetToAuto}
@@ -444,8 +449,11 @@ export function PromptPanel() {
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-1.5">
       <div className="flex items-center justify-between shrink-0">
-        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide">
+        <label className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
           Prompt
+          <span className="inline-flex items-center rounded bg-[#2a2a2a] px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-blue-300" title="Prompt jest osobny dla każdego dostawcy">
+            {providerLabel}
+          </span>
         </label>
         <div className="flex items-center gap-1.5">
           <span className="inline-flex items-center gap-1 text-[10px] text-gray-500">

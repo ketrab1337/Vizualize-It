@@ -6,9 +6,11 @@ import { useEditorStore } from "../stores/editorStore";
 import { useGenerationStore } from "../stores/generationStore";
 import { useToastStore } from "../stores/toastStore";
 import { useMaterialsStore } from "../stores/materialsStore";
+import { useSettingsStore } from "../stores/settingsStore";
 import { assemblePrompt, getProductNoun, buildTimeOfDayPrompt } from "../lib/promptAssembler";
 import type { VisualInputs, PresetEntry } from "../lib/promptAssembler";
 import { buildElements } from "../lib/buildElements";
+import { providerForModel } from "../lib/provider";
 import { captureCanvas } from "../lib/paperCanvas";
 import type { SignConfig, GeneratedImageFile } from "../types";
 
@@ -75,7 +77,7 @@ export function useGeneration() {
   const [generating, setGenerating] = useState(false);
 
   const { projects, activeProjectId } = useProjectStore();
-  const { nodeOverrides, backgroundPath, backgroundDataUrl, svgContent, perspectiveCorners, setActiveTab } = useEditorStore();
+  const { nodeOverrides, backgroundPath, backgroundDataUrl, svgContent, setActiveTab } = useEditorStore();
   const { materials, categories } = useMaterialsStore();
   const {
     model,
@@ -95,6 +97,7 @@ export function useGeneration() {
     batchMode,
     setLastGeneratedImageIds,
   } = useGenerationStore();
+  const { gptImageQuality, nanoBananaTemperature } = useSettingsStore();
   const addToast = useToastStore((s) => s.addToast);
 
   const generate = useCallback(async () => {
@@ -168,9 +171,9 @@ export function useGeneration() {
           ? { text: todText, anchor: timeOfDayAnchor }
           : null;
 
-      const targetModel = model === "gpt-image-2" ? "openai" : "gemini";
+      const targetModel = providerForModel(model);
       const finalPrompt =
-        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel, hasPerspective: !!perspectiveCorners });
+        prompt ?? assemblePrompt(signConfig, visualInputs, { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel });
 
       const generationInput = {
         project_slug: project.slug,
@@ -178,10 +181,13 @@ export function useGeneration() {
         model,
         format,
         count,
-        material_images: [] as { data: string; mime_type: string }[],
         background_image: backgroundImageInput,
         svg_image: svgImageInput,
         reference_images: referenceImageInputs,
+        // Parametry per-model (backend bierze właściwy): jakość gpt-image-2,
+        // temperatura Nano Banana. Wysyłamy oba — provider ignoruje nieswój.
+        quality: gptImageQuality,
+        temperature: nanoBananaTemperature,
       };
 
       if (batchMode) {
@@ -279,7 +285,6 @@ export function useGeneration() {
     backgroundPath,
     backgroundDataUrl,
     svgContent,
-    perspectiveCorners,
     model,
     format,
     count,
@@ -291,6 +296,8 @@ export function useGeneration() {
     timeOfDayTextOverride,
     timeOfDayAnchor,
     referenceImages,
+    gptImageQuality,
+    nanoBananaTemperature,
     activePresetIds,
     presetAnchors,
     presetTextOverrides,

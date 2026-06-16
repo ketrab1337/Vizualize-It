@@ -1,5 +1,9 @@
 import { create } from "zustand";
 import type { LedConfig, CameraConfig, AiModel, ImageFormat, TimeOfDay } from "../types";
+import { providerForModel, type Provider } from "../lib/provider";
+
+/** Ręczne nadpisanie promptu trzymane osobno per dostawca (Google vs OpenAI). */
+type ProviderPrompts = Record<Provider, string | null>;
 
 const DEFAULT_LED: LedConfig = {
   backlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały (3000K)", lumens: null, kelvin: null, presetId: null },
@@ -65,6 +69,8 @@ export interface GenerationSnapshot {
   timeOfDayTextOverride?: string | null;
   /** Anchor fragmentu "Środowisko" — jak presety, gdzie stoi w prompcie. */
   timeOfDayAnchor?: string;
+  /** Ręczne nadpisanie promptu osobno per dostawca. Brak (stary snapshot) → fallback z `prompt`. */
+  promptByProvider?: ProviderPrompts;
 }
 
 interface GenerationStore {
@@ -74,8 +80,14 @@ interface GenerationStore {
   model: AiModel;
   format: ImageFormat;
   count: 1 | 2 | 3 | 4;
-  /** Jeden, ujednolicony prompt. `null` = auto-assembler składa z bieżącej konfiguracji. */
+  /**
+   * Aktywne ręczne nadpisanie promptu dla BIEŻĄCEGO dostawcy (pochodna z `promptByProvider`
+   * + `model`). `null` = tryb auto. Konsumenci czytają `prompt` jak dawniej — utrzymujemy
+   * je w synchronizacji w `setModel`/`setPrompt`/`applySnapshot`.
+   */
   prompt: string | null;
+  /** Źródło prawdy ręcznych promptów osobno dla Google i OpenAI. */
+  promptByProvider: ProviderPrompts;
   lastGeneratedImageIds: string[];
   timeOfDay: TimeOfDay;
   /** Nadpisany tekst fragmentu "Środowisko" w prompcie (null = auto-generowany). */
@@ -132,6 +144,7 @@ const DEFAULTS = {
   format: "16:9" as ImageFormat,
   count: 1 as 1 | 2 | 3 | 4,
   prompt: null,
+  promptByProvider: { gemini: null, openai: null } as ProviderPrompts,
   lastGeneratedImageIds: [] as string[],
   timeOfDay: "brak" as TimeOfDay,
   timeOfDayTextOverride: null as string | null,
@@ -153,10 +166,17 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
     set((s) => ({ led: { ...s.led, frontlit: { ...s.led.frontlit, ...patch } } })),
   setCamera: (camera) => set({ camera, cameraDirty: true }),
   resetCamera: () => set({ camera: DEFAULT_CAMERA, cameraDirty: false }),
-  setModel: (model) => set({ model }),
+  // Zmiana modelu przełącza aktywny `prompt` na zapisany prompt dostawcy nowego modelu.
+  setModel: (model) =>
+    set((s) => ({ model, prompt: s.promptByProvider[providerForModel(model)] })),
   setFormat: (format) => set({ format }),
   setCount: (count) => set({ count }),
-  setPrompt: (prompt) => set({ prompt }),
+  // Zapisuje nadpisanie do dostawcy bieżącego modelu (i aktualizuje aktywny `prompt`).
+  setPrompt: (prompt) =>
+    set((s) => ({
+      prompt,
+      promptByProvider: { ...s.promptByProvider, [providerForModel(s.model)]: prompt },
+    })),
   setLastGeneratedImageIds: (ids) => set({ lastGeneratedImageIds: ids }),
   setTimeOfDay: (timeOfDay) => set({ timeOfDay, timeOfDayTextOverride: null }),
   setTimeOfDayTextOverride: (text) => set({ timeOfDayTextOverride: text }),
@@ -226,6 +246,7 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       format: "16:9",
       count: 1,
       prompt: null,
+      promptByProvider: { gemini: null, openai: null },
       lastGeneratedImageIds: [],
       timeOfDay: "brak",
       timeOfDayTextOverride: null,
@@ -246,6 +267,7 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
         format: "16:9",
         count: 1,
         prompt: null,
+        promptByProvider: { gemini: null, openai: null },
         timeOfDay: "brak",
         referenceImages: [],
         activePresetIds: [],
@@ -255,14 +277,21 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       });
       return;
     }
+    const model = snapshot.model ?? "nano-banana-2";
+    // Backward-compat: stary snapshot ma tylko `prompt` (wspólny) → przepisz na oba dostawcy.
+    const promptByProvider: ProviderPrompts = snapshot.promptByProvider ?? {
+      gemini: snapshot.prompt ?? null,
+      openai: snapshot.prompt ?? null,
+    };
     set({
       led: mergeLed(snapshot.led),
       camera: snapshot.camera ?? DEFAULT_CAMERA,
       cameraDirty: snapshot.cameraDirty ?? false,
-      model: snapshot.model ?? "nano-banana-2",
+      model,
       format: snapshot.format ?? "16:9",
       count: snapshot.count ?? 1,
-      prompt: snapshot.prompt ?? null,
+      promptByProvider,
+      prompt: promptByProvider[providerForModel(model)],
       timeOfDay: snapshot.timeOfDay ?? "brak",
       timeOfDayTextOverride: snapshot.timeOfDayTextOverride ?? null,
       timeOfDayAnchor: snapshot.timeOfDayAnchor ?? "__end__",
@@ -278,6 +307,7 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
     const s = get();
     return {
       prompt: s.prompt,
+      promptByProvider: s.promptByProvider,
       activePresetIds: s.activePresetIds,
       presetAnchors: s.presetAnchors,
       presetTextOverrides: s.presetTextOverrides,

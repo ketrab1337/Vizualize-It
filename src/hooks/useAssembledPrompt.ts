@@ -14,6 +14,7 @@ import {
   type PresetEntry,
 } from "../lib/promptAssembler";
 import { buildElements } from "../lib/buildElements";
+import { providerForModel } from "../lib/provider";
 import type { SignConfig } from "../types";
 
 /**
@@ -30,7 +31,7 @@ import type { SignConfig } from "../types";
  * z aktualnego stanu stores. Używany przez oba hooki niżej (string + items).
  */
 function useAssembleArgs() {
-  const { nodeOverrides, backgroundPath, svgContent, perspectiveCorners } = useEditorStore();
+  const { nodeOverrides, backgroundPath, svgContent } = useEditorStore();
   const { materials, categories } = useMaterialsStore();
   const {
     led, camera, cameraDirty, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
@@ -105,16 +106,16 @@ function useAssembleArgs() {
         ? { text: todText, anchor: timeOfDayAnchor }
         : null;
 
-    const targetModel: "gemini" | "openai" = model === "gpt-image-2" ? "openai" : "gemini";
+    const targetModel = providerForModel(model);
 
     return {
       signConfig,
       visualInputs,
-      options: { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel, hasPerspective: !!perspectiveCorners },
+      options: { cameraDirty, presets: presetEntries, timeOfDayPreset, targetModel },
     };
   }, [
     nodeOverrides, materials, categories, led, camera, cameraDirty, backgroundPath,
-    svgContent, perspectiveCorners, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
+    svgContent, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
     referenceImages, activePresetIds, presetAnchors, presetTextOverrides, presets, productType, model,
   ]);
 }

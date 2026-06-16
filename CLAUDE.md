@@ -48,7 +48,7 @@ Vizualize It/
           useZoomActions.ts   ← przyciski zoom +/− , reset, ręczny procent
       generation/             ← LedPanel, CameraWidget, PromptPanel, ModelSelector
       gallery/                ← ImageGrid, CompareModal, ExportPanel
-      settings/               ← ApiKeys, MaterialLibrary, Templates, PricingSettings, PromptPresets, ModelSettings (zakładki w SettingsView)
+      settings/               ← ApiKeys, MaterialLibrary, BackgroundLibrary, Templates, PricingSettings, PromptPresets, ModelSettings (zakładki w SettingsView)
       ui/                     ← Button, Modal, Toast, ColorPicker (komponenty bazowe)
     hooks/                    ← useProject, useMaterials, useGeneration itp.
     stores/                   ← Zustand stores (nie Redux): projectStore, editorStore, generationStore, materialsStore, keysStore, toastStore, settingsStore
@@ -62,7 +62,7 @@ Vizualize It/
     src/
       commands/               ← każda grupa komend w osobnym pliku
         projects.rs           ← create/delete + import_svg/import_background (z validate_slug)
-        materials.rs          ← copy/get_material_photo (check_within)
+        backgrounds.rs        ← add_background/delete_background (globalna biblioteka teł w data_dir/backgrounds/)
         generation.rs         ← generate_image (dispatcher po modelu), edit_image_angle, edit_background_angle, edit_image_inpaint (OpenAI mask), edit_image_marked (Gemini visual marker), get_abs_path, delete_image_file
         keyring.rs            ← set/get/delete/test_api_key + test_*_connection
         batch.rs              ← save/load/delete_batch_payload (validate_slug + UUID job_id)
@@ -122,8 +122,8 @@ import { invoke } from '@tauri-apps/api/core';
 const result = await invoke<Project[]>('get_projects');
 
 // ✅ argumenty: camelCase w JS, snake_case w Rust — Tauri 2 auto-konwertuje
-// JS: invoke("copy_material_photo", { sourcePath: "C:/..." })
-// Rust: pub async fn copy_material_photo(source_path: String, ...) — działa
+// JS: invoke("save_batch_payload", { projectSlug: "...", jobId: "..." })
+// Rust: pub async fn save_batch_payload(project_slug: String, job_id: String, ...) — działa
 // NIE dodawaj #[serde(rename_all = "camelCase")] do struct argumentów
 
 // ❌ nigdy nie wywołuj zewnętrznych API bezpośrednio z frontendu
@@ -365,15 +365,12 @@ Warstwa "ui"   ← nakładki (hover highlight, rubber band), elementy locked=tru
 
 **Teksty z SVG** wyciągane przez `extractSvgTexts(svgContent)` w `useGeneration.ts` (parsuje `<text>` i `<tspan>`) → trafiają do `visualInputs.svgTexts` → prompt: `"TEKSTY NA SZYLDZIE (odwzoruj DOSŁOWNIE): 'Green-partners.pl'"`. Bez tego Gemini modyfikuje teksty (`"G&N partners"`, `"GREEN PARTNER INTERNATIONAL"`).
 
-**Materiały opisane po kolorze hex** z 3 trybami (`describeElementMaterial` w `promptAssembler.ts`):
+**Materiały opisane WYŁĄCZNIE po kolorze hex** z 2 trybami (`describeElementMaterial` w `promptAssembler.ts`). Zdjęcia referencyjne materiałów zostały świadomie usunięte — błyszcząca/lustrzana plexa z odbiciami myliła model, a hex + typ powierzchni dają stabilniejszy wynik:
 
-1. **Element ma zdjęcie referencyjne** → zdjęcie ma PRIORYTET. Kolor hex w prompcie służy tylko jako identyfikator regionu w SVG: `"the #FF0000 colored region in SVG → use the exact texture, color, and finish shown in Image 3 (reference photo of 'Plexa czerwona'). The hex color #FF0000 is only a region identifier, not the actual material color."`
-2. **Element bez zdjęcia, `material_type = "lustro"`** → kolor jako TINT (nie main color): `"...polished mirror-finish acrylic panel with a subtle #FFD700 tint, primarily reflecting the surrounding environment (#FFD700 is the tint hue, not the dominant surface color)..."`. Lustro odbija otoczenie, więc bez tego zastrzeżenia AI dostawała sprzeczne sygnały (`kolor #FFD700` vs `mirror reflects environment`).
-3. **Element bez zdjęcia, inne typy** → kolor jako własny kolor materiału (standard).
+1. **`material_type = "lustro"`** → kolor jako TINT (nie main color): `"...polished mirror-finish acrylic panel with a subtle #FFD700 tint, primarily reflecting the surrounding environment (#FFD700 is the tint hue, not the dominant surface color)..."`. Lustro odbija otoczenie, więc bez tego zastrzeżenia AI dostawała sprzeczne sygnały (`kolor #FFD700` vs `mirror reflects environment`).
+2. **`material_type = "polysk"` / inne typy** → kolor jako własny kolor materiału + opis powierzchni z `MATERIAL_TYPE_DESCRIPTIONS` (standard).
 
-Mapowanie `nodeId → "Image N"` buduje się w `assemblePrompt` podczas iteracji po elementach z `photo_path` (`elementToImageIdx`). Numer trafia do `describeElementMaterial`, AI dostaje konkretne odniesienie "Image 3" zamiast ogólnego "use material photo".
-
-Numeracja "Obraz N" musi być spójna z faktyczną kolejnością obrazów wysyłanych w `useGeneration.ts`.
+Numeracja "Obraz N" (scena → zdjęcia referencyjne użytkownika) musi być spójna z faktyczną kolejnością obrazów wysyłanych w `useGeneration.ts`.
 
 **Ważne — dublowanie tła:** `captureCanvas()` zwraca KOMPOZYT (tło + SVG) gdy jest tło. `useGeneration.ts` wysyła wtedy TYLKO kompozyt jako `svg_image` — NIE wysyła `background_image` osobno. Wysłanie obu (tło + kompozyt) myliło model (dwa obrazy z tłem — przed/po) i powodowało losowe generowanie nowej sceny. Wysyłaj tło OSOBNO tylko gdy NIE ma SVG.
 
@@ -410,14 +407,13 @@ let provider: Box<dyn ImageGenerator> = match input.model.as_str() {
 - **Krytyczne — count > 1**: image-preview modele NIE wspierają `candidateCount > 1` (`400: "Multiple candidates is not enabled for this model"`). `build_request` ZAWSZE ustawia `candidate_count: None`. Dla count > 1:
   - Live (`generate`): `tokio::spawn` N równoległych wywołań `single_call_generate`, zbieramy wyniki
   - Batch (`submit_batch`): N kopii żądania w `inputConfig.requests.requests[]` z różnymi `metadata.key` (`vizualize-it-1`, `-2`, ...). `poll_batch` zbiera obrazy ze wszystkich `inlinedResponses[]`
-- Zdjęcia próbek materiałów wysyłaj jako base64 w `parts` jako image reference
 
 ### OpenAI (GPT Image 2)
 - Model: `gpt-image-2` (wydany 21 kwietnia 2026 — snapshot `gpt-image-2-2026-04-21`)
 - **Generowanie z obrazami wejściowymi (LIVE)** → `POST https://api.openai.com/v1/images/edits` (multipart):
-  - `/v1/images/generations` **nie przyjmuje obrazów wejściowych** (tylko `prompt: string`) — tło, SVG, materiały byłyby ignorowane
+  - `/v1/images/generations` **nie przyjmuje obrazów wejściowych** (tylko `prompt: string`) — tło, SVG, referencje byłyby ignorowane
   - Routing w `OpenAiProvider::generate()`: są obrazy → `generate_via_edits` → `/v1/images/edits`. Brak obrazów → klasyczne `/v1/images/generations`
-  - **Dlaczego NIE `/v1/responses` dla live:** Responses API wymaga chat-modelu na top-levelu (`gpt-4o`/`gpt-5...`); `gpt-image-2` zwraca tam 400 „model not found". `/v1/images/edits` woła `gpt-image-2` bezpośrednio (multipart `image[]`: pierwszy = scena/kompozyt, kolejne = materiały + referencje; opcjonalna `mask`)
+  - **Dlaczego NIE `/v1/responses` dla live:** Responses API wymaga chat-modelu na top-levelu (`gpt-4o`/`gpt-5...`); `gpt-image-2` zwraca tam 400 „model not found". `/v1/images/edits` woła `gpt-image-2` bezpośrednio (multipart `image[]`: pierwszy = scena/kompozyt, kolejne = zdjęcia referencyjne użytkownika; opcjonalna `mask`)
   - **count > 1 live:** `/v1/images/edits` natywnie obsługuje parametr `n` — jedno wywołanie zwraca N obrazów (bez równoległych spawnów)
   - BEZ pola `response_format` — `gpt-image-2` je odrzuca (zawsze zwraca base64)
 - Edycja kąta / inpainting: `POST https://api.openai.com/v1/images/edits` (multipart, `image[]` wieloobrazowy + opcjonalna `mask`) → `edit_with_mask_inner`
@@ -484,10 +480,21 @@ UI: zakładka „Modele AI" w `SettingsView` → `ModelSettings.tsx` z reuzywaln
 
 ### SettingsView — sub-sidebar zamiast top tabów
 
-`SettingsView.tsx` ma własny lewy sidebar (`w-56`) z zakładkami ustawień (Biblioteka materiałów, Klucze API, Szablony, Presety promptu, Stawki cięcia, Modele AI). Nagłówek „Ustawienia" jest w sidebarze. **Brak przycisku zamykania** — nawigacja jest swobodna przez główny lewy Sidebar (`components/layout/Sidebar.tsx`):
+`SettingsView.tsx` ma własny lewy sidebar (`w-56`) z zakładkami ustawień (Biblioteka materiałów, Biblioteka teł, Klucze API, Szablony, Presety promptu, Stawki cięcia, Modele AI). Nagłówek „Ustawienia" jest w sidebarze. **Brak przycisku zamykania** — nawigacja jest swobodna przez główny lewy Sidebar (`components/layout/Sidebar.tsx`):
 
 - Klik logo „Projekty" lub zakładki projektu (Edytor/Generowanie/Galeria) → `onLeaveSettings()` automatycznie zamyka SettingsView i pokazuje wybrany widok
 - Klik ikonki „Ustawienia" w głównym Sidebar → otwiera SettingsView
+
+---
+
+## Globalna biblioteka teł
+
+Użytkownik dodaje raz pliki JPG/PNG/WebP w **Ustawienia → Biblioteka teł** (`BackgroundLibrary.tsx`), a potem wybiera je w edytorze jako tło projektu.
+
+- **Storage**: pliki w `data_dir/backgrounds/` (z prefiksem UUID), metadane w tabeli `background_library` (migracja 022). Stan i miniaturki w `stores/backgroundsStore.ts` (`thumbs` = blob URL-e przez `lib/imageBlob.ts::fileToBlobUrl`, scope plugin-fs `$DOCUMENT/**`).
+- **Komendy Rust** (`commands/backgrounds.rs`): `add_background(source_path)` → kopiuje do `backgrounds/`, zwraca `{ path, mime, name }`; `delete_background(path)` (check_within). Wpis/usuwanie wiersza DB robi frontend (SQL).
+- **Użycie w edytorze**: `BackgroundPickerModal.tsx` (galeria miniatur) → po wyborze Canvas woła ISTNIEJĄCĄ `import_background(slug, sourcePath=plik_z_biblioteki)`, która **kopiuje** tło do `projects/{slug}/assets/`. Dzięki temu usunięcie tła z biblioteki NIE psuje projektów (mają własne kopie). Reszta pipeline'u (generowanie czyta `backgroundPath`/`backgroundDataUrl`) bez zmian.
+- **Pasek edytora** (`CanvasToolbar.tsx`): „Dodaj tło" (plik ad-hoc z dysku, jak dotąd) + „Z biblioteki" (modal) + „Zapisz do biblioteki" (`add_background(backgroundPath)` na bieżącym tle projektu).
 
 ---
 
@@ -532,6 +539,14 @@ Kolejność części promptu (nie zmieniaj):
 6. Tło / lokalizacja (jeśli dodane)
 7. Prompt użytkownika
 8. Stałe końcowe dla jakości obrazu
+
+### Prompty osobne per dostawca (Google vs OpenAI)
+
+Pomocnik `lib/provider.ts::providerForModel(model)` mapuje model → `"gemini"` (oba Nano Banana) lub `"openai"` (GPT Image 2). Używają go assembler (`targetModel`), `useGeneration`, `useAssembledPrompt`, `generationStore`.
+
+- **A — auto-prompt różny per dostawca**: `assemblePromptFragments` czyta `options.targetModel`. Gałąź Gemini jest bazowa (dopracowana pod Nano Banana); dla OpenAI dokładamy w gałęziach scen z tłem krótkie wzmocnienie semantyki edycji (`/v1/images/edits` edytuje Obraz 1 jako płótno). Miejsce na różnicowanie: `openaiEditClause` w `promptAssembler.ts`.
+- **B — osobne RĘCZNE prompty**: `generationStore.promptByProvider: { gemini, openai }` to źródło prawdy. `prompt` to aktywne nadpisanie BIEŻĄCEGO dostawcy (pochodna). `setModel` przełącza `prompt` na zapisany prompt dostawcy nowego modelu; `setPrompt` zapisuje do dostawcy bieżącego modelu. Snapshot trzyma `promptByProvider` (stary snapshot z pojedynczym `prompt` → fallback na oba). `PromptPanel` pokazuje plakietkę dostawcy przy nagłówku „Prompt".
+- Presety, LED, kamera, środowisko pozostają WSPÓLNE (to klocki auto-promptu; różnice per dostawca robi A lub ręczny prompt B).
 
 ---
 
@@ -624,7 +639,7 @@ async fn cancel_batch(&self, batch_id: &str) -> Result<(), String>;
 3. **Cancel**: POST `/v1beta/{batch_name}:cancel`
 
 ### Dlaczego payload na dysku, nie w SQLite
-Payload zawiera base64 zdjęć materiałów + tła (może być kilka MB). SQLite nie przechowuje binarnych danych — ścieżka pliku zapisana w bazie, dane w `projects/{slug}/batch/{job_id}.json`.
+Payload zawiera base64 tła + kompozytu SVG + zdjęć referencyjnych (może być kilka MB). SQLite nie przechowuje binarnych danych — ścieżka pliku zapisana w bazie, dane w `projects/{slug}/batch/{job_id}.json`.
 
 ### Schema (migracja 011)
 ```sql
