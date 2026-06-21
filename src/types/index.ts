@@ -247,6 +247,12 @@ export interface BatchJob {
   provider_batch_id: string | null;
   /** Tylko OpenAI: ID pliku wejściowego (do usunięcia po zakończeniu). */
   provider_input_file_id: string | null;
+  /** Prompt użyty do generowania — przepisywany do sesji przy poll. */
+  prompt_assembled: string | null;
+  /** Jakość gpt-image-2 (low/medium/high); NULL dla pozostałych modeli. */
+  quality: string | null;
+  /** Temperatura Nano Banana (0..1); NULL dla pozostałych modeli. */
+  temperature: number | null;
   created_at: string;
   updated_at: string;
 }

@@ -1,4 +1,4 @@
-import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Library, Save } from "lucide-react";
+import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Library, Save, Donut } from "lucide-react";
 
 interface CanvasToolbarProps {
   hasSvg: boolean;
@@ -10,6 +10,7 @@ interface CanvasToolbarProps {
   isNestingOpen: boolean;
   onImportSvg: () => void;
   onExportSvg: () => void;
+  onMergeHoles: () => void;
   onImportBackground: () => void;
   onPickBackgroundFromLibrary: () => void;
   onSaveBackgroundToLibrary: () => void;
@@ -21,7 +22,7 @@ export function CanvasToolbar({
   hasSvg, isImportingSvg, isImportingBg, isSavingBgToLibrary,
   backgroundDataUrl, backgroundFilename,
   isNestingOpen,
-  onImportSvg, onExportSvg, onImportBackground, onPickBackgroundFromLibrary,
+  onImportSvg, onExportSvg, onMergeHoles, onImportBackground, onPickBackgroundFromLibrary,
   onSaveBackgroundToLibrary, onRemoveBackground,
   onToggleNesting,
 }: CanvasToolbarProps) {
@@ -94,6 +95,14 @@ export function CanvasToolbar({
       {hasSvg && (
         <>
           <div className="h-5 w-px bg-gray-800 mx-1" />
+          <button
+            onClick={onMergeHoles}
+            title="Wykrywa środki liter (otwory) i łączy każdą literę w jeden wektor z pustym środkiem — gotowy do nestingu"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border border-gray-700 hover:border-gray-600 transition-colors"
+          >
+            <Donut className="w-3.5 h-3.5" />
+            Wykryj otwory
+          </button>
           <button
             onClick={onToggleNesting}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm border transition-colors ${

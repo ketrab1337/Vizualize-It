@@ -13,6 +13,9 @@ export interface GalleryImage {
   created_at: string;
   model: string;
   format: string;
+  prompt_assembled: string | null;
+  quality: string | null;
+  temperature: number | null;
 }
 
 export function useGallery() {
@@ -27,7 +30,10 @@ export function useGallery() {
         `SELECT gi.id, gi.session_id, gi.project_id, gi.file_path,
                 gi.width, gi.height, gi.is_favorite, gi.created_at,
                 COALESCE(gs.model, '') AS model,
-                COALESCE(gs.format, '') AS format
+                COALESCE(gs.format, '') AS format,
+                gs.prompt_assembled AS prompt_assembled,
+                gs.quality AS quality,
+                gs.temperature AS temperature
          FROM generated_images gi
          LEFT JOIN generation_sessions gs ON gi.session_id = gs.id
          WHERE gi.project_id = $1

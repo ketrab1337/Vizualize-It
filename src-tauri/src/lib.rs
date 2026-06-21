@@ -147,6 +147,18 @@ pub fn run() {
             sql: include_str!("db/migrations/022_background_library.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 23,
+            description: "session_model_params",
+            sql: include_str!("db/migrations/023_session_model_params.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 24,
+            description: "batch_job_params",
+            sql: include_str!("db/migrations/024_batch_job_params.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

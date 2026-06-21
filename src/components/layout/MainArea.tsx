@@ -152,7 +152,6 @@ export function MainArea({ onNewProject, onOpenSettings }: MainAreaProps) {
         state.format === prev.format &&
         state.count === prev.count &&
         state.timeOfDay === prev.timeOfDay &&
-        state.timeOfDayTextOverride === prev.timeOfDayTextOverride &&
         state.timeOfDayAnchor === prev.timeOfDayAnchor &&
         // Bez tych dwóch: drag preseta na nową pozycję (presetAnchors) lub edycja
         // inline tekstu badge'a (presetTextOverrides) nie wyzwalały auto-zapisu —

@@ -3,6 +3,7 @@ import { useEditorStore } from "../stores/editorStore";
 import { useGenerationStore } from "../stores/generationStore";
 import { useMaterialsStore } from "../stores/materialsStore";
 import { useProjectStore } from "../stores/projectStore";
+import { useSettingsStore } from "../stores/settingsStore";
 import { usePromptPresets } from "./usePromptPresets";
 import {
   assemblePrompt,
@@ -34,9 +35,10 @@ function useAssembleArgs() {
   const { nodeOverrides, backgroundPath, svgContent } = useEditorStore();
   const { materials, categories } = useMaterialsStore();
   const {
-    led, camera, cameraDirty, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
+    led, camera, cameraDirty, timeOfDay, timeOfDayAnchor,
     referenceImages, activePresetIds, presetAnchors, presetTextOverrides, model,
   } = useGenerationStore();
+  const { timeOfDayTextOverrides } = useSettingsStore();
   // productType pochodzi z aktywnego projektu (per projekt, nie per generowanie).
   const { projects, activeProjectId } = useProjectStore();
   const productType = projects.find((p) => p.id === activeProjectId)?.product_type ?? null;
@@ -100,7 +102,7 @@ function useAssembleArgs() {
     const ledActive = led.backlit.enabled || led.frontlit.enabled;
     const hasBg2 = !!backgroundPath;
     const todAutoText = buildTimeOfDayPrompt(timeOfDay, ledActive, hasBg2, productNoun);
-    const todText = timeOfDayTextOverride ?? todAutoText;
+    const todText = timeOfDayTextOverrides[timeOfDay] ?? todAutoText;
     const timeOfDayPreset: { text: string; anchor?: string } | null =
       timeOfDay !== "brak" && todText
         ? { text: todText, anchor: timeOfDayAnchor }
@@ -115,7 +117,7 @@ function useAssembleArgs() {
     };
   }, [
     nodeOverrides, materials, categories, led, camera, cameraDirty, backgroundPath,
-    svgContent, timeOfDay, timeOfDayTextOverride, timeOfDayAnchor,
+    svgContent, timeOfDay, timeOfDayAnchor, timeOfDayTextOverrides,
     referenceImages, activePresetIds, presetAnchors, presetTextOverrides, presets, productType, model,
   ]);
 }

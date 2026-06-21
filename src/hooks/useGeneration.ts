@@ -88,7 +88,6 @@ export function useGeneration() {
     cameraDirty,
     prompt,
     timeOfDay,
-    timeOfDayTextOverride,
     timeOfDayAnchor,
     referenceImages,
     activePresetIds,
@@ -97,7 +96,7 @@ export function useGeneration() {
     batchMode,
     setLastGeneratedImageIds,
   } = useGenerationStore();
-  const { gptImageQuality, nanoBananaTemperature } = useSettingsStore();
+  const { gptImageQuality, nanoBananaTemperature, timeOfDayTextOverrides } = useSettingsStore();
   const addToast = useToastStore((s) => s.addToast);
 
   const generate = useCallback(async () => {
@@ -165,7 +164,7 @@ export function useGeneration() {
       const ledActive = led.backlit.enabled || led.frontlit.enabled;
       const hasBg = !!backgroundDataUrl;
       const todAutoText = buildTimeOfDayPrompt(timeOfDay, ledActive, hasBg, productNoun);
-      const todText = timeOfDayTextOverride ?? todAutoText;
+      const todText = timeOfDayTextOverrides[timeOfDay] ?? todAutoText;
       const timeOfDayPreset =
         timeOfDay !== "brak" && todText
           ? { text: todText, anchor: timeOfDayAnchor }
@@ -200,9 +199,23 @@ export function useGeneration() {
         const db = await getDb();
         const now = new Date().toISOString();
         await db.execute(
-          `INSERT INTO batch_jobs (id, project_id, project_slug, status, model, format, count, created_at, updated_at)
-           VALUES ($1,$2,$3,'pending',$4,$5,$6,$7,$7)`,
-          [jobId, project.id, project.slug, model, format, count, now]
+          `INSERT INTO batch_jobs
+             (id, project_id, project_slug, status, model, format, count,
+              prompt_assembled, quality, temperature, created_at, updated_at)
+           VALUES ($1,$2,$3,'pending',$4,$5,$6,$7,$8,$9,$10,$10)`,
+          [
+            jobId,
+            project.id,
+            project.slug,
+            model,
+            format,
+            count,
+            finalPrompt,
+            // Zapisujemy tylko parametr dotyczącego dostawcy — drugi zostaje NULL.
+            model === "gpt-image-2" ? gptImageQuality : null,
+            model === "nano-banana-2" || model === "nano-banana-pro" ? nanoBananaTemperature : null,
+            now,
+          ]
         );
         addToast("Zadanie dodane do kolejki batch.", "success");
         setActiveTab("galeria");
@@ -227,8 +240,8 @@ export function useGeneration() {
            (id, project_id, prompt_assembled, model, format, count,
             camera_rotate, camera_tilt, camera_distance,
             led_backlit_enabled, led_backlit_color,
-            led_frontlit_enabled, led_frontlit_color, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+            led_frontlit_enabled, led_frontlit_color, quality, temperature, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
         [
           sessionId,
           project.id,
@@ -243,6 +256,9 @@ export function useGeneration() {
           led.backlit.enabled ? led.backlit.color : null,
           led.frontlit.enabled ? 1 : 0,
           led.frontlit.enabled ? led.frontlit.color : null,
+          // Zapisujemy tylko parametr dotyczący użytego dostawcy — drugi zostaje NULL.
+          model === "gpt-image-2" ? gptImageQuality : null,
+          model === "nano-banana-2" || model === "nano-banana-pro" ? nanoBananaTemperature : null,
           now,
         ]
       );
@@ -293,7 +309,6 @@ export function useGeneration() {
     cameraDirty,
     prompt,
     timeOfDay,
-    timeOfDayTextOverride,
     timeOfDayAnchor,
     referenceImages,
     gptImageQuality,

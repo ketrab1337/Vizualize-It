@@ -1,6 +1,7 @@
 import { useState, useRef, Fragment } from "react";
 import { RotateCcw, PenLine, X, Pencil, Check } from "lucide-react";
 import { useGenerationStore } from "../../stores/generationStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { useAssembledPrompt, useAssembledPromptItems } from "../../hooks/useAssembledPrompt";
 import { providerForModel, PROVIDER_LABEL } from "../../lib/provider";
 
@@ -28,10 +29,11 @@ export function PromptPanel() {
   const {
     prompt, setPrompt, togglePresetId, setPresetAnchor,
     setPresetTextOverride, reorderActivePresetId, activePresetIds,
-    setTimeOfDay, setTimeOfDayTextOverride, setTimeOfDayAnchor, model,
+    timeOfDay, setTimeOfDay, setTimeOfDayAnchor, model,
   } = useGenerationStore();
   const autoPrompt = useAssembledPrompt();
   const items = useAssembledPromptItems();
+  const { setTimeOfDayTextOverride } = useSettingsStore();
   const providerLabel = PROVIDER_LABEL[providerForModel(model)];
 
   // Drag state — pointer-based, bez HTML5 DnD
@@ -82,7 +84,7 @@ export function PromptPanel() {
     if (editingPresetId == null) return;
     const trimmed = editBuffer.trim();
     if (editingPresetId === "__tod__") {
-      setTimeOfDayTextOverride(trimmed || null);
+      setTimeOfDayTextOverride(timeOfDay, trimmed || null);
     } else {
       setPresetTextOverride(editingPresetId, trimmed);
     }

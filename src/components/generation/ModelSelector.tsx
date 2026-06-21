@@ -104,8 +104,7 @@ export function ModelSelector() {
             ))}
           </div>
           <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
-            Wyższa jakość = więcej detali, ale wyższy koszt (Wysoka ≈ ~4× Średnia). Średnia
-            do szkiców i iteracji, Wysoka do finalnej wizualizacji dla klienta.
+            Wyższa jakość = więcej detali, ale wyższy koszt (Wysoka ≈ ~4× Średnia).
           </p>
         </div>
       )}
@@ -130,7 +129,7 @@ export function ModelSelector() {
           />
           <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
             Niższa = stabilniej i wierniej (mniej mutacji tekstu na szyldzie). Wyższa = więcej
-            wariancji. Zalecane ok. 0,35.
+            wariancji.
           </p>
         </div>
       )}

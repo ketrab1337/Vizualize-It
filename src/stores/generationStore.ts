@@ -65,8 +65,6 @@ export interface GenerationSnapshot {
   format: ImageFormat;
   count: 1 | 2 | 3 | 4;
   timeOfDay: TimeOfDay;
-  /** Nadpisany tekst fragmentu "Środowisko" w prompcie (null = auto-generowany). */
-  timeOfDayTextOverride?: string | null;
   /** Anchor fragmentu "Środowisko" — jak presety, gdzie stoi w prompcie. */
   timeOfDayAnchor?: string;
   /** Ręczne nadpisanie promptu osobno per dostawca. Brak (stary snapshot) → fallback z `prompt`. */
@@ -90,8 +88,6 @@ interface GenerationStore {
   promptByProvider: ProviderPrompts;
   lastGeneratedImageIds: string[];
   timeOfDay: TimeOfDay;
-  /** Nadpisany tekst fragmentu "Środowisko" w prompcie (null = auto-generowany). */
-  timeOfDayTextOverride: string | null;
   /** Anchor fragmentu "Środowisko" — pozycja w prompcie jak preset. Brak = "__end__". */
   timeOfDayAnchor: string;
   referenceImages: ReferenceImage[];
@@ -114,7 +110,6 @@ interface GenerationStore {
   setPrompt: (prompt: string | null) => void;
   setLastGeneratedImageIds: (ids: string[]) => void;
   setTimeOfDay: (timeOfDay: TimeOfDay) => void;
-  setTimeOfDayTextOverride: (text: string | null) => void;
   setTimeOfDayAnchor: (anchor: string) => void;
   addReferenceImage: (img: ReferenceImage) => void;
   removeReferenceImage: (index: number) => void;
@@ -147,7 +142,6 @@ const DEFAULTS = {
   promptByProvider: { gemini: null, openai: null } as ProviderPrompts,
   lastGeneratedImageIds: [] as string[],
   timeOfDay: "brak" as TimeOfDay,
-  timeOfDayTextOverride: null as string | null,
   timeOfDayAnchor: "__end__" as string,
   referenceImages: [] as ReferenceImage[],
   activePresetIds: [] as string[],
@@ -178,8 +172,7 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       promptByProvider: { ...s.promptByProvider, [providerForModel(s.model)]: prompt },
     })),
   setLastGeneratedImageIds: (ids) => set({ lastGeneratedImageIds: ids }),
-  setTimeOfDay: (timeOfDay) => set({ timeOfDay, timeOfDayTextOverride: null }),
-  setTimeOfDayTextOverride: (text) => set({ timeOfDayTextOverride: text }),
+  setTimeOfDay: (timeOfDay) => set({ timeOfDay }),
   setTimeOfDayAnchor: (anchor) => set({ timeOfDayAnchor: anchor }),
   addReferenceImage: (img) => set((s) => ({ referenceImages: [...s.referenceImages, img] })),
   removeReferenceImage: (index) =>
@@ -249,7 +242,6 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       promptByProvider: { gemini: null, openai: null },
       lastGeneratedImageIds: [],
       timeOfDay: "brak",
-      timeOfDayTextOverride: null,
       timeOfDayAnchor: "__end__",
       referenceImages: [],
       activePresetIds: [],
@@ -293,7 +285,6 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       promptByProvider,
       prompt: promptByProvider[providerForModel(model)],
       timeOfDay: snapshot.timeOfDay ?? "brak",
-      timeOfDayTextOverride: snapshot.timeOfDayTextOverride ?? null,
       timeOfDayAnchor: snapshot.timeOfDayAnchor ?? "__end__",
       referenceImages: snapshot.referenceImages ?? [],
       activePresetIds: snapshot.activePresetIds ?? [],
@@ -319,7 +310,6 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
       format: s.format,
       count: s.count,
       timeOfDay: s.timeOfDay,
-      timeOfDayTextOverride: s.timeOfDayTextOverride,
       timeOfDayAnchor: s.timeOfDayAnchor,
     };
   },

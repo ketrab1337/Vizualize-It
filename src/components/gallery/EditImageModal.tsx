@@ -629,6 +629,9 @@ export function EditImageModal({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         model: usedModel as any,
         format: img.format || "1:1",
+        prompt_assembled: trimmed,
+        quality: null,
+        temperature: null,
       });
 
       addToast(

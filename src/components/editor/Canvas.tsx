@@ -15,12 +15,13 @@ import {
   type CanvasCapture,
 } from "../../lib/paperCanvas";
 import { computeNesting } from "./canvas/nestingEngine";
+import { mergeLetterHoles } from "./canvas/mergeHoles";
 import { NestingPanel } from "./NestingPanel";
 import { updateSvgWithOverrides, patchSvgLayerState } from "../../lib/svgHelpers";
 import { RULER_SIZE, RULER_BG, RULER_BORDER, drawHRuler, drawVRuler } from "./canvas/rulers";
 import {
   CANVAS_SIZE_MM, BG_COLOR,
-  fitViewToPage, drawPageBackground, exportSvgLayer,
+  fitViewToPage, drawPageBackground, exportSvgLayer, withPhysicalSizeMm,
   assignMissingNames, findItemByName, applyFillByName,
   getItemType, getDefaultName, calcTotalLength, calcTotalArea,
   parseSvgDimension, toMm,
@@ -1813,6 +1814,51 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     setContextMenu(null);
   }, [clearSelection, addToSelection, setSvgContent, rebuildLayerItems, pushHistory, setNodeOverride, removeNodeOverride, setChildParent, removeFromParentMap, removeBoundsForElement]);
 
+  // ── Wykrywanie otworów w literach (do nestingu) ───────────────────────────
+  // Łączy kontur zewnętrzny litery z jej środkiem (oczkiem) w jeden CompoundPath
+  // z evenodd → środek pusty, każda litera = jeden element. Patrz canvas/mergeHoles.ts.
+  const handleMergeHoles = useCallback(() => {
+    const layer = svgLayerRef.current;
+    if (!layer) return;
+
+    const result = mergeLetterHoles([...(layer.children as paper.Item[])]);
+
+    if (result.merged === 0 && result.fixedFillRule === 0) {
+      addToast("Nie znaleziono liter z otworami do scalenia.", "info");
+      return;
+    }
+
+    // Wyczyść stores z usuniętych otworów (były osobnymi elementami)
+    result.removedNames.forEach((n) => {
+      removeNodeOverride(n);
+      removeBoundsForElement(n);
+      removeFromParentMap(n);
+    });
+
+    clearSelection();
+
+    // Przelicz bounds i parentMap dla zmienionego drzewa
+    const mm = mmPerUnitRef.current;
+    const topLevel = layer.children as paper.Item[];
+    topLevel.forEach((it) => setBoundsRecursive(it, mm, setBoundsForElement));
+    setParentMap(buildParentMapFromItems(topLevel));
+    setTimeout(() => rebuildLayerItems(), 0);
+
+    if (svgContentRef.current) {
+      const updated = exportSvgLayer(layer, mm);
+      lastSavedContentRef.current = updated;
+      setSvgContent(updated);
+    }
+    pushHistory();
+
+    const parts = [`Scalono otwory w ${result.merged} literach`];
+    if (result.fixedFillRule > 0) parts.push(`naprawiono ${result.fixedFillRule}`);
+    addToast(`${parts.join(", ")}.`, "success");
+  }, [
+    clearSelection, addToast, setSvgContent, rebuildLayerItems, pushHistory,
+    setParentMap, setBoundsForElement, removeNodeOverride, removeBoundsForElement, removeFromParentMap,
+  ]);
+
   // ── Skróty klawiszowe ─────────────────────────────────────────────────────
   // Blok musi być po handleGroup/handleUngroup (zdefiniowanych wyżej przez useCallback),
   // żeby ich nazwy nie były w temporal dead zone przy ewaluacji tablicy deps.
@@ -1843,6 +1889,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     if (!content) return;
     const updated = updateSvgWithOverrides(content, nodeOverridesRef.current);
 
+    // Doklej fizyczne wymiary (mm) — bez nich zewnętrzne programy czytają współrzędne
+    // jako piksele (96 DPI) i obiekty są ~3.78× za małe. Współrzędne warstwy są w mm.
+    const sized = withPhysicalSizeMm(updated, svgLayerRef.current?.bounds ?? null);
+
     const filePath = await save({
       title: "Zapisz plik SVG",
       defaultPath: `${project.name}.svg`,
@@ -1851,7 +1901,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     if (!filePath) return;
 
     try {
-      await writeTextFile(filePath, updated);
+      await writeTextFile(filePath, sized);
       addToast("Plik SVG został zapisany.", "success");
     } catch (e) {
       addToast(`Błąd zapisu pliku: ${e}`, "error");
@@ -2307,6 +2357,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         isNestingOpen={isNestingPanelOpen}
         onImportSvg={handleImportSvg}
         onExportSvg={handleExportSvg}
+        onMergeHoles={handleMergeHoles}
         onImportBackground={handleImportBackground}
         onPickBackgroundFromLibrary={() => setShowBgPicker(true)}
         onSaveBackgroundToLibrary={handleSaveBackgroundToLibrary}

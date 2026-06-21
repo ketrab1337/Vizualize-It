@@ -20,6 +20,7 @@ const KEYS = {
   CHANGE_ANGLE_MODEL: "change_angle_model",
   GPT_IMAGE_QUALITY: "gpt_image_quality",
   NANO_BANANA_TEMPERATURE: "nano_banana_temperature",
+  TIME_OF_DAY_OVERRIDES: "time_of_day_text_overrides",
 } as const;
 
 const DEFAULTS = {
@@ -27,6 +28,7 @@ const DEFAULTS = {
   changeAngleModel: "nano-banana-2" as AiModel,
   gptImageQuality: "medium" as GptImageQuality,
   nanoBananaTemperature: 0.35,
+  timeOfDayTextOverrides: {} as Record<string, string>,
 };
 
 interface SettingsState {
@@ -38,6 +40,8 @@ interface SettingsState {
   gptImageQuality: GptImageQuality;
   /** Temperatura Nano Banana (Gemini) przy generowaniu — 0..1. */
   nanoBananaTemperature: number;
+  /** Globalne nadpisania tekstu środowiska per opcja (dzien/wieczor/noc/wnetrze). */
+  timeOfDayTextOverrides: Record<string, string>;
   /** Czy ustawienia zostały wczytane z DB. */
   loaded: boolean;
 
@@ -46,6 +50,8 @@ interface SettingsState {
   setChangeAngleModel: (m: AiModel) => Promise<void>;
   setGptImageQuality: (q: GptImageQuality) => Promise<void>;
   setNanoBananaTemperature: (t: number) => Promise<void>;
+  /** Ustaw nadpisanie tekstu dla danej opcji środowiska. null/pusty = usuń (wróć do auto). */
+  setTimeOfDayTextOverride: (option: string, text: string | null) => Promise<void>;
 }
 
 interface DbRow {
@@ -87,6 +93,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   changeAngleModel: DEFAULTS.changeAngleModel,
   gptImageQuality: DEFAULTS.gptImageQuality,
   nanoBananaTemperature: DEFAULTS.nanoBananaTemperature,
+  timeOfDayTextOverrides: DEFAULTS.timeOfDayTextOverrides,
   loaded: false,
 
   loadSettings: async () => {
@@ -94,6 +101,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       const db = await getDb();
       const rows = await db.select<DbRow[]>(`SELECT key, value FROM app_settings`);
       const map = new Map(rows.map((r) => [r.key, r.value]));
+      let timeOfDayTextOverrides: Record<string, string> = {};
+      try {
+        const raw = map.get(KEYS.TIME_OF_DAY_OVERRIDES);
+        if (raw) timeOfDayTextOverrides = JSON.parse(raw) as Record<string, string>;
+      } catch { /* ignore */ }
       set({
         editTextModel: parseModel(map.get(KEYS.EDIT_TEXT_MODEL), DEFAULTS.editTextModel),
         changeAngleModel: parseModel(map.get(KEYS.CHANGE_ANGLE_MODEL), DEFAULTS.changeAngleModel),
@@ -102,6 +114,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           map.get(KEYS.NANO_BANANA_TEMPERATURE),
           DEFAULTS.nanoBananaTemperature
         ),
+        timeOfDayTextOverrides,
         loaded: true,
       });
     } catch {
@@ -128,5 +141,17 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     const clamped = Math.min(1, Math.max(0, t));
     await persist(KEYS.NANO_BANANA_TEMPERATURE, String(clamped));
     set({ nanoBananaTemperature: clamped });
+  },
+
+  setTimeOfDayTextOverride: async (option, text) => {
+    const current = useSettingsStore.getState().timeOfDayTextOverrides;
+    const next = { ...current };
+    if (!text || text.trim() === "") {
+      delete next[option];
+    } else {
+      next[option] = text.trim();
+    }
+    set({ timeOfDayTextOverrides: next });
+    await persist(KEYS.TIME_OF_DAY_OVERRIDES, JSON.stringify(next));
   },
 }));

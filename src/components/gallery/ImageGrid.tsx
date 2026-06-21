@@ -35,6 +35,51 @@ interface ImageGridProps {
 
 type Filter = "wszystkie" | "ulubione";
 
+const QUALITY_LABELS: Record<string, string> = {
+  low: "Niska",
+  medium: "Średnia",
+  high: "Wysoka",
+};
+
+/**
+ * Etykieta parametru modelu użytego przy generowaniu — jakość dla gpt-image-2,
+ * temperatura dla Nano Banana. Zwraca null gdy parametr nie został zapisany
+ * (np. stare obrazy, batch, edycje).
+ */
+function modelParamLabel(img: GalleryImage): string | null {
+  if (img.model === "gpt-image-2") {
+    if (!img.quality) return null;
+    return `Jakość: ${QUALITY_LABELS[img.quality] ?? img.quality}`;
+  }
+  if (img.model === "nano-banana-2" || img.model === "nano-banana-pro") {
+    if (img.temperature == null) return null;
+    return `Temperatura: ${img.temperature.toFixed(2)}`;
+  }
+  return null;
+}
+
+/** Zapisuje plik obrazu z galerii na dysk (dialog „Zapisz jako…"). */
+async function downloadGalleryImage(
+  img: GalleryImage,
+  addToast: (message: string, type?: "success" | "error" | "info") => void
+) {
+  try {
+    const ext = img.file_path.split(".").pop()?.toLowerCase() ?? "png";
+    const filterName = ext === "jpg" || ext === "jpeg" ? "JPEG" : ext === "webp" ? "WebP" : "PNG";
+    const dest = await save({
+      defaultPath: `szyld_${img.id.slice(0, 8)}.${ext}`,
+      filters: [{ name: filterName, extensions: [ext] }],
+      title: "Zapisz zdjęcie jako…",
+    });
+    if (!dest) return;
+    const sourceAbs = await invoke<string>("get_abs_path", { filePath: img.file_path });
+    await invoke("copy_image_to_path", { sourceAbs, destPath: dest });
+    addToast("Zapisano zdjęcie", "success");
+  } catch (e) {
+    addToast(`Błąd zapisu zdjęcia: ${e}`, "error");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Karta pojedynczego obrazu
 // ---------------------------------------------------------------------------
@@ -47,6 +92,7 @@ interface ImageCardProps {
   onOpen: (img: GalleryImage) => void;
   onToggleFavorite: (id: string, current: number) => void;
   onDelete: (id: string, filePath: string) => void;
+  onDownload: (img: GalleryImage) => void;
 }
 
 function ImageCard({
@@ -58,6 +104,7 @@ function ImageCard({
   onOpen,
   onToggleFavorite,
   onDelete,
+  onDownload,
 }: ImageCardProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -150,6 +197,17 @@ function ImageCard({
           />
         </button>
         <button
+          className="p-1 rounded bg-black/50 hover:bg-black/70 transition-colors disabled:opacity-40"
+          disabled={!src}
+          title="Pobierz zdjęcie"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDownload(img);
+          }}
+        >
+          <Download className="w-4 h-4 text-white" />
+        </button>
+        <button
           className="p-1 rounded bg-black/50 hover:bg-red-700/70 transition-colors"
           onClick={(e) => {
             e.stopPropagation();
@@ -205,22 +263,11 @@ function ImageViewModal({
 
   const handleDownload = useCallback(async () => {
     if (!src) return;
-    try {
-      const ext = img.file_path.split(".").pop()?.toLowerCase() ?? "png";
-      const filterName = ext === "jpg" || ext === "jpeg" ? "JPEG" : ext === "webp" ? "WebP" : "PNG";
-      const dest = await save({
-        defaultPath: `szyld_${img.id.slice(0, 8)}.${ext}`,
-        filters: [{ name: filterName, extensions: [ext] }],
-        title: "Zapisz zdjęcie jako…",
-      });
-      if (!dest) return;
-      const sourceAbs = await invoke<string>("get_abs_path", { filePath: img.file_path });
-      await invoke("copy_image_to_path", { sourceAbs, destPath: dest });
-      addToast("Zapisano zdjęcie", "success");
-    } catch (e) {
-      addToast(`Błąd zapisu zdjęcia: ${e}`, "error");
-    }
-  }, [src, img.id, img.file_path, addToast]);
+    await downloadGalleryImage(img, addToast);
+  }, [src, img, addToast]);
+
+  const paramLabel = modelParamLabel(img);
+  const promptText = img.prompt_assembled?.trim() ?? "";
 
   return (
     <div
@@ -231,7 +278,14 @@ function ImageViewModal({
         {/* Nagłówek */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
           <div>
-            <p className="text-sm text-white font-medium">{modelLabel(img.model)}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm text-white font-medium">{modelLabel(img.model)}</p>
+              {paramLabel && (
+                <span className="text-[11px] text-gray-300 bg-[#252525] border border-gray-700 rounded px-1.5 py-0.5">
+                  {paramLabel}
+                </span>
+              )}
+            </div>
             <p className="text-xs text-gray-400">
               {new Date(img.created_at).toLocaleDateString("pl-PL", {
                 day: "2-digit",
@@ -252,6 +306,20 @@ function ImageViewModal({
 
         {/* Obraz z zoomem */}
         <ZoomableImage src={src} />
+
+        {/* Użyty prompt */}
+        {promptText && (
+          <details className="border-t border-gray-800 shrink-0">
+            <summary className="px-4 py-2 text-xs text-gray-300 cursor-pointer hover:text-white select-none">
+              Użyty prompt
+            </summary>
+            <div className="px-4 pb-3 max-h-40 overflow-y-auto">
+              <p className="text-xs text-gray-400 whitespace-pre-wrap leading-relaxed">
+                {promptText}
+              </p>
+            </div>
+          </details>
+        )}
 
         {/* Pasek akcji */}
         <div className="px-4 py-3 border-t border-gray-800 flex items-center gap-2 shrink-0">
@@ -626,6 +694,7 @@ export function ImageGrid({ projectId }: ImageGridProps) {
                 onOpen={setViewImage}
                 onToggleFavorite={handleToggleFavorite}
                 onDelete={handleDelete}
+                onDownload={(i) => void downloadGalleryImage(i, addToast)}
               />
             ))}
           </div>

@@ -126,6 +126,9 @@ export function ChangeAngleModal({
         created_at: now,
         model: changeAngleModel,
         format: img.format || "1:1",
+        prompt_assembled: prompt,
+        quality: null,
+        temperature: null,
       });
 
       addToast("Wygenerowano wariant z nowym kątem kamery.", "success");

@@ -56,6 +56,31 @@ export function exportSvgLayer(layer: paper.Layer, mmPerUnit: number): string {
   return new XMLSerializer().serializeToString(svgEl);
 }
 
+/**
+ * Dokleja fizyczne wymiary (mm) do SVG przeznaczonego do EKSPORTU na dysk.
+ *
+ * `exportSvgLayer` celowo NIE zapisuje `width`/`height`/`viewBox` (psułyby pozycje
+ * przy undo/redo i ponownym imporcie z bazy). Ale plik bez tych atrybutów otwarty
+ * w zewnętrznym programie (laser/CAD/Illustrator) jest interpretowany jako piksele
+ * przy 96 DPI → obiekty wychodzą ~3.78× za małe (1 mm = 3.7795 px).
+ *
+ * Współrzędne warstwy są w mm (1 jednostka Paper.js = 1 mm), więc viewBox w tych
+ * samych jednostkach + width/height z sufiksem „mm" daje skalę 1:1 w każdym programie.
+ *
+ * @param svgString wyeksportowany SVG (np. z `exportSvgLayer` + overrides)
+ * @param bounds obwiednia zawartości w jednostkach Paper.js (= mm), np. `layer.bounds`
+ */
+export function withPhysicalSizeMm(svgString: string, bounds: paper.Rectangle | null): string {
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return svgString;
+  const doc = new DOMParser().parseFromString(svgString, "image/svg+xml");
+  const svg = doc.documentElement;
+  const r = (n: number) => Math.round(n * 1000) / 1000;
+  svg.setAttribute("viewBox", `${r(bounds.x)} ${r(bounds.y)} ${r(bounds.width)} ${r(bounds.height)}`);
+  svg.setAttribute("width", `${r(bounds.width)}mm`);
+  svg.setAttribute("height", `${r(bounds.height)}mm`);
+  return new XMLSerializer().serializeToString(svg);
+}
+
 /** Przypisuje auto-nazwy wszystkim elementom bez id (rekurencyjnie). */
 export function assignMissingNames(item: paper.Item, prefix: string, index: number): void {
   if (!item.name) item.name = `${prefix}_${index}`;

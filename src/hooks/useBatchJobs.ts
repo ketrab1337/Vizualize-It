@@ -134,9 +134,19 @@ export function useBatchJobs(projectId: string | null) {
              (id, project_id, prompt_assembled, model, format, count,
               camera_rotate, camera_tilt, camera_distance,
               led_backlit_enabled, led_backlit_color,
-              led_frontlit_enabled, led_frontlit_color, created_at)
-           VALUES ($1,$2,NULL,$3,$4,$5,0,0,5,0,NULL,0,NULL,$6)`,
-          [sessionId, job.project_id, job.model, job.format, job.count, now]
+              led_frontlit_enabled, led_frontlit_color, quality, temperature, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,0,0,5,0,NULL,0,NULL,$7,$8,$9)`,
+          [
+            sessionId,
+            job.project_id,
+            job.prompt_assembled,
+            job.model,
+            job.format,
+            job.count,
+            job.quality,
+            job.temperature,
+            now,
+          ]
         );
 
         const imageIds: string[] = [];
