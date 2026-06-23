@@ -108,7 +108,8 @@ function MaterialPicker({ label, selectedMaterialId, onChange }: MaterialPickerP
 // ── PropertiesTab ─────────────────────────────────────────────────────────────
 
 function PropertiesTab() {
-  const { selectedElementId, selectedElementIds, selectedItemBounds, nodeOverrides, setNodeOverride } = useEditorStore();
+  const { selectedElementId, selectedElementIds, selectedItemBounds, nodeOverrides, setNodeOverride, productIds } = useEditorStore();
+  const isProduct = !!selectedElementId && productIds.includes(selectedElementId);
   const { refresh, categories, materials, globalCuttingRates } = useMaterialsStore();
 
   const [materialId, setMaterialId] = useState("");
@@ -360,6 +361,72 @@ function PropertiesTab() {
         <p className="text-gray-600 text-xs">
           Kliknij element na kanwasie, aby wyświetlić jego właściwości
         </p>
+      </div>
+    );
+  }
+
+  // ── Produkt (paper.Raster) — zdjęcie do wizualizacji, bez materiału/wyceny ──────
+  if (isProduct) {
+    return (
+      <div className="p-4 space-y-4">
+        <div className="space-y-1.5">
+          <div className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
+            <MousePointer2 className="w-3 h-3" />
+            Produkt (wtapiany przez AI)
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            To zdjęcie produktu na scenie. Nie ma materiału i nie wchodzi do wyceny ani nestingu.
+            Przesuń i wyskaluj je na kanwie tam, gdzie ma stać (np. na ladzie) — przy generowaniu
+            AI wtopi je w wizualizację z cieniem i odbiciem. Usuń klawiszem Delete.
+          </p>
+        </div>
+
+        {selectedItemBounds && (
+          <div className="space-y-1.5 pt-1 border-t border-gray-800">
+            <label className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
+              <Ruler className="w-3 h-3" />
+              Wymiary
+            </label>
+            <div className="grid grid-cols-2 gap-1.5">
+              <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
+                <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Szerokość</div>
+                <div className="flex items-baseline gap-1">
+                  <input
+                    name="product_width_mm"
+                    aria-label="Szerokość produktu w mm"
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={widthInput}
+                    onChange={(e) => setWidthInput(e.target.value)}
+                    onBlur={commitResize}
+                    onKeyDown={handleDimensionKey}
+                    className="w-full bg-transparent text-gray-200 text-sm font-mono focus:outline-none focus:text-white [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <span className="text-gray-400 text-[10px] shrink-0">mm</span>
+                </div>
+              </div>
+              <div className="bg-[#252525] rounded px-2 py-1.5 border border-gray-700">
+                <div className="text-gray-400 text-[10px] uppercase tracking-wider mb-0.5">Wysokość</div>
+                <div className="flex items-baseline gap-1">
+                  <input
+                    name="product_height_mm"
+                    aria-label="Wysokość produktu w mm"
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={heightInput}
+                    onChange={(e) => setHeightInput(e.target.value)}
+                    onBlur={commitResize}
+                    onKeyDown={handleDimensionKey}
+                    className="w-full bg-transparent text-gray-200 text-sm font-mono focus:outline-none focus:text-white [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <span className="text-gray-400 text-[10px] shrink-0">mm</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

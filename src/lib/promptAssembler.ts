@@ -25,6 +25,8 @@ export function getProductNoun(productType: string | null | undefined): {
 export interface VisualInputs {
   hasBackground: boolean;
   hasSvg: boolean;
+  /** Scena (Obraz 1) zawiera produkty/przedmioty postawione przez użytkownika do wtopienia. */
+  hasProducts?: boolean;
   referenceImageCount?: number;
   referenceDescriptions?: string[];
   svgTexts?: string[];
@@ -48,15 +50,6 @@ export interface AssembleOptions {
 
 function imgLabel(n: number): string {
   return `Obraz ${n}`;
-}
-
-/** Polska odmiana liczebnika: 1 → one, 2–4 (poza 12–14) → few, reszta → many. */
-function plPlural(n: number, one: string, few: string, many: string): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (n === 1) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
 }
 
 export type PromptItem =
@@ -92,116 +85,74 @@ const MATERIAL_CATEGORY_HINTS: Record<string, string> = {
 };
 
 /**
- * Maps material thickness in mm to a relative visual description.
- * AI models don't interpret mm as physical units — they react to proportions.
- * The relative descriptor is the primary signal; the mm value is a secondary hint.
+ * Nazwa koloru z hexa (najbliższy z palety). Hex zostaje precyzyjnym identyfikatorem;
+ * nazwa to tylko podpowiedź renderu. „żółty" świadomie pominięty — na szyldach #ffd700/
+ * #D4AF37 to praktycznie zawsze ZŁOTY (żółć i złoto są w RGB blisko siebie). Gdy hex jest
+ * daleko od każdej kotwicy → zwraca null (zostaje sam hex, bez ryzykownej nazwy).
  */
-function describeThickness(thicknessMm: number | null): string | null {
-  if (thicknessMm == null || thicknessMm <= 0) return null;
-  if (thicknessMm < 5) return `cienki profil (${thicknessMm}mm), subtelnie widoczna krawędź boczna`;
-  if (thicknessMm < 15) return `średnia grubość (${thicknessMm}mm), wyraźnie widoczna krawędź boczna`;
-  if (thicknessMm < 30) return `gruby profil (${thicknessMm}mm), wyraźna głębia 3D, szeroka widoczna krawędź boczna`;
-  return `bardzo gruby profil (${thicknessMm}mm), dominująca głębia 3D, duża widoczna krawędź boczna`;
+const NAMED_COLORS: { name: string; r: number; g: number; b: number }[] = [
+  { name: "czarny", r: 0, g: 0, b: 0 },
+  { name: "biały", r: 255, g: 255, b: 255 },
+  { name: "szary", r: 128, g: 128, b: 128 },
+  { name: "srebrny", r: 192, g: 192, b: 192 },
+  { name: "czerwony", r: 204, g: 34, b: 34 },
+  { name: "pomarańczowy", r: 255, g: 128, b: 0 },
+  { name: "złoty", r: 224, g: 176, b: 0 },
+  { name: "brązowy", r: 122, g: 74, b: 40 },
+  { name: "zielony", r: 42, g: 170, b: 60 },
+  { name: "turkusowy", r: 48, g: 180, b: 170 },
+  { name: "niebieski", r: 40, g: 90, b: 200 },
+  { name: "granatowy", r: 20, g: 34, b: 90 },
+  { name: "fioletowy", r: 128, g: 48, b: 160 },
+  { name: "różowy", r: 240, g: 105, b: 160 },
+];
+
+function colorName(hex: string | null): string | null {
+  if (!hex) return null;
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  let best: string | null = null;
+  let bestD = Infinity;
+  for (const c of NAMED_COLORS) {
+    const d = (r - c.r) ** 2 + (g - c.g) ** 2 + (b - c.b) ** 2;
+    if (d < bestD) { bestD = d; best = c.name; }
+  }
+  // Próg pewności (~55/kanał). Dalej → sam hex bez nazwy.
+  return bestD <= 9000 ? best : null;
 }
 
-function hasReflectiveThin(elements: SignElement[]): boolean {
-  return elements.some(
-    (e) => e.material?.material_type === "lustro" || (e.thicknessMm != null && e.thicknessMm < 5)
-  );
+/** „#hex (nazwa)" gdy nazwa pewna, inaczej sam „#hex". */
+function hexLabel(hex: string | null): string {
+  if (!hex) return "domyślny kolor";
+  const name = colorName(hex);
+  return name ? `${hex} (${name})` : hex;
 }
 
-function hasLustro(elements: SignElement[]): boolean {
-  return elements.some((e) => e.material?.material_type === "lustro");
-}
-
+/** Krótka, jednolinijkowa „Budowa": płyta bazowa + naklejone wypukłe litery/logo (+ wycięcia). */
 function buildLayerStructure(
   elements: SignElement[],
   productNoun: string
 ): string | null {
-  const byRole: Record<string, SignElement[]> = {
-    backplate: [], decoration: [], logo: [], text: [], distance: [], cutout: [],
-  };
+  const roles = new Set<string>();
   for (const el of elements) {
-    if (el.role) byRole[el.role]?.push(el);
+    if (el.role && el.role !== "distance") roles.add(el.role);
   }
-  const byNodeId = new Map(elements.map((el) => [el.nodeId, el]));
-  const lines: string[] = [];
-  const nn = productNoun;
-
-  if (byRole.distance.length > 0) {
-    lines.push(
-      `- Dystanse: cały ${nn} jest zamontowany na metalowych dystansach, odsunięty od ściany o ok. 20–30 mm, rzucający miękki cień na ścianę za sobą`
-    );
+  const parts: string[] = [];
+  if (roles.has("backplate")) parts.push("płaska płyta bazowa (najgłębsza warstwa)");
+  const raised: string[] = [];
+  if (roles.has("decoration")) raised.push("dekoracje");
+  if (roles.has("logo")) raised.push("logo");
+  if (roles.has("text")) raised.push("litery");
+  if (raised.length > 0) {
+    parts.push(`a NA niej naklejone, wypukłe ${raised.join(" i ")} (warstwa wierzchnia)`);
   }
-  if (byRole.backplate.length > 0) {
-    const colors = [...new Set(byRole.backplate.map((e) => e.colorHex ?? "domyślny"))].join(", ");
-    lines.push(`- Płyta bazowa (tło, najgłębsza warstwa): regiony SVG ${colors}, płaska płyta bazowa`);
+  if (roles.has("cutout")) {
+    parts.push("oraz panel z fizycznie wyciętymi (laserowo) otworami, przez które widać warstwę pod spodem");
   }
-  if (byRole.decoration.length > 0) {
-    const colors = [...new Set(byRole.decoration.map((e) => e.colorHex ?? "domyślny"))].join(", ");
-    const shadow = hasReflectiveThin(byRole.decoration)
-      ? "z delikatnym cieniem przy krawędziach"
-      : "rzucające subtelny cień na płytę poniżej";
-    lines.push(
-      `- Dekoracje (warstwa nad płytą bazową): regiony SVG ${colors}, nałożone NA płytę bazową, lekko uniesione, ${shadow}`
-    );
-  }
-  if (byRole.logo.length > 0) {
-    const colors = [...new Set(byRole.logo.map((e) => e.colorHex ?? "domyślny"))].join(", ");
-    if (hasLustro(byRole.logo)) {
-      lines.push(
-        `- Logo (warstwa nad płytą bazową): regiony SVG ${colors}, kształty logotypu wycięte z lustrzanego akrylu, zamontowane NA płycie bazowej — każdy kształt ma lustrzaną powierzchnię odbijającą otoczenie`
-      );
-    } else {
-      const shadow = hasReflectiveThin(byRole.logo)
-        ? "z delikatnym cieniem przy podstawie"
-        : "rzucające widoczny cień na płytę poniżej";
-      lines.push(
-        `- Logo (warstwa nad płytą bazową): regiony SVG ${colors}, zamontowane NA płycie bazowej jako uniesiony element przestrzenny, ${shadow}`
-      );
-    }
-  }
-  if (byRole.text.length > 0) {
-    const colors = [...new Set(byRole.text.map((e) => e.colorHex ?? "domyślny"))].join(", ");
-    if (hasLustro(byRole.text)) {
-      lines.push(
-        `- Tekst (warstwa wierzchnia): regiony SVG ${colors}, kształty liter wycięte z lustrzanego akrylu, zamontowane NA płycie bazowej — każdy kształt ma lustrzaną powierzchnię odbijającą otoczenie`
-      );
-    } else {
-      const shadow = hasReflectiveThin(byRole.text)
-        ? "z delikatnym cieniem przy podstawie liter"
-        : "rzucające wyraźne cienie na płytę poniżej — wyraźnie widoczna głębia liter";
-      lines.push(
-        `- Tekst (warstwa wierzchnia): regiony SVG ${colors}, litery jako OSOBNE uniesione elementy zamontowane NA płycie bazowej, ${shadow}`
-      );
-    }
-  }
-  if (byRole.cutout.length > 0) {
-    for (const el of byRole.cutout) {
-      const myColor = el.colorHex ?? "domyślny";
-      const backing = el.cutoutBackingId ? byNodeId.get(el.cutoutBackingId) : null;
-      const backingColor = backing?.colorHex ?? "warstwy poniżej";
-      lines.push(
-        `- Warstwa z wycięciami: region SVG ${myColor} to panel akrylowy nałożony NA inny panel akrylowy (${backingColor}) z FIZYCZNIE WYCIĘTYMI otworami. ` +
-        `Krawędzie cięcia są ostre (cięte laserem). Przez wycięcia widoczny jest dolny akryl w kolorze ${backingColor}. ` +
-        `Górna warstwa (${myColor}) ma własną grubość — wycięcia wyglądają jak okna z widoczną głębią ścianki bocznej, z lekkim cieniem rzucanym przez krawędzie cięcia na warstwę poniżej.`
-      );
-    }
-  }
-
-  if (lines.length === 0) return null;
-
-  const countedRoles = elements.filter((el) => el.role && el.role !== "distance");
-  const totalEls = countedRoles.length;
-  const uniqueColors = new Set(
-    countedRoles.map((el) => el.colorHex).filter((c): c is string => !!c)
-  );
-  const capNn = nn.charAt(0).toUpperCase() + nn.slice(1);
-  const header =
-    totalEls > 0
-      ? `${capNn} — struktura warstw (od dołu do góry, ${totalEls} ${plPlural(totalEls, "element", "elementy", "elementów")} w ${uniqueColors.size} ${plPlural(uniqueColors.size, "kolorze", "kolorach", "kolorach")}):`
-      : `${capNn} — struktura warstw (od dołu do góry):`;
-  return `${header}\n${lines.join("\n")}`;
+  if (parts.length === 0) return null;
+  return `Budowa ${productNoun}: ${parts.join(", ")}.`;
 }
 
 function describeMaterial(m: Material): string {
@@ -211,37 +162,47 @@ function describeMaterial(m: Material): string {
 }
 
 /**
- * Builds the material description for a single sign element.
- *
- * Cases (in priority order):
- *  - mirror: the dominant visual effect is environmental reflection; hex acts as tint only
- *  - glossy: hex IS the material color; AI adds specular highlights on top
- *  - everything else: hex is material color + surface description from material type
- *
- * Materials are always described by hex color + surface type (no reference photos).
+ * Opis wykończenia łbów dystansów na podstawie ich MATERIAŁU, nie koloru-placeholdera
+ * w SVG. Trzy rodzaje: złote i srebrne (chrom metaliczny, połysk) oraz czarne (mat).
+ * Barwa z `material.color_hex` (np. złota/srebrna/czarna), wykończenie z `material_type`
+ * (`matowa` → mat; `polysk`/`lustro`/null → polerowany metal).
  */
-function describeElementMaterial(
-  m: Material,
-  colorHex: string | null,
-  thicknessMm: number | null
-): string {
-  const color = colorHex ?? "domyślny";
-  const thicknessDesc = describeThickness(thicknessMm);
-  const thicknessSuffix = thicknessDesc ? `, ${thicknessDesc}` : "";
+function describeDistanceFinish(m: Material): string {
+  // Realne łby dystansów to SATYNOWY/szczotkowany metal (mosiądz/stal), nie chrom-lustro.
+  // matowa → mat (czarny); reszta (złoty/srebrny) → satynowy metal. Barwa z material.color_hex.
+  const tail = m.color_hex ? ` w odcieniu ${hexLabel(m.color_hex)}` : "";
+  if (m.material_type === "matowa") {
+    return `matowy metal${tail} — gładki, nielśniący`;
+  }
+  return `satynowy, szczotkowany metal${tail} — miękki, matowo-metaliczny połysk i subtelna szczotkowana faktura`;
+}
 
+/**
+ * Color-INDEPENDENT opis wykończenia elementu. Kolor (hex + nazwa) dokleja fragment
+ * MATERIALS, grupując elementy o tym samym wykończeniu (zamiast powtarzać akapit per kolor).
+ * Drobne elementy pierwszoplanowe (litery/logo/dekoracje/wycięcia) na lustrze/połysku →
+ * czyste, błyszczące litery, NIE pełne lustro odbijające pokój (to brudziło małe litery).
+ * Pełne lustro zostaje dla dużej płyty (`backplate`).
+ */
+function finishPhrase(m: Material, role?: SignElement["role"]): string {
+  const isForegroundDetail =
+    role === "text" || role === "logo" || role === "decoration" || role === "cutout";
+  if (isForegroundDetail && (m.material_type === "lustro" || m.material_type === "polysk")) {
+    return "wypukłe litery/kształty z lustrzanego, błyszczącego akrylu — lśniące lico łapiące światło, wyraźna głębia 3D, premium wykończenie";
+  }
   if (m.material_type === "lustro") {
-    const tintDesc = colorHex ? ` z jedynie delikatnym odcieniem ${color}` : "";
-    return `Region SVG ${color} → akryl o lustrzanym wykończeniu, jak czyste lustro${tintDesc}, wyraźnie odbijający otoczenie ze sceny — w ostrym ujęciu, z jasnymi smugami odbitego światła i refleksami o wysokim kontraście${thicknessSuffix}; kolor ${color} zabarwia odbicia jak filtr na czystym lustrze`;
+    return "akryl o wykończeniu lustrzanym — wyraźnie odbija otoczenie ze sceny, z jasnymi smugami i refleksami światła";
   }
-
   if (m.material_type === "polysk") {
-    return (
-      `Region SVG ${color} → akryl wysoko połyskowy w kolorze ${color} — szklista wypolerowana powierzchnia ` +
-      `z mokrym połyskiem i punktowymi refleksami oświetlenia sceny leżącymi na licu${thicknessSuffix}`
-    );
+    return "akryl wysokopołyskowy — szklista, wypolerowana powierzchnia z mokrym połyskiem i refleksami światła";
   }
-
-  return `Region SVG ${color} → ${describeMaterial(m)}, kolor ${color}${thicknessSuffix}`;
+  if (m.material_type === "matowa") {
+    return "akryl matowy — gładka, nielśniąca powierzchnia, rozproszone światło";
+  }
+  if (m.material_type === "mleczna") {
+    return "akryl mleczny/opalowy — półprzezroczysty, miękko rozpraszający światło";
+  }
+  return describeMaterial(m);
 }
 
 export function buildTimeOfDayPrompt(
@@ -391,16 +352,11 @@ export function assemblePromptFragments(
     if (visualInputs.hasSvg && visualInputs.hasBackground) {
       const sceneLabel = imgLabel(imgIdx);
       imgRefs.push(
-        `ZADANIE: fotorealistyczna wizualizacja ${gen} (mockup). ` +
-        `${sceneLabel} to PRAWDZIWE ZDJĘCIE lokalizacji z półprzezroczystą nakładką SVG pokazującą, gdzie ma znaleźć się ${nn}, jego kształt oraz kolor przypisany do każdego regionu.` +
+        `ZADANIE: edytuj ${sceneLabel}. To prawdziwe zdjęcie lokalizacji z półprzezroczystą nakładką SVG, która pokazuje położenie, kształt i kolory ${gen}. ` +
+        `Zastąp samą nakładkę fotorealistycznym, trójwymiarowym renderem ${gen}; resztę zdjęcia zachowaj identyczną — tło, otoczenie, oświetlenie i kąt kamery. ` +
+        `${capNn} ma wyglądać jak realnie sfotografowany obiekt w tej scenie, z oświetleniem i refleksami spójnymi z otoczeniem.` +
         `\n\n` +
-        `Wygeneruj obraz identyczny jak ${sceneLabel}, ale z nakładką SVG zastąpioną fotorealistycznym, trójwymiarowym renderem ${gen}. ` +
-        `Cała reszta fotografii pozostaje bez zmian — tło, otoczenie, oświetlenie, perspektywa i kąt kamery.` +
-        `\n\n` +
-        `${capNn} to TRÓJWYMIAROWY, fizyczny obiekt zamontowany na powierzchni: ma głębię, rzuca miękki cień kontaktowy oraz jest oświetlony i odbija światło otoczenia tak samo jak reszta sceny. ` +
-        `${capNn} musi zajmować DOKŁADNIE ten sam obszar co nakładka SVG w ${sceneLabel} — odwzoruj identyczną pozycję i proporcje nakładki, ale wyrenderuj go z perspektywą i kątem ściany widocznym w fotografii. ` +
-        `Wyrenderuj napisy i logo jako wyraźne, czyste, ostro zdefiniowane elementy o takiej samej ostrości, oświetleniu i fotograficznym realizmie jak tło — ma wyglądać jak naprawdę sfotografowany w tej scenie, a nie jak płaska grafika wklejona na zdjęcie. ` +
-        `Zachowaj pozycję, układ i kolor każdego regionu wiernie wobec nakładki SVG; zmienia się tylko jego wygląd — z płaskiego, kolorowego kształtu w prawdziwy, fotorealistyczny materiał.` +
+        `Nakładka SVG to płaski, FRONTALNY schemat (rzut prostopadły) — wyznacza tylko położenie, kształt, regiony i kolory ${gen}; NIE wyznacza jego finalnego kąta patrzenia. Ściana jest widziana pod kątem, więc ${nn} leży na płaszczyźnie tej ściany i jest skrócony perspektywicznie zgodnie ze zbiegiem ściany — jak prostokątna rama wisząca w tym miejscu: krawędź bliższa kamery dłuższa, dalsza krótsza, cztery rogi dopasowane do perspektywy (także przy subtelnym kącie).` +
         openaiEditClause
       );
       imgIdx++;
@@ -414,14 +370,34 @@ export function assemblePromptFragments(
       imgIdx++;
     } else if (visualInputs.hasBackground) {
       const sceneLabel = imgLabel(imgIdx);
-      imgRefs.push(
-        `ZADANIE: dodaj ${nn} do istniejącego zdjęcia. ` +
-        `${sceneLabel} to PRAWDZIWE ZDJĘCIE lokalizacji. ` +
-        `Cała reszta fotografii pozostaje bez zmian — tło, otoczenie, oświetlenie i perspektywa. ` +
-        `Dodaj na powierzchnię opisany poniżej ${nn} — z naturalnymi cieniami pasującymi do istniejącego oświetlenia i realistycznymi odbiciami światła otoczenia.` +
-        openaiEditClause
-      );
+      if (visualInputs.hasProducts) {
+        // Tło + produkt(y), BEZ szyldu (wizualizacja produktu na ladzie/półce).
+        // Samo „zachowaj zdjęcie"; właściwą robotę robi klauzula produktowa niżej.
+        imgRefs.push(
+          `ZADANIE: edycja zdjęcia. ${sceneLabel} to PRAWDZIWE ZDJĘCIE lokalizacji — ` +
+          `zachowaj je pixel-perfect: tło, otoczenie, oświetlenie i perspektywa bez zmian.` +
+          openaiEditClause
+        );
+      } else {
+        imgRefs.push(
+          `ZADANIE: dodaj ${nn} do istniejącego zdjęcia. ` +
+          `${sceneLabel} to PRAWDZIWE ZDJĘCIE lokalizacji. ` +
+          `Cała reszta fotografii pozostaje bez zmian — tło, otoczenie, oświetlenie i perspektywa. ` +
+          `Dodaj na powierzchnię opisany poniżej ${nn} — z naturalnymi cieniami pasującymi do istniejącego oświetlenia i realistycznymi odbiciami światła otoczenia.` +
+          openaiEditClause
+        );
+      }
       imgIdx++;
+    }
+
+    // Produkty wtapiane w scenę — są CZĘŚCIĄ Obrazu 1 (kompozyt), nie osobnym obrazem,
+    // więc nie zwiększają numeracji „Obraz N". Instrukcja, by model osadził je realistycznie.
+    if (visualInputs.hasProducts && (visualInputs.hasSvg || visualInputs.hasBackground)) {
+      imgRefs.push(
+        `Na scenie (Obraz 1) znajdują się dodatkowe PRZEDMIOTY/PRODUKTY postawione przez użytkownika (np. na ladzie, półce lub blacie). ` +
+        `Wtop każdy z nich fotorealistycznie tak, jakby fizycznie stał w tym miejscu: dodaj kontaktowy cień, miękkie odbicie na powierzchni pod spodem, oraz oświetlenie i perspektywę spójne z resztą sceny. ` +
+        `Zachowaj kształt, kolory, etykiety/napisy i proporcje tych przedmiotów dokładnie takie, jakie są, i naturalnie osadź je w otoczeniu.`
+      );
     }
 
     // Zdjęcia referencyjne — numerowane PO scenie (zgodnie z kolejnością wysyłki
@@ -460,49 +436,57 @@ export function assemblePromptFragments(
     const quoted = svgTexts.map((t) => `"${t}"`).join(", ");
     fragments.push({
       id: FRAGMENT_IDS.SVG_TEXTS,
-      text:
-        `Teksty na szyldzie (przepisz DOSŁOWNIE, znak po znaku): ${quoted}. ` +
-        `Zachowaj identyczną pisownię, wielkość liter, myślniki i znaki interpunkcyjne. ` +
-        `Użyj krojów pisma i wielkości liter zgodnych z projektem SVG.`,
+      text: `Tekst dokładnie taki: ${quoted} — zachowaj pisownię, wielkość liter i interpunkcję, kroje pisma jak w SVG.`,
     });
   }
 
   // Layer structure before materials — model must know WHAT it's building
   // (backplate → text → logo → standoffs) before learning WHAT it's made of.
-  const layerStructure = buildLayerStructure(config.elements, nn);
+  const layerStructure = buildLayerStructure(config.elements, gen);
   if (layerStructure) {
     fragments.push({ id: FRAGMENT_IDS.LAYERS, text: layerStructure });
   }
 
-  // Material descriptions — deduplicated by (colorHex + thicknessMm).
-  const seenKeys = new Set<string>();
-  const materialDescriptions: string[] = [];
+  // Materiały — grupowane po WYKOŃCZENIU (jeden opis na finisz, kolory zebrane w linii),
+  // zamiast powtarzać akapit per kolor. Dystanse pomijamy (osobny fragment DISTANCE) — ich
+  // kolor w SVG to placeholder roli montażowej, nie powierzchnia szyldu.
+  const byFinish = new Map<string, string[]>();
+  const seenColors = new Set<string>();
   for (const el of elementsWithMaterial) {
+    if (el.role === "distance" || el.hasDistances) continue;
     const colorKey = el.colorHex ?? "default";
-    const dedupKey = `${colorKey}|${el.thicknessMm ?? ""}`;
-    if (seenKeys.has(dedupKey)) continue;
-    seenKeys.add(dedupKey);
-    materialDescriptions.push(
-      describeElementMaterial(el.material!, el.colorHex, el.thicknessMm)
-    );
+    if (seenColors.has(colorKey)) continue;
+    seenColors.add(colorKey);
+    const phrase = finishPhrase(el.material!, el.role);
+    const arr = byFinish.get(phrase) ?? [];
+    arr.push(hexLabel(el.colorHex));
+    byFinish.set(phrase, arr);
   }
-  if (materialDescriptions.length > 0) {
+  if (byFinish.size > 0) {
+    const lines = [...byFinish.entries()].map(([phrase, labels]) => `${labels.join(", ")} → ${phrase}`);
     fragments.push({
       id: FRAGMENT_IDS.MATERIALS,
-      text:
-        `Materiały elementów ${gen} (każdy element rozpoznaj po jego kolorze hex w SVG): ` +
-        materialDescriptions.join("; ") + ".",
+      text: `Materiały (rozpoznaj element po jego kolorze hex z SVG): ${lines.join("; ")}.`,
     });
   }
 
-  const distanceEl = elementsWithMaterial.find((el) => el.hasDistances);
+  // Dystanse — całość opisu w jednym fragmencie: montaż (odsunięcie od ściany) + wykończenie
+  // łbów z MATERIAŁU (satynowy złoty/srebrny metal lub czarny mat). Barwa z material.color_hex.
+  const distanceEl =
+    elementsWithMaterial.find((el) => el.hasDistances) ??
+    elementsWithMaterial.find((el) => el.role === "distance");
   if (distanceEl?.material) {
     fragments.push({
       id: FRAGMENT_IDS.DISTANCE,
-      text: `${capNn} zamontowany na dystansach: ${describeMaterial(distanceEl.material)}.`,
+      text:
+        `${capNn} zamontowany na metalowych dystansach, odsunięty od ściany o ok. 20–30 mm. ` +
+        `Widoczne w narożnikach łby dystansów: ${describeDistanceFinish(distanceEl.material)}.`,
     });
   } else if (config.hasDistances) {
-    fragments.push({ id: FRAGMENT_IDS.DISTANCE, text: `${capNn} zamontowany na dystansach.` });
+    fragments.push({
+      id: FRAGMENT_IDS.DISTANCE,
+      text: `${capNn} zamontowany na metalowych dystansach, odsunięty od ściany o ok. 20–30 mm.`,
+    });
   }
 
   // LED — per-element flags take priority over global toggle.
@@ -522,7 +506,7 @@ export function assemblePromptFragments(
     fragments.push({
       id: FRAGMENT_IDS.LED_BACKLIT,
       text:
-        `Tylne podświetlenie LED aktywne tylko na elementach SVG w kolorach: ${hexes} (${ledSpec(config.led.backlit)}). Pozostałe elementy NIE są podświetlone od tyłu.`,
+        `Tylne podświetlenie LED obejmuje wyłącznie elementy SVG w kolorach: ${hexes} (${ledSpec(config.led.backlit)}) — świeci tylko za nimi.`,
     });
   } else if (!anyPerElementLed && config.led.backlit.enabled) {
     fragments.push({
@@ -536,7 +520,7 @@ export function assemblePromptFragments(
     fragments.push({
       id: FRAGMENT_IDS.LED_FRONTLIT,
       text:
-        `Przednie oświetlenie LED aktywne tylko na elementach SVG w kolorach: ${hexes} (${ledSpec(config.led.frontlit)}). Pozostałe elementy NIE są oświetlone od przodu.`,
+        `Przednie oświetlenie LED obejmuje wyłącznie elementy SVG w kolorach: ${hexes} (${ledSpec(config.led.frontlit)}) — oświetla od przodu tylko je.`,
     });
   } else if (!anyPerElementLed && config.led.frontlit.enabled) {
     fragments.push({

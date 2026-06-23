@@ -140,7 +140,13 @@ export function useGeneration() {
       // zamiast "czysty SVG bez tła".
       const visualInputs: VisualInputs = {
         hasBackground: !!backgroundDataUrl,
-        hasSvg: !!svgImageInput,
+        // hasSvg = jest faktyczna GEOMETRIA szyldu (nie tylko produkt). Kompozyt i tak
+        // leci jako svg_image gdy svgContent istnieje, ale prompt musi rozróżnić scenę
+        // „szyld na zdjęciu" od „sam produkt na zdjęciu" (inne ZADANIE).
+        hasSvg: /<(path|rect|circle|ellipse|polygon|polyline|line|text)[\s>]/i.test(svgContent ?? ""),
+        // Produkty są osadzone w svgContent jako <image> (tło trzymane osobno jako plik),
+        // więc obecność <image> w svgContent oznacza produkt(y) do wtopienia w scenę.
+        hasProducts: /<image[\s>]/i.test(svgContent ?? ""),
         referenceImageCount: referenceImageInputs.length,
         referenceDescriptions: referenceImages.map((img) => img.description ?? ""),
         svgTexts: extractSvgTexts(svgContent),

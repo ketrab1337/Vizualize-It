@@ -93,7 +93,7 @@ function ProjectCard({ project, thumbnail, onOpen, onDelete, onRename }: Project
       onClick={() => !editing && onOpen(project.id)}
     >
       {/* Nazwa u góry */}
-      <div className="px-3 pt-2.5 pb-2 flex items-center gap-1.5 min-w-0">
+      <div className="px-4 pt-3.5 pb-3 flex items-center gap-2 min-w-0">
         {editing ? (
           <>
             <input
@@ -102,45 +102,45 @@ function ProjectCard({ project, thumbnail, onOpen, onDelete, onRename }: Project
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleKeyDown}
               onClick={(e) => e.stopPropagation()}
-              className="flex-1 min-w-0 bg-transparent border-b border-blue-500 text-white text-sm font-medium focus:outline-none py-0.5"
+              className="flex-1 min-w-0 bg-transparent border-b border-blue-500 text-white text-base font-medium focus:outline-none py-0.5"
             />
             <button
               onClick={commitEdit}
               title="Zapisz"
-              className="shrink-0 p-1 rounded text-green-400 hover:bg-green-900/30 transition-colors"
+              className="shrink-0 p-1.5 rounded text-green-400 hover:bg-green-900/30 transition-colors"
             >
-              <Check className="w-3.5 h-3.5" />
+              <Check className="w-4 h-4" />
             </button>
             <button
               onClick={cancelEdit}
               title="Anuluj"
-              className="shrink-0 p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+              className="shrink-0 p-1.5 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="w-4 h-4" />
             </button>
           </>
         ) : (
           <>
-            <span className="text-white text-sm font-medium truncate flex-1">
+            <span className="text-white text-base font-medium truncate flex-1">
               {project.name}
             </span>
             <button
               onClick={startEdit}
               title="Zmień nazwę"
-              className={`shrink-0 p-1 rounded transition-colors ${
+              className={`shrink-0 p-1.5 rounded transition-colors ${
                 hovered
                   ? "text-gray-400 hover:text-gray-200 hover:bg-gray-800"
                   : "text-gray-700"
               }`}
             >
-              <Pencil className="w-3.5 h-3.5" />
+              <Pencil className="w-4 h-4" />
             </button>
           </>
         )}
       </div>
 
       {/* Podgląd */}
-      <div className="h-32 mx-3 rounded-lg overflow-hidden">
+      <div className="h-48 mx-4 rounded-lg overflow-hidden">
         {thumbnail ? (
           <img
             src={thumbnail}
@@ -154,7 +154,7 @@ function ProjectCard({ project, thumbnail, onOpen, onDelete, onRename }: Project
             style={{ background: `linear-gradient(135deg, ${from} 0%, ${to} 100%)` }}
           >
             <span
-              className="text-6xl font-black select-none"
+              className="text-8xl font-black select-none"
               style={{ color: from, filter: "brightness(2) opacity(0.4)" }}
             >
               {project.name.charAt(0).toUpperCase()}
@@ -164,8 +164,8 @@ function ProjectCard({ project, thumbnail, onOpen, onDelete, onRename }: Project
       </div>
 
       {/* Data i kosz */}
-      <div className="px-3 py-2.5 flex items-center justify-between gap-2">
-        <span className="text-gray-500 text-xs">{formatDate(project.updated_at)}</span>
+      <div className="px-4 py-3.5 flex items-center justify-between gap-2">
+        <span className="text-gray-500 text-sm">{formatDate(project.updated_at)}</span>
         {hovered && !editing ? (
           <button
             onClick={(e) => {
@@ -174,10 +174,10 @@ function ProjectCard({ project, thumbnail, onOpen, onDelete, onRename }: Project
             }}
             className="p-1.5 rounded-md text-gray-600 hover:text-red-400 hover:bg-red-950/30 transition-colors shrink-0"
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Trash2 className="w-4 h-4" />
           </button>
         ) : (
-          <div className="w-[28px] h-[28px]" />
+          <div className="w-[30px] h-[30px]" />
         )}
       </div>
     </div>
@@ -301,7 +301,7 @@ export function ProjectsGrid({ onNewProject }: ProjectsGridProps) {
             </button>
           </div>
         ) : (
-          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+          <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))" }}>
             {projects.map((project) => (
               <ProjectCard
                 key={project.id}

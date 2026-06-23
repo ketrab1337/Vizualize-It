@@ -36,19 +36,23 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
   const boundsPerElement = useEditorStore((s) => s.boundsPerElement);
   const parentMap = useEditorStore((s) => s.parentMap);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  const productIds = useEditorStore((s) => s.productIds);
   const addToast = useToastStore((s) => s.addToast);
 
   // Lista nestowalnych elementów = top-level (nie mają wpisu w parentMap)
   // Wyklucz też elementy o znikomej powierzchni (linie pomocnicze, puste path-e)
+  // oraz produkty (rastry) — to zdjęcia do wizualizacji, nie elementy do cięcia.
   const elements = useMemo<NestableElement[]>(() => {
+    const products = new Set(productIds);
     const out: NestableElement[] = [];
     for (const [nodeId, b] of Object.entries(boundsPerElement)) {
       if (parentMap[nodeId]) continue; // dziecko grupy — pomijamy
+      if (products.has(nodeId)) continue; // produkt — nie nestujemy
       if (b.widthMm < 0.5 || b.heightMm < 0.5) continue; // za małe
       out.push({ nodeId, label: nodeId, widthMm: b.widthMm, heightMm: b.heightMm });
     }
     return out.sort((a, b) => a.label.localeCompare(b.label));
-  }, [boundsPerElement, parentMap]);
+  }, [boundsPerElement, parentMap, productIds]);
 
   const [plateW, setPlateW] = useState("0");
   const [plateH, setPlateH] = useState("0");
@@ -80,6 +84,26 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
     const valid = selectedElementIds.filter((id) => elements.some((e) => e.nodeId === id));
     if (valid.length > 0) setSelectedIds(new Set(valid));
   }, [selectedElementIds, initialized, elements]);
+
+  // Reconcile zaznaczenie z aktualną listą elementów. Po strukturalnych zmianach
+  // (np. „Wykryj otwory" scala kontury → znikają osobne otwory) panel trzymał stare ID,
+  // więc licznik „X/Y" i zaznaczenia nie odświeżały się od razu (merge czyści selekcję
+  // canvasa, więc live-sync wyżej się wykręca). Tylko PRZYCINAMY nieistniejące ID —
+  // nie dodajemy nowych, by nie nadpisywać ręcznych odznaczeń przy zwykłych zmianach
+  // (przesunięcie elementu też zmienia `elements`).
+  useEffect(() => {
+    if (!initialized) return;
+    setSelectedIds((prev) => {
+      const ids = new Set(elements.map((e) => e.nodeId));
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (ids.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [elements, initialized]);
 
   function toggleElement(nodeId: string) {
     setSelectedIds((prev) => {

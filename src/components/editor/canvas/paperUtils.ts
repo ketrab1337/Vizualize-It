@@ -32,10 +32,17 @@ export function exportSvgLayer(layer: paper.Layer, mmPerUnit: number): string {
   // Kopiowanie viewBox z oryginału powodowałoby, że importSVG przelicza współrzędne
   // przez viewBox → elementy zmieniają pozycję przy undo/redo.
   // data-mm-per-unit zachowuje przelicznik mm — niezbędny przy wczytywaniu z bazy.
-  const layerEl = layer.exportSVG({ asString: false }) as SVGElement;
+  // embedImages:false → dla rasterów (produktów) Paper.js użyje oryginalnego src
+  // (nasz data URL WebP) zamiast re-enkodować do PNG. Bez tego produkt puchnie w
+  // historii/bazie (PNG ~3–5× cięższy niż WebP), a jakość i tak bez zmian.
+  const layerEl = layer.exportSVG({ asString: false, embedImages: false }) as SVGElement;
 
   const svgEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svgEl.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  // Produkty (paper.Raster) eksportują się jako <image> z atrybutem xlink:href. Deklaracja
+  // namespace na korzeniu gwarantuje, że href przetrwa round-tripy DOMParser/XMLSerializer
+  // (saveEditorState → updateSvgWithOverrides → reimport). Bez tego href bywał gubiony.
+  svgEl.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
   svgEl.setAttribute("data-mm-per-unit", String(mmPerUnit));
 
   // layerEl jest <g> — przenosimy dzieci bezpośrednio do <svg>
@@ -102,21 +109,56 @@ export function findItemByName(item: paper.Item, name: string): paper.Item | nul
   return null;
 }
 
+/** Zdejmuje obrys (stroke) z elementu — wspólne dla importu i nadawania materiału. */
+function clearStroke(item: paper.Item): void {
+  item.strokeColor = null;
+  item.strokeWidth = 0;
+}
+
+/**
+ * Usuwa obrys z elementów, które mają REALNE wypełnienie.
+ *
+ * Reguła: element z wypełnieniem (materiał/kolor plexy) to lico szyldu — jego obrys
+ * z programu wektorowego jest dekoracją i NIE może trafić do podglądu ani do kompozytu
+ * wysyłanego do AI (model renderował niebieski/czarny obrys jako realny kant na szyldzie).
+ *
+ * Ścieżki BEZ wypełnienia (fill=none) zostają NIETKNIĘTE — tam obrys NIESIE kształt
+ * (typowe linie cięcia z softu laserowego, np. xTool). Idempotentne — bezpieczne przy
+ * ponownym imporcie.
+ */
+export function stripStrokeIfFilled(item: paper.Item): void {
+  if (item instanceof paper.CompoundPath) {
+    if (item.fillColor) clearStroke(item);
+    return;
+  }
+  const g = item as paper.Group;
+  if (g.children) {
+    g.children.forEach((c) => stripStrokeIfFilled(c as paper.Item));
+    return;
+  }
+  if (item.fillColor) clearStroke(item);
+}
+
 function applyFill(item: paper.Item, fill: string): void {
+  const real = !!fill && fill !== "none";
   // CompoundPath (litery z otworami, logo z wycięciami itp.) ma .children (subpaths),
   // ale fill ustawia się BEZPOŚREDNIO na nim — nie na subpathach. Subpaths nie mają
   // własnych fills i Paper.js ignoruje fillColor ustawiony na poszczególnych subpathach.
   if (item instanceof paper.CompoundPath) {
-    try { item.fillColor = fill && fill !== "none" ? new paper.Color(fill) : null; }
-    catch { /* nieprawidłowy kolor */ }
+    try {
+      item.fillColor = real ? new paper.Color(fill) : null;
+      if (real) clearStroke(item); // element z wypełnieniem nie nosi obrysu (patrz stripStrokeIfFilled)
+    } catch { /* nieprawidłowy kolor */ }
     return;
   }
   const g = item as paper.Group;
   if (g.children) {
     g.children.forEach((c) => applyFill(c, fill));
   } else {
-    try { item.fillColor = fill && fill !== "none" ? new paper.Color(fill) : null; }
-    catch { /* nieprawidłowy kolor */ }
+    try {
+      item.fillColor = real ? new paper.Color(fill) : null;
+      if (real) clearStroke(item);
+    } catch { /* nieprawidłowy kolor */ }
   }
 }
 

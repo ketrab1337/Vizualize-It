@@ -22,7 +22,7 @@ import { RULER_SIZE, RULER_BG, RULER_BORDER, drawHRuler, drawVRuler } from "./ca
 import {
   CANVAS_SIZE_MM, BG_COLOR,
   fitViewToPage, drawPageBackground, exportSvgLayer, withPhysicalSizeMm,
-  assignMissingNames, findItemByName, applyFillByName,
+  assignMissingNames, findItemByName, applyFillByName, stripStrokeIfFilled,
   getItemType, getDefaultName, calcTotalLength, calcTotalArea,
   parseSvgDimension, toMm,
 } from "./canvas/paperUtils";
@@ -102,6 +102,51 @@ interface BackgroundImportResult { path: string; mime: string; }
 async function backgroundToBlobUrl(path: string, mime: string): Promise<string> {
   const bytes = await readFile(path);
   return URL.createObjectURL(new Blob([bytes], { type: mime }));
+}
+
+/** Maks. dłuższy bok produktu (px). Powyżej sufitu kompozytu do AI (≈2× viewport),
+ *  więc wizualnie bez różnicy, a chroni pamięć i historię przed wielkimi zdjęciami. */
+const PRODUCT_MAX_PX = 2560;
+
+/**
+ * Wczytuje plik zdjęcia produktu, skaluje do PRODUCT_MAX_PX na dłuższym boku (tylko gdy
+ * większy) i re-enkoduje do WebP q0.92 — zachowuje alfę, ostry, lekki. Zwraca data URL
+ * osadzany w SVG projektu jako paper.Raster (eksport z embedImages:false reużywa ten src).
+ */
+async function fileToProductDataUrl(bytes: Uint8Array, mime: string): Promise<string> {
+  // Kopia do świeżego Uint8Array<ArrayBuffer> — param Uint8Array (ArrayBufferLike) nie jest
+  // przypisywalny do BlobPart w TS 5.7 (mógłby być SharedArrayBuffer).
+  const srcUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime }));
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error("nie udało się wczytać obrazu"));
+      im.src = srcUrl;
+    });
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    if (!iw || !ih) throw new Error("pusty obraz");
+    const longEdge = Math.max(iw, ih);
+    const scale = longEdge > PRODUCT_MAX_PX ? PRODUCT_MAX_PX / longEdge : 1;
+    const w = Math.round(iw * scale), h = Math.round(ih * scale);
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const ctx = c.getContext("2d");
+    if (!ctx) throw new Error("brak kontekstu canvas");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, w, h);
+    return c.toDataURL("image/webp", 0.92);
+  } finally {
+    URL.revokeObjectURL(srcUrl);
+  }
+}
+
+/** Usuwa wszystkie <image> (produkty) z SVG — do eksportu pliku cięcia na laser/CAD. */
+function stripSvgImages(svgString: string): string {
+  const doc = new DOMParser().parseFromString(svgString, "image/svg+xml");
+  doc.querySelectorAll("image").forEach((el) => el.remove());
+  return new XMLSerializer().serializeToString(doc.documentElement);
 }
 
 function mapDeepLayerItems(
@@ -212,6 +257,7 @@ export function Canvas({ project }: CanvasProps) {
   panModeRef.current = panMode;
   const [isImportingSvg, setIsImportingSvg] = useState(false);
   const [isImportingBg, setIsImportingBg] = useState(false);
+  const [isAddingProduct, setIsAddingProduct] = useState(false);
   const [isSavingBgToLibrary, setIsSavingBgToLibrary] = useState(false);
   const [showBgPicker, setShowBgPicker] = useState(false);
   const [isDragOver, setIsDragOver] = useState<DragOverKind | null>(null);
@@ -448,6 +494,19 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
     const newItems = [...(layer.children as paper.Item[])].reverse().map((item, idx) => buildItem(item, idx));
     setLayerItems(newItems);
+
+    // Zbierz nazwy produktów (paper.Raster) — wykluczane z wyceny/nestingu; ElementPanel
+    // pokazuje dla nich panel produktu. Źródło prawdy = typ obiektu (Raster), nie data-*.
+    const products: string[] = [];
+    const collectProducts = (items: paper.Item[]) => {
+      items.forEach((it) => {
+        if (it instanceof paper.Raster) { if (it.name) products.push(it.name); return; }
+        const g = it as paper.Group;
+        if (g.children) collectProducts(g.children as paper.Item[]);
+      });
+    };
+    collectProducts(layer.children as paper.Item[]);
+    useEditorStore.getState().setProductIds(products);
   }, []);
 
   const onAfterPaste = useCallback((items: paper.Item[]) => {
@@ -1621,6 +1680,11 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     rootKids.forEach((kid) => svgLayer.addChild(kid));
     rootGroup.remove();
 
+    // Element z wypełnieniem nie nosi obrysu — zdejmij stroke z nowo zaimportowanych
+    // elementów, które mają fill. Linie cięcia (fill=none) zostają nietknięte. Bez tego
+    // niebieski/czarny obrys z programu wektorowego trafiał do podglądu i do kompozytu AI.
+    rootKids.forEach((kid) => stripStrokeIfFilled(kid));
+
     // Wycentruj tylko przy imporcie świeżego pliku zewnętrznego.
     // Nasze zapisane SVG mają data-mm-per-unit → pozycje są już poprawne, nie ruszaj.
     // Zewnętrzne SVG mogą mieć dowolne jednostki (mm, px, pt…) — zawsze centruj na stronie.
@@ -1889,9 +1953,23 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     if (!content) return;
     const updated = updateSvgWithOverrides(content, nodeOverridesRef.current);
 
+    // Produkty (rastry) to wizualizacja, nie geometria cięcia — usuń je z pliku eksportu.
+    const cutOnly = stripSvgImages(updated);
+
+    // Obwiednia tylko geometrii cięcia (z pominięciem rastrów), żeby viewBox/wymiary
+    // pliku nie obejmowały produktu stojącego obok szyldu.
+    const layer = svgLayerRef.current;
+    let cutBounds: paper.Rectangle | null = null;
+    if (layer) {
+      (layer.children as paper.Item[]).forEach((c) => {
+        if (c instanceof paper.Raster) return;
+        cutBounds = cutBounds ? cutBounds.unite(c.bounds) : c.bounds.clone();
+      });
+    }
+
     // Doklej fizyczne wymiary (mm) — bez nich zewnętrzne programy czytają współrzędne
     // jako piksele (96 DPI) i obiekty są ~3.78× za małe. Współrzędne warstwy są w mm.
-    const sized = withPhysicalSizeMm(updated, svgLayerRef.current?.bounds ?? null);
+    const sized = withPhysicalSizeMm(cutOnly, cutBounds ?? layer?.bounds ?? null);
 
     const filePath = await save({
       title: "Zapisz plik SVG",
@@ -2083,6 +2161,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       });
       rootGroup.remove();
 
+      // Zdejmij obrys z nowych elementów, które mają wypełnienie (fill=none nietknięte).
+      newKids.forEach((kid) => stripStrokeIfFilled(kid));
+
       // Przesuń nowe elementy na środek strony (7500/2, 7500/2)
       if (newKids.length > 0) {
         const allBounds = newKids.map((k) => k.bounds);
@@ -2164,6 +2245,55 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   }, [project.slug, setBackground, addToast]);
 
   const handleRemoveBackground = useCallback(() => clearBackground(), [clearBackground]);
+
+  // ── Dodaj produkt (zdjęcie wtapiane w scenę przez AI) ───────────────────────
+  // Produkt to paper.Raster w warstwie "svg": dzięki temu od razu ma zaznaczanie,
+  // przesuwanie/skalę, undo/redo, zapis (osadzony w svgContent) i trafia do kompozytu
+  // captureCanvas. Materiał/wycena/nesting/eksport-cięcia rozpoznają go po typie (Raster)
+  // i pomijają. Numeracja "Obraz N" w prompcie się nie zmienia — produkt jest w Obrazie 1.
+  const handleAddProduct = useCallback(async () => {
+    const filePath = await open({
+      multiple: false,
+      filters: [{ name: "Obrazy", extensions: ["png", "jpg", "jpeg", "webp"] }],
+    });
+    if (!filePath || typeof filePath !== "string") return;
+    setIsAddingProduct(true);
+    try {
+      const bytes = await readFile(filePath);
+      const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+      const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+      const dataUrl = await fileToProductDataUrl(bytes, mime);
+
+      const svgLayer = svgLayerRef.current;
+      if (!svgLayer) return;
+      svgLayer.activate();
+      const name = `produkt_${Date.now().toString(36)}`;
+      const raster = new paper.Raster({ source: dataUrl });
+      raster.name = name;
+      raster.onLoad = () => {
+        // Domyślny rozmiar na płycie: dłuższy bok ≈ 2500 mm (czytelny, ~1/3 obszaru 7500 mm).
+        const longEdgePx = Math.max(raster.width, raster.height);
+        if (longEdgePx > 0) raster.scale(2500 / longEdgePx);
+        raster.position = new paper.Point(CANVAS_SIZE_MM / 2, CANVAS_SIZE_MM / 2);
+        setHasSvg(true);
+        clearSelection();
+        addToSelection(raster);
+        rebuildLayerItems();
+        // Zapis BEZPOŚREDNI (nie pushHistory): gdy projekt nie ma jeszcze szyldu (sam produkt
+        // na tle), svgContentRef.current jest null i pushHistory wykręca się na guardzie
+        // `if (!content) return` — produkt nigdy nie trafiał do svgContent i znikał po
+        // ponownym otwarciu. pushHistoryDirect zapisuje gotowy SVG bez tego warunku.
+        const exported = exportSvgLayer(svgLayer, mmPerUnitRef.current);
+        const withOverrides = updateSvgWithOverrides(exported, useEditorStore.getState().nodeOverrides);
+        pushHistoryDirect(withOverrides);
+        paper.view.update();
+      };
+    } catch (e) {
+      addToast(`Błąd dodawania produktu: ${e}`, "error");
+    } finally {
+      setIsAddingProduct(false);
+    }
+  }, [clearSelection, addToSelection, rebuildLayerItems, pushHistoryDirect, addToast]);
 
   // Wybór tła z globalnej biblioteki → kopiuje plik do assets projektu (jak import_background),
   // dzięki czemu usunięcie tła z biblioteki nie zepsuje projektu (ma własną kopię).
@@ -2352,6 +2482,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         isImportingSvg={isImportingSvg}
         isImportingBg={isImportingBg}
         isSavingBgToLibrary={isSavingBgToLibrary}
+        isAddingProduct={isAddingProduct}
         backgroundDataUrl={backgroundDataUrl}
         backgroundFilename={bgFilename}
         isNestingOpen={isNestingPanelOpen}
@@ -2362,6 +2493,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         onPickBackgroundFromLibrary={() => setShowBgPicker(true)}
         onSaveBackgroundToLibrary={handleSaveBackgroundToLibrary}
         onRemoveBackground={handleRemoveBackground}
+        onAddProduct={handleAddProduct}
         onToggleNesting={() => setIsNestingPanelOpen((v) => !v)}
       />
 

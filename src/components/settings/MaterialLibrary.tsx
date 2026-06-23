@@ -41,6 +41,22 @@ const TYPE_LABELS: Record<string, string> = {
   lustro: "Lustro",
 };
 
+/**
+ * Dedykowane warianty wykończenia dystansów (standoffów). Złoty i srebrny to chrom
+ * metaliczny (`polysk`), czarny to mat (`matowa`). Wybór ustawia od razu color_hex
+ * + material_type — to z nich `describeDistanceFinish` (promptAssembler) buduje opis.
+ */
+const DISTANCE_FINISHES: {
+  id: string;
+  label: string;
+  color_hex: string;
+  material_type: "polysk" | "matowa";
+}[] = [
+  { id: "zloty", label: "Złoty", color_hex: "#D4AF37", material_type: "polysk" }, // satynowy mosiądz
+  { id: "srebrny", label: "Srebrny", color_hex: "#C0C0C0", material_type: "polysk" }, // satynowa stal
+  { id: "czarny", label: "Czarny", color_hex: "#1A1A1A", material_type: "matowa" }, // matowy
+];
+
 // ── MaterialCard ──────────────────────────────────────────────────────────────
 
 interface MaterialCardProps {
@@ -380,6 +396,9 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  const selectedCatIsDistance =
+    categories.find((c) => c.slug === form.category)?.is_distance === 1;
+
   async function handleSave() {
     if (!form.name.trim()) {
       addToast("Podaj nazwę materiału", "error");
@@ -389,10 +408,13 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
     try {
       const basePrice = form.base_price !== "" ? parseFloat(form.base_price) : null;
       const pricingUnit = form.pricing_unit === "none" ? null : form.pricing_unit;
+      const catAllowsSurface =
+        form.category === "plexa" ||
+        categories.find((c) => c.slug === form.category)?.is_distance === 1;
       const input: MaterialInput = {
         name: form.name.trim(),
         category: form.category,
-        material_type: form.category === "plexa" ? form.material_type : null,
+        material_type: catAllowsSurface ? form.material_type : null,
         color_hex: form.color_hex || null,
         pricing_unit: pricingUnit,
         base_price: pricingUnit != null && basePrice != null && isFinite(basePrice) ? basePrice : null,
@@ -464,8 +486,16 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
               onChange={(e) => {
                 const cat = e.target.value;
                 setField("category", cat);
-                if (cat !== "plexa") setField("material_type", null);
-                else setField("material_type", "matowa");
+                const catIsDistance = categories.find((c) => c.slug === cat)?.is_distance === 1;
+                if (cat === "plexa") {
+                  setField("material_type", "matowa");
+                } else if (catIsDistance) {
+                  // domyślny dystans: srebrna satyna
+                  setField("material_type", "polysk");
+                  setField("color_hex", "#C0C0C0");
+                } else {
+                  setField("material_type", null);
+                }
               }}
               className="w-full bg-[#161616] border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
             >
@@ -475,7 +505,7 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
             </select>
           </div>
 
-          {/* Typ powierzchni — tylko dla plexa */}
+          {/* Typ powierzchni — tylko dla plexa (dystanse mają osobny wybór niżej) */}
           {form.category === "plexa" && (
             <div>
               <label className="block text-gray-400 text-xs mb-1.5">Typ powierzchni</label>
@@ -492,7 +522,43 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
             </div>
           )}
 
-          {/* Kolor */}
+          {/* Rodzaj dystansu — dedykowany wybór koloru + wykończenia dla kategorii dystansów */}
+          {selectedCatIsDistance && (
+            <div>
+              <label className="block text-gray-400 text-xs mb-1.5">Rodzaj dystansu</label>
+              <div className="grid grid-cols-3 gap-2">
+                {DISTANCE_FINISHES.map((f) => {
+                  const active = form.color_hex.toLowerCase() === f.color_hex.toLowerCase();
+                  return (
+                    <button
+                      key={f.id}
+                      onClick={() => {
+                        setField("color_hex", f.color_hex);
+                        setField("material_type", f.material_type);
+                      }}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-md border text-sm transition-colors ${
+                        active
+                          ? "border-blue-500 bg-blue-900/20 text-gray-100"
+                          : "border-gray-700 bg-[#161616] text-gray-300 hover:border-gray-500"
+                      }`}
+                    >
+                      <span
+                        className="w-4 h-4 rounded-full border border-gray-600 shrink-0"
+                        style={{ backgroundColor: f.color_hex }}
+                      />
+                      {f.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-gray-600 text-[11px] mt-1.5">
+                Złoty i srebrny — satynowy metal (mosiądz / stal). Czarny — matowy.
+              </p>
+            </div>
+          )}
+
+          {/* Kolor — ukryty dla dystansów (kolor ustawia wybór „Rodzaj dystansu") */}
+          {!selectedCatIsDistance && (
           <div>
             <label className="block text-gray-400 text-xs mb-1.5">Kolor</label>
             <ColorPicker
@@ -500,6 +566,7 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
               onChange={(hex) => setField("color_hex", hex)}
             />
           </div>
+          )}
 
           {/* ── Wycena ─────────────────────────────────────────────── */}
           <div className="border-t border-gray-800 pt-4 space-y-3">

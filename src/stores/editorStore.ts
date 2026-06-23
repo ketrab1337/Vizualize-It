@@ -49,6 +49,10 @@ interface EditorStore {
   removeFromParentMap: (childId: string) => void;
   selectedElementIds: string[];
   setSelectedElementIds: (ids: string[]) => void;
+  /** Nazwy elementów będących PRODUKTAMI (paper.Raster) — wykluczane z wyceny/nestingu;
+   *  ElementPanel pokazuje dla nich panel produktu zamiast doboru materiału. */
+  productIds: string[];
+  setProductIds: (ids: string[]) => void;
   setActiveTab: (tab: ProjectTab) => void;
   setSvgContent: (content: string | null) => void;
   setBackground: (dataUrl: string, path: string) => void;
@@ -75,6 +79,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
   ledConfig: { ...LED_CONFIG_DEFAULT },
   selectedElementIds: [],
   setSelectedElementIds: (ids) => set({ selectedElementIds: ids }),
+  productIds: [],
+  setProductIds: (ids) => set({ productIds: ids }),
   setElements: (elements) => set({ elements }),
   setSelectedElement: (id) => set({ selectedElementId: id }),
   setSelectedItemBounds: (bounds) => set({ selectedItemBounds: bounds }),
@@ -151,6 +157,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       boundsPerElement: {},
       parentMap: {},
       selectedElementIds: [],
+      productIds: [],
       svgContent: null,
       backgroundDataUrl: null,
       backgroundPath: null,

@@ -246,8 +246,11 @@ export function mergeLetterHoles(topLevel: paper.Item[]): MergeHolesResult {
     const cp = new paper.CompoundPath({ insert: false });
     moveContoursInto(cp, outer); // kontur zewnętrzny
     for (const h of holes) {
+      const holeName = h.name; // PRZED moveContoursInto — ono czyści name (clearName),
+                               // więc odczyt po przeniesieniu zawsze dawał null i removedNames
+                               // zostawało puste → otwory nie znikały z nestingu do reloadu.
       moveContoursInto(cp, h); // otwory
-      if (h.name) result.removedNames.push(h.name);
+      if (holeName) result.removedNames.push(holeName);
       result.holesConsumed++;
     }
 

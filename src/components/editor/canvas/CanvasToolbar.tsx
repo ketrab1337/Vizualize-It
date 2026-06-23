@@ -1,10 +1,11 @@
-import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Library, Save, Donut } from "lucide-react";
+import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Library, Save, Donut, Package } from "lucide-react";
 
 interface CanvasToolbarProps {
   hasSvg: boolean;
   isImportingSvg: boolean;
   isImportingBg: boolean;
   isSavingBgToLibrary: boolean;
+  isAddingProduct: boolean;
   backgroundDataUrl: string | null;
   backgroundFilename: string;
   isNestingOpen: boolean;
@@ -15,15 +16,16 @@ interface CanvasToolbarProps {
   onPickBackgroundFromLibrary: () => void;
   onSaveBackgroundToLibrary: () => void;
   onRemoveBackground: () => void;
+  onAddProduct: () => void;
   onToggleNesting: () => void;
 }
 
 export function CanvasToolbar({
-  hasSvg, isImportingSvg, isImportingBg, isSavingBgToLibrary,
+  hasSvg, isImportingSvg, isImportingBg, isSavingBgToLibrary, isAddingProduct,
   backgroundDataUrl, backgroundFilename,
   isNestingOpen,
   onImportSvg, onExportSvg, onMergeHoles, onImportBackground, onPickBackgroundFromLibrary,
-  onSaveBackgroundToLibrary, onRemoveBackground,
+  onSaveBackgroundToLibrary, onRemoveBackground, onAddProduct,
   onToggleNesting,
 }: CanvasToolbarProps) {
   return (
@@ -91,6 +93,17 @@ export function CanvasToolbar({
           </button>
         </div>
       )}
+
+      <div className="h-5 w-px bg-gray-800 mx-1" />
+      <button
+        onClick={onAddProduct}
+        disabled={isAddingProduct}
+        title="Dodaj zdjęcie produktu na scenę (PNG/JPG). Ustaw je na ladzie/półce — AI wtopi je w wizualizację."
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border border-gray-700 hover:border-gray-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        {isAddingProduct ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
+        Dodaj produkt
+      </button>
 
       {hasSvg && (
         <>
