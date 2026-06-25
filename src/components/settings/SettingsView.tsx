@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { MaterialLibrary } from "./MaterialLibrary";
 import { BackgroundLibrary } from "./BackgroundLibrary";
 import { ApiKeys } from "./ApiKeys";
@@ -19,6 +20,11 @@ const TABS: { id: SettingsTab; label: string }[] = [
 
 export function SettingsView() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("materialy");
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    getVersion().then(setVersion);
+  }, []);
 
   return (
     <main className="flex-1 flex bg-[#0f0f0f] overflow-hidden">
@@ -41,6 +47,11 @@ export function SettingsView() {
             </li>
           ))}
         </ul>
+        {version && (
+          <p className="mt-auto px-3 pt-4 text-xs text-gray-600 select-none">
+            Wersja {version}
+          </p>
+        )}
       </nav>
 
       {/* Zawartość zakładki */}
