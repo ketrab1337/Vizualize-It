@@ -7,16 +7,26 @@ export function pushCanvasHistory(): void { pushHistoryRef.current?.(); }
 export const resizeElementFnRef: { current: ((widthMm: number, heightMm: number) => void) | null } = { current: null };
 export function resizeSelectedElement(widthMm: number, heightMm: number): void { resizeElementFnRef.current?.(widthMm, heightMm); }
 
-/** Wynik kompozycji canvasu dla AI: czysty PNG base64 (tło + SVG bez etykiet). */
+/**
+ * Wynik kompozycji canvasu dla AI, z którego `useGeneration` wybiera zależnie od sceny:
+ *
+ * - **szyld/produkty na realnym tle**: `compositePngBase64` — nakładka SVG wtopiona w zdjęcie
+ *   (Obraz 1). Rozmiar i proporcje niesie sama nakładka (pixel-perfect); prompt każe wyrenderować
+ *   ją w perspektywie ściany (sprawdzona formuła 22.06 — bez footprintu, który sam kotwiczył frontalnie).
+ * - **sam projekt** (bez tła): `designPngBase64`.
+ * - **samo tło** (bez geometrii szyldu): `scenePngBase64`.
+ */
 export interface CanvasCapture {
-  /** Kompozyt PNG (tło + SVG) jako base64 bez prefixu data URL. */
-  pngBase64: string;
+  /** Czysty render projektu SVG na neutralnym jasnoszarym tle. Null gdy brak geometrii SVG. */
+  designPngBase64: string | null;
+  /** Samo zdjęcie ściany (object-fit cover viewportu) — używane gdy NIE ma geometrii szyldu. Renderowane z <img>, więc blob-safe. Null gdy brak tła. */
+  scenePngBase64: string | null;
+  /** Kompozyt tło+SVG — nakładka SVG wtopiona w zdjęcie (szyld na tle ORAZ produkty <image>). Null gdy brak tła lub brak SVG. */
+  compositePngBase64: string | null;
 }
 
 /**
- * Zwraca kompozyt aktualnie widocznego canvasu Paper.js dla AI:
- * - tło (jeśli jest) wypełnione z object-fit: cover
- * - SVG na wierzchu z aktualnym zoom/pan
+ * Zwraca obrazy aktualnego canvasu Paper.js dla AI (patrz `CanvasCapture`).
  *
  * NIE rysujemy etykiet — AI rozpoznaje elementy po kolorach z SVG (opisanych
  * w prompcie), a wcześniejsze etykiety tekstowe (typu "svg_item_0_4") były

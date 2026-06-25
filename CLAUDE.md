@@ -344,11 +344,16 @@ Warstwa "ui"   ← nakładki (hover highlight, rubber band), elementy locked=tru
 
 ## Adaptery AI
 
-### Co lata do AI z edytora — kompozyt bez etykiet wizualnych
-**`captureCanvas()` w `src/lib/paperCanvas.ts`** zwraca `{ pngBase64 }`:
-1. Off-screen canvas o wymiarach widocznego viewportu edytora
-2. Tło (jeśli jest) wypełnione algorytmem CSS `object-fit: cover` — wycięte/wycentrowane jak w UI
-3. Canvas Paper.js (SVG z aktualnym zoomem/panem) narysowany na wierzchu — daje **rzeczywistą pozycję i skalę szyldu na ścianie**
+### Co lata do AI z edytora — KOMPOZYT (nakładka SVG wtopiona w zdjęcie)
+**`captureCanvas()` w `src/lib/paperCanvas.ts`** zwraca `{ designPngBase64, scenePngBase64, compositePngBase64 }`, z których `useGeneration.ts` wybiera zależnie od sceny:
+
+- **Szyld/produkty na realnym tle** (typowy) → `compositePngBase64` jako `svg_image` (Obraz 1) — nakładka SVG narysowana na zdjęciu. **Rozmiar i proporcje niesie sama nakładka (pixel-perfect), a prompt każe model wyrenderować ją W PERSPEKTYWIE ściany.** To sprawdzona formuła z 22.06 (patrz niżej). Historia (czego NIE robić): kompozyt z promptem „ten sam obszar + identyczne proporcje" kotwiczył frontalnie; osobny projekt + półprzezroczysty axis-aligned footprint TEŻ kotwiczył frontalnie / psuł rozmiar; rozdzielenie + rozmiar „słownie" gubiło rozmiar (model przesadzał). Zwycięzca: **kompozyt + prompt rozdzielający „pozycja/regiony z nakładki" od „kąt z fotografii".**
+  - `designPngBase64` = czysty render warstwy SVG na neutralnym jasnoszarym (`#e9e9ec`), wyśrodkowany — używany TYLKO gdy NIE ma tła.
+  - `scenePngBase64` = samo zdjęcie ściany (`object-fit: cover` viewportu) — używane TYLKO gdy jest tło, ale NIE ma geometrii szyldu. **Renderowane z `backgroundImgRef` (`<img>`)** — NIE przez `dataUrlToBase64(backgroundDataUrl)`, bo `backgroundDataUrl` bywa `blob:` URL (ładowanie projektu w `useProject`), na którym `dataUrlToBase64` zwraca `null` i tło nie dociera do modelu.
+- **Sam projekt bez tła** → `designPngBase64` jako `svg_image`.
+- **Samo tło bez geometrii szyldu** → `scenePngBase64` jako `background_image`.
+
+Kolejność w backendzie (oba providery): `background_image` → `svg_image` → referencje. OpenAI `generate_via_edits` wysyła OBA sloty gdy oba są ustawione (poprawione — wcześniej tylko jeden).
 
 **NIE rysujemy wizualnych etykiet** — wcześniejsza wersja rysowała żółte plakietki z `item.name`, ale Gemini dosłownie je renderował na szyldzie (np. `svg_item_0_4` jako tekst na czerwonej plexie). Identyfikatory elementów lecą tylko tekstem w prompt (`assemblePrompt`), nie wizualnie.
 
@@ -357,11 +362,11 @@ Warstwa "ui"   ← nakładki (hover highlight, rubber band), elementy locked=tru
 **Nie modyfikuj `captureCanvasFnRef` żeby był synchronous** — wymaga rysowania DOM-image, robione synchronicznie z `<img>` ref. Tło ładuje się przy zmianie `backgroundDataUrl`, ref ustawiamy w JSX `<img ref={backgroundImgRef}>`.
 
 ### Assembler promptu — co opisuje strukturę obrazów
-`assemblePrompt(config, visualInputs, options)` zaczyna od **bardzo silnego imperatywnego ZADANIA** (Google docs zalecają tekst PRZED obrazami). Trzy warianty zależnie od dołączonych obrazów:
+`assemblePrompt(config, visualInputs, options)` zaczyna od **bardzo silnego imperatywnego ZADANIA** (Google docs zalecają tekst PRZED obrazami). Gałąź wybierana po `hasSvg`/`hasBackground`/`hasProducts`:
 
-- **Kompozyt + tło** (typowy): `"TASK / ZADANIE: This is an IMAGE EDITING task — NOT image generation. Obraz 1 to PRAWDZIWE ZDJĘCIE wnętrza z nałożonym SCHEMATYCZNYM projektem SVG..."` + szczegółowa instrukcja "zachowaj PIXEL-PERFECT tło, sufit, podłogę, meble, oświetlenie". Bez tego silnego zakotwiczenia Nano Banana 2 generuje nową scenę.
-- **Sam SVG bez tła**: `"Obraz 1 to projekt szyldu — wygeneruj fotorealistyczny szyld zgodny z projektem."`
-- **Samo tło bez SVG**: `"TASK: Image editing. Obraz 1 to prawdziwe zdjęcie ściany. Zachowaj IDENTYCZNIE pixel-perfect..."`
+- **Szyld + tło** — typowy, KOMPOZYT (nakładka na zdjęciu, 1 obraz `imgIdx++`): sprawdzona formuła **22.06**. Kluczowa myśl — rozdzielić „CO i GDZIE" od „pod jakim KĄTEM": `"ZADANIE: edytuj Obraz 1... Zastąp SAMĄ nakładkę renderem szyldu... Nakładka SVG to płaski, FRONTALNY schemat — wyznacza WYŁĄCZNIE położenie środka, kształt, regiony i kolory; NIE wyznacza finalnego kąta patrzenia. Ściana widziana pod kątem, więc szyld LEŻY na płaszczyźnie ściany; sylwetka MUSI być skrócona perspektywicznie... NIE renderuj go jako frontalnego prostokąta... Zachowaj WZAJEMNY układ/proporcje/kolor regionów względem siebie."` Te dwa negatywy („NIE wyznacza kąta", „NIE renderuj frontalnego prostokąta") są SILNIKIEM fixu — nie usuwaj ich „bo Google nie lubi negatywów". Stara, ZEPSUTA wersja: „musi zajmować DOKŁADNIE ten sam obszar + identyczne proporcje, ale w perspektywie" — sprzeczność, która kotwiczyła frontalnie.
+- **Sam SVG bez tła**: `"ZADANIE: fotorealistyczny render. Obraz 1 to schematyczny projekt SVG... neutralne tło."`
+- **Samo tło bez SVG**: `"ZADANIE: dodaj szyld do istniejącego zdjęcia..."` / produkty → `"ZADANIE: edycja zdjęcia..."` (+ klauzula wtapiania produktów).
 
 **Teksty z SVG** wyciągane przez `extractSvgTexts(svgContent)` w `useGeneration.ts` (parsuje `<text>` i `<tspan>`) → trafiają do `visualInputs.svgTexts` → prompt: `"TEKSTY NA SZYLDZIE (odwzoruj DOSŁOWNIE): 'Green-partners.pl'"`. Bez tego Gemini modyfikuje teksty (`"G&N partners"`, `"GREEN PARTNER INTERNATIONAL"`).
 
@@ -372,7 +377,7 @@ Warstwa "ui"   ← nakładki (hover highlight, rubber band), elementy locked=tru
 
 Numeracja "Obraz N" (scena → zdjęcia referencyjne użytkownika) musi być spójna z faktyczną kolejnością obrazów wysyłanych w `useGeneration.ts`.
 
-**Ważne — dublowanie tła:** `captureCanvas()` zwraca KOMPOZYT (tło + SVG) gdy jest tło. `useGeneration.ts` wysyła wtedy TYLKO kompozyt jako `svg_image` — NIE wysyła `background_image` osobno. Wysłanie obu (tło + kompozyt) myliło model (dwa obrazy z tłem — przed/po) i powodowało losowe generowanie nowej sceny. Wysyłaj tło OSOBNO tylko gdy NIE ma SVG.
+**Ważne — szyld na tle idzie KOMPOZYTEM (nakładka), nie rozdzielonymi obrazami:** `useGeneration.ts` wysyła `compositePngBase64` jako `svg_image`. Rozmiar/proporcje masz z nakładki (pixel-perfect), perspektywę wymusza prompt 22.06. Próbowano i ODRZUCONO: (1) rozdzielone obrazy (zdjęcie + osobny projekt) — perspektywa OK, ale rozmiar zgadywany/za duży; (2) footprint (półprzezroczysty prostokąt na zdjęciu) — axis-aligned prostokąt = frontalna kotwica. Kompozyt + prompt rozdzielający „pozycja/regiony z nakładki" od „kąt z fotografii" dał najlepszy kompromis (rozmiar pixel-perfect, perspektywa ~3/5, do podkręcenia promptem). Produkty `<image>` też idą kompozytem.
 
 **Nano Banana 2 + tło**: model flash często ignoruje tło mimo imperatywnego promptu — dla projektów z tłem lepszy efekt daje NB Pro lub GPT Image 2. (Wcześniejsza wersja `ModelSelector.tsx` pokazywała żółte ostrzeżenie w tej sytuacji; zostało świadomie usunięte — informacja zostaje tu jako wskazówka produktowa.)
 
@@ -507,13 +512,15 @@ Przepisz sekcje `CAMERA_3D_HTML_TEMPLATE` i `CAMERA_3D_JS` z Pythona na TypeScri
 ```typescript
 const ROTATE_STEPS = [-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90];  // co 15°
 const FORWARD_STEPS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];                         // co 1
-const TILT_STEPS = [-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1];        // co 0.2
+const TILT_STEPS = [-1, -0.5, 0, 0.5, 1];                                         // 5 kroków = 5 stanów promptu
 ```
 
-`buildCameraPrompt` w `promptAssembler.ts` produkuje **imperatywne komendy bilingwalne PL+ENG** (wzorowane na Qwen):
-- Rotacja: `"Obróć kamerę o 30° w lewo. Rotate the camera 30 degrees to the left."`
-- Forward (intensywność wg progów): `>=9` bardzo bliskie zbliżenie, `>=7` zbliżenie, `>=5` ujęcie z bliska, `>=3` średnia odległość, `>=1` szersze ujęcie, `<1` z daleka
-- Tilt: `>=0.7` mocno żabi, `>=0.3` lekko żabi, `<=-0.7` mocno ptasi, `<=-0.3` lekko ptasi
+`buildCameraPrompt` w `promptAssembler.ts` produkuje opis **WYNIKOWEGO widoku** (z której strony / odległości / wysokości widać szyld), nie samą relatywną komendę „obróć kamerę" — przy generowaniu od zera model nie ma punktu odniesienia dla rotacji. **Tylko po polsku** (Gemini/GPT Image są wielojęzyczne, a reszta promptu jest PL — spójność + brak ryzyka obcych artefaktów w tekście na szyldzie; wcześniejsza wersja bilingwalna PL+ENG wzorowana na Qwen została świadomie usunięta, bo ta aplikacja nie używa Qwen):
+- Rotacja: `"Pokaż szyld w ujęciu trzy-czwarte z lewej strony, pod kątem ~30°."` (rotateDeg > 0 → lewa strona)
+- Forward (prógi, **`5` = neutralny środek suwaka „Średnio" → BRAK frazy**, żeby sama zmiana kąta nie wstawiała przypadkowej odległości): `>=9` bardzo bliskie, `>=7` z bliska, `>=6` lekko przybliżone, `==5` brak, `>=3` z nieco większej odległości, `>=1` szersze ujęcie, `<1` z daleka (uliczne)
+- Tilt — **dwa poziomy**, progi dopasowane do kroków suwaka (`TILT_STEPS` co 0.2, każdy niezerowy krok od `0.2`=„20%" daje frazę): `|t|>=0.7` mocno (+„żabia perspektywa"/„z lotu ptaka"), `>=0.15` lekko; `|t|<0.15` (neutralnie) bez frazy. Znak: `t>0` → z dołu (żabi), `t<0` → z góry (ptasi). Wcześniej próg startował od 0.3 i połykał krok ±0.2 po cichu — to był bug.
+
+**Kamera pomijana przy projektach z TŁEM**: `assemblePromptFragments` dokleja fragment kamery tylko gdy `options.cameraDirty && !visualInputs.hasBackground`. Przy tle perspektywę dyktuje zdjęcie (gałąź ZADANIA blokuje „perspektywa i kąt kamery bez zmian"), więc „obróć kamerę" tworzyłoby sprzeczność. Kąt dla projektów z tłem zmienia się przez `edit_background_angle` (przycisk „Zastosuj kąt do tła" w `CameraAngleSection`); `CameraAngleSection` pokazuje wtedy podpowiedź, że główne generowanie zachowuje perspektywę zdjęcia. Edycja kąta gotowego obrazu w galerii → `edit_image_angle` (`ChangeAngleModal`).
 
 ### Kolory uchwytów (identyczne jak oryginał)
 - Zielony `#4CAF50` — rotacja lewo/prawo
@@ -674,4 +681,4 @@ cutting_rates_global(id, category TEXT, thickness_mm REAL, price_per_m REAL, UNI
 
 ---
 
-*Ostatnia aktualizacja: 2026-05-16*
+*Ostatnia aktualizacja: 2026-06-25*

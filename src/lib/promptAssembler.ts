@@ -64,6 +64,7 @@ export const FRAGMENT_IDS = {
   DISTANCE: "distance",
   LED_BACKLIT: "led-backlit",
   LED_FRONTLIT: "led-frontlit",
+  LED_UNLIT: "led-unlit",
   CAMERA: "camera",
   TIME_OF_DAY: "time-of-day",
 } as const;
@@ -146,7 +147,7 @@ function buildLayerStructure(
   if (roles.has("logo")) raised.push("logo");
   if (roles.has("text")) raised.push("litery");
   if (raised.length > 0) {
-    parts.push(`a NA niej naklejone, wypukłe ${raised.join(" i ")} (warstwa wierzchnia)`);
+    parts.push(`a NA niej naklejone ${raised.join(" i ")} (warstwa wierzchnia)`);
   }
   if (roles.has("cutout")) {
     parts.push("oraz panel z fizycznie wyciętymi (laserowo) otworami, przez które widać warstwę pod spodem");
@@ -188,10 +189,10 @@ function finishPhrase(m: Material, role?: SignElement["role"]): string {
   const isForegroundDetail =
     role === "text" || role === "logo" || role === "decoration" || role === "cutout";
   if (isForegroundDetail && (m.material_type === "lustro" || m.material_type === "polysk")) {
-    return "wypukłe litery/kształty z lustrzanego, błyszczącego akrylu — lśniące lico łapiące światło, wyraźna głębia 3D, premium wykończenie";
+    return "wypukłe litery/kształty z lustrzanego akrylu — premium wykończenie";
   }
   if (m.material_type === "lustro") {
-    return "akryl o wykończeniu lustrzanym — wyraźnie odbija otoczenie ze sceny, z jasnymi smugami i refleksami światła";
+    return "akryl o wykończeniu lustrzanym — wyraźnie odbija otoczenie";
   }
   if (m.material_type === "polysk") {
     return "akryl wysokopołyskowy — szklista, wypolerowana powierzchnia z mokrym połyskiem i refleksami światła";
@@ -272,36 +273,49 @@ export function buildCameraPrompt(
   moveForward: CameraConfig["moveForward"],
   verticalTilt: CameraConfig["verticalTilt"]
 ): string {
+  // Opisujemy WYNIKOWY widok (z której strony / odległości / wysokości widać szyld),
+  // nie tylko relatywną komendę "obróć kamerę" — przy generowaniu od zera model nie ma
+  // punktu odniesienia dla rotacji. Tylko po polsku — Gemini/GPT Image są wielojęzyczne,
+  // a reszta promptu jest PL (spójność + brak ryzyka obcych artefaktów w tekście na szyldzie).
   const parts: string[] = [];
 
   const absR = Math.abs(rotateDeg);
   if (absR >= 1) {
-    const dir = rotateDeg > 0 ? "w lewo" : "w prawo";
-    parts.push(`Obróć kamerę o ${absR}° ${dir}.`);
+    const dir = rotateDeg > 0 ? "lewej" : "prawej";
+    parts.push(`Pokaż szyld w ujęciu trzy-czwarte z ${dir} strony, pod kątem ~${absR}°.`);
   }
 
+  // Środek suwaka (5 = "Średnio") jest neutralny → nie wymuszamy kadrowania (brak frazy),
+  // żeby sama zmiana kąta nie wstawiała przypadkowej odległości. Fraza tylko gdy realnie
+  // przesunięto kamerę bliżej/dalej.
   if (moveForward >= 9) {
-    parts.push("Przysuń kamerę bardzo blisko — ekstremalne zbliżenie.");
+    parts.push("Bardzo bliskie ujęcie — kadr niemal wypełniony szyldem.");
   } else if (moveForward >= 7) {
-    parts.push("Przysuń kamerę blisko — ujęcie z bliska.");
-  } else if (moveForward >= 5) {
-    parts.push("Bliskie ujęcie, kamera lekko przybliżona.");
+    parts.push("Ujęcie z bliska.");
+  } else if (moveForward >= 6) {
+    parts.push("Lekko przybliżone ujęcie.");
+  } else if (moveForward === 5) {
+    // neutralny środek — bez frazy
   } else if (moveForward >= 3) {
-    parts.push("Średnia odległość kamery.");
+    parts.push("Ujęcie z nieco większej odległości.");
   } else if (moveForward >= 1) {
-    parts.push("Większa odległość kamery, szersze ujęcie.");
+    parts.push("Szersze ujęcie z większej odległości.");
   } else {
-    parts.push("Kamera daleko, szeroka perspektywa.");
+    parts.push("Szeroka perspektywa z daleka, ujęcie uliczne.");
   }
 
-  if (verticalTilt <= -0.7) {
-    parts.push("Pochyl kamerę mocno w dół — widok z lotu ptaka.");
-  } else if (verticalTilt <= -0.3) {
-    parts.push("Pochyl kamerę lekko w dół.");
-  } else if (verticalTilt >= 0.7) {
-    parts.push("Pochyl kamerę mocno w górę — widok z żabiej perspektywy.");
-  } else if (verticalTilt >= 0.3) {
-    parts.push("Pochyl kamerę lekko w górę.");
+  // Progi dopasowane do kroków suwaka (TILT_STEPS co 0.2) — każdy niezerowy krok już od
+  // 0.2 (=„20%") daje frazę. Wcześniej próg startował od 0.3, więc krok ±0.2 połykany był
+  // po cichu (nic nie trafiało do promptu). Znak: t>0 → z dołu (żabi), t<0 → z góry (ptasi).
+  const absT = Math.abs(verticalTilt);
+  if (absT >= 0.15) {
+    const strong = absT >= 0.7;
+    const mag = strong ? "mocno" : "lekko";
+    if (verticalTilt > 0) {
+      parts.push(`Widok ${mag} z dołu${strong ? ", żabia perspektywa" : ""}.`);
+    } else {
+      parts.push(`Widok ${mag} z góry${strong ? ", z lotu ptaka" : ""}.`);
+    }
   }
 
   return parts.join(" ");
@@ -350,13 +364,18 @@ export function assemblePromptFragments(
       : "";
 
     if (visualInputs.hasSvg && visualInputs.hasBackground) {
+      // KOMPOZYT (nakładka SVG wtopiona w zdjęcie) — sprawdzona formuła z 22.06: nakładka
+      // wyznacza pozycję/kształt/regiony/kolory, ale NIE kąt; model kładzie szyld w perspektywie
+      // ściany. Rozmiar i proporcje masz z nakładki (pixel-perfect), bez footprintu-kotwicy.
+      // Kluczowe było USUNIĘCIE sprzeczności "ten sam obszar + identyczne proporcje" (kotwiczyła
+      // frontalnie) na rzecz "odwzoruj pozycję/regiony, ale wyrenderuj w perspektywie ściany".
       const sceneLabel = imgLabel(imgIdx);
       imgRefs.push(
-        `ZADANIE: edytuj ${sceneLabel}. To prawdziwe zdjęcie lokalizacji z półprzezroczystą nakładką SVG, która pokazuje położenie, kształt i kolory ${gen}. ` +
-        `Zastąp samą nakładkę fotorealistycznym, trójwymiarowym renderem ${gen}; resztę zdjęcia zachowaj identyczną — tło, otoczenie, oświetlenie i kąt kamery. ` +
-        `${capNn} ma wyglądać jak realnie sfotografowany obiekt w tej scenie, z oświetleniem i refleksami spójnymi z otoczeniem.` +
-        `\n\n` +
-        `Nakładka SVG to płaski, FRONTALNY schemat (rzut prostopadły) — wyznacza tylko położenie, kształt, regiony i kolory ${gen}; NIE wyznacza jego finalnego kąta patrzenia. Ściana jest widziana pod kątem, więc ${nn} leży na płaszczyźnie tej ściany i jest skrócony perspektywicznie zgodnie ze zbiegiem ściany — jak prostokątna rama wisząca w tym miejscu: krawędź bliższa kamery dłuższa, dalsza krótsza, cztery rogi dopasowane do perspektywy (także przy subtelnym kącie).` +
+        `ZADANIE: edytuj ${sceneLabel}. To PRAWDZIWE ZDJĘCIE lokalizacji z półprzezroczystą nakładką SVG pokazującą układ ${gen}. Zastąp SAMĄ nakładkę fotorealistycznym, trójwymiarowym renderem ${gen}; cała reszta fotografii pozostaje bez zmian — tło, otoczenie, oświetlenie, perspektywa i kąt kamery.\n\n` +
+        `${capNn} to TRÓJWYMIAROWY, fizyczny obiekt zamontowany na powierzchni: jest oświetlony i odbija światło otoczenia jak reszta sceny.\n\n` +
+        `Nakładka SVG to płaski, FRONTALNY schemat (rzut prostopadły) — wyznacza WYŁĄCZNIE położenie środka ${gen} na ścianie, jego kształt, podział na regiony i kolory; NIE wyznacza finalnego kąta patrzenia. Ściana jest widziana pod kątem, więc ${nn} LEŻY na płaszczyźnie tej ściany; jego sylwetka MUSI być skrócona/zwężona perspektywicznie zgodnie ze zbiegiem i kątem ściany — jak rama czy plakat wiszący w tym miejscu (krawędź bliższa kamery dłuższa, dalsza krótsza). NIE renderuj go jako idealnego frontalnego prostokąta; dopasuj krawędzie do perspektywy ściany.\n\n` +
+        `Wyrenderuj napisy i logo jako wyraźne, czyste, ostre elementy o tej samej ostrości i realizmie co tło — ma wyglądać jak naprawdę sfotografowany w tej scenie.\n\n` +
+        `Zachowaj wzajemny układ, proporcje i kolor regionów względem siebie wiernie wobec nakładki; zmienia się tylko ich wygląd (z płaskiego kształtu w fotorealistyczny materiał) oraz rzut całości na perspektywę ściany. Dopasuj oświetlenie i perspektywę ${gen} do zdjęcia i zachowaj perspektywę oraz krawędzie otoczenia nienaruszone.` +
         openaiEditClause
       );
       imgIdx++;
@@ -496,6 +515,10 @@ export function assemblePromptFragments(
 
   function ledSpec(cfg: LedConfig["backlit"]): string {
     const parts2: string[] = [`kolor ${cfg.color}`];
+    // Czytelna nazwa barwy ("ciepłobiały"/"zimno-biały") to dla modelu obrazowego
+    // dużo silniejszy sygnał temperatury światła niż sam hex czy goła liczba K.
+    // Pomijamy generyczne "niestandardowy" (color picker) — nie niesie informacji.
+    if (cfg.colorName && cfg.colorName !== "niestandardowy") parts2.push(cfg.colorName);
     if (cfg.kelvin != null) parts2.push(`${cfg.kelvin}K`);
     if (cfg.lumens != null) parts2.push(`${cfg.lumens} lm`);
     return parts2.join(", ");
@@ -529,7 +552,39 @@ export function assemblePromptFragments(
     });
   }
 
-  if (options?.cameraDirty) {
+  // JAWNY NEGATYW — bez tego model rozświetla CAŁY szyld i ignoruje wybór per-element.
+  // Image-modele traktują "to podświetlany szyld LED" jako sygnał globalny; sam pozytyw
+  // ("świecą tylko te") jest za słaby — trzeba wprost wyliczyć które kolory są wyłączone
+  // (ta sama mechanika co negatywy w fixie perspektywy). Kolory współdzielone z elementami
+  // świecącymi pomijamy, by nie tworzyć sprzeczności (model nie odróżni dwóch elementów
+  // o identycznym kolorze — to ograniczenie identyfikacji po hex).
+  if (anyPerElementLed) {
+    const litHexes = new Set(
+      [...perElementBacklit, ...perElementFrontlit].map((el) => el.colorHex!)
+    );
+    const unlitHexes = [
+      ...new Set(
+        config.elements
+          .filter((el) => el.colorHex && !el.ledBacklit && !el.ledFrontlit)
+          .map((el) => el.colorHex!)
+      ),
+    ].filter((h) => !litHexes.has(h));
+    if (unlitHexes.length > 0) {
+      fragments.push({
+        id: FRAGMENT_IDS.LED_UNLIT,
+        text:
+          `WAŻNE — pozostałe elementy SVG (kolory: ${unlitHexes.join(", ")}) NIE są podświetlone: ` +
+          `nie emitują światła, nie mają poświaty, halo ani efektu glow, diody przy nich są wyłączone. ` +
+          `Renderuj je jako zwykłą, nieświecącą plexę oświetloną wyłącznie światłem otoczenia.`,
+      });
+    }
+  }
+
+  // Kamerę pomijamy gdy jest TŁO — perspektywę dyktuje wtedy zdjęcie (gałąź ZADANIA
+  // blokuje "perspektywa i kąt kamery bez zmian"), więc "obróć kamerę o X°" tworzyłoby
+  // sprzeczność i model i tak trzyma się kąta fotografii. Kąt dla projektów z tłem
+  // zmienia się przez edit_background_angle ("Zastosuj kąt do tła" w CameraAngleSection).
+  if (options?.cameraDirty && !visualInputs?.hasBackground) {
     const cameraPrompt = buildCameraPrompt(
       config.camera.rotateDeg,
       config.camera.moveForward,

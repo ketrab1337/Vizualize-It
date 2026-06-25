@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2, AlertTriangle } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { CameraWidget } from "./CameraWidget";
 import { buildCameraPrompt } from "../../lib/promptAssembler";
 import { getDb } from "../../lib/db";
@@ -75,50 +75,48 @@ export function CameraAngleSection() {
     }
   }, [backgroundPath, activeProject, camera, addToast, setActiveTab]);
 
+  // Przełącznik trybu „Kąt kamery" — renderowany w pasku zakładek widgetu (slot headerRight),
+  // w miejscu dawnego napisu „KAMERA". title= zachowuje czytelność po usunięciu etykiety.
+  const angleToggle = (
+    <label className="relative cursor-pointer shrink-0" title="Kąt kamery">
+      <input
+        type="checkbox"
+        className="sr-only"
+        checked={angleEditMode}
+        onChange={(e) => {
+          setAngleEditMode(e.target.checked);
+          if (!e.target.checked) resetCamera();
+        }}
+      />
+      <div
+        className={`w-10 h-5 rounded-full transition-colors ${
+          angleEditMode ? "bg-blue-600" : "bg-gray-700"
+        }`}
+      />
+      <div
+        className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+          angleEditMode ? "translate-x-5" : "translate-x-0"
+        }`}
+      />
+    </label>
+  );
+
   return (
     <div className="space-y-2">
-      {/* Nagłówek z togglem */}
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Kąt kamery</span>
-        <label className="relative cursor-pointer shrink-0">
-          <input
-            type="checkbox"
-            className="sr-only"
-            checked={angleEditMode}
-            onChange={(e) => {
-              setAngleEditMode(e.target.checked);
-              if (!e.target.checked) resetCamera();
-            }}
-          />
-          <div
-            className={`w-10 h-5 rounded-full transition-colors ${
-              angleEditMode ? "bg-blue-600" : "bg-gray-700"
-            }`}
-          />
-          <div
-            className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-              angleEditMode ? "translate-x-5" : "translate-x-0"
-            }`}
-          />
-        </label>
-      </div>
-
-      {/* Widget kamery — przyciemniony gdy tryb wyłączony */}
-      <div className={`relative transition-opacity ${angleEditMode ? "opacity-100" : "opacity-40 pointer-events-none"}`}>
-        <CameraWidget />
-      </div>
+      <CameraWidget enabled={angleEditMode} headerRight={angleToggle} />
 
       {/* Akcja: Zastosuj kąt do tła */}
       {angleEditMode && (
         <div className="space-y-2">
           {!backgroundPath ? (
-            <div className="flex items-start gap-2 bg-amber-950/30 border border-amber-800/40 rounded px-3 py-2">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
-              <p className="text-xs text-amber-400/80">
-                Dodaj tło w edytorze żeby zmienić kąt zdjęcia.
-              </p>
-            </div>
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              Kąt kamery zostanie zastosowany podczas generowania wizualizacji — nie trzeba osobnej akcji.
+            </p>
           ) : (
+            <>
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              Projekt ma tło — główne generowanie zachowuje perspektywę zdjęcia. Aby zmienić kąt, zastosuj go do samego zdjęcia poniżej.
+            </p>
             <button
               onClick={handleApply}
               disabled={applying || !activeProject}
@@ -127,6 +125,7 @@ export function CameraAngleSection() {
               {applying && <Loader2 className="w-3 h-3 animate-spin" />}
               {applying ? "Generuję…" : "Zastosuj kąt do tła"}
             </button>
+            </>
           )}
         </div>
       )}

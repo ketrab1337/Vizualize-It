@@ -244,7 +244,12 @@ function LedSection({ totalLed }: { totalLed: number }) {
 export function CostPanelContent() {
   const pricing = usePricing();
   const { projects, activeProjectId } = useProjectStore();
+  const { categories } = useMaterialsStore();
   const addToast = useToastStore((s) => s.addToast);
+
+  // Slug kategorii → czytelna nazwa typu (np. "pleksa" → "Pleksa") na potrzeby PDF.
+  const categoryLabel = (slug: string | null): string | null =>
+    slug ? (categories.find((c) => c.slug === slug)?.name ?? slug) : null;
   const [marginPct, setMarginPct] = useState(30);
   const [exporting, setExporting] = useState(false);
 
@@ -286,6 +291,7 @@ export function CostPanelContent() {
           grouped_items: pricing.groupedItems.map((g) => ({
             line_type: g.lineType,
             material_name: g.materialName,
+            category_label: categoryLabel(g.category),
             thickness_mm: g.thicknessMm,
             total_area_cm2: g.totalAreaCm2,
             total_path_length_m: g.totalPathLengthM,

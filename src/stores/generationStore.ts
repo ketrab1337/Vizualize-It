@@ -6,8 +6,8 @@ import { providerForModel, type Provider } from "../lib/provider";
 type ProviderPrompts = Record<Provider, string | null>;
 
 const DEFAULT_LED: LedConfig = {
-  backlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały (3000K)", lumens: null, kelvin: null, presetId: null },
-  frontlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały (3000K)", lumens: null, kelvin: null, presetId: null },
+  backlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały", lumens: null, kelvin: 3000, presetId: null },
+  frontlit: { enabled: false, color: "#FFC87A", colorName: "ciepłobiały", lumens: null, kelvin: 3000, presetId: null },
 };
 
 /** Merge snapshot.led z defaultami — zachowuje backward-compat dla starych snapshotów bez `presetId`. */

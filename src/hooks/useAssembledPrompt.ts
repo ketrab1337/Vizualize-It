@@ -73,9 +73,13 @@ function useAssembleArgs() {
       }
     }
 
+    // Flagi liczone jak w useGeneration — podgląd musi trafić w tę samą gałąź ZADANIA.
+    const hasSvgGeometry = /<(path|rect|circle|ellipse|polygon|polyline|line|text)[\s>]/i.test(svgContent ?? "");
+    const hasProducts = /<image[\s>]/i.test(svgContent ?? "");
     const visualInputs: VisualInputs = {
       hasBackground: !!backgroundPath,
-      hasSvg: !!svgContent,
+      hasSvg: hasSvgGeometry,
+      hasProducts,
       referenceImageCount: referenceImages.length,
       referenceDescriptions: referenceImages.map((img) => img.description ?? ""),
       svgTexts,

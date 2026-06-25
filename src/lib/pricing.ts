@@ -6,6 +6,8 @@ export interface ElementCostItem {
   label: string;
   lineType: "material" | "dystans" | "led";
   materialName: string | null;
+  /** Slug kategorii materiału (pleksa/dibond/...) — do pokazania typu w podsumowaniu PDF. */
+  category: string | null;
   thicknessMm: number | null;
   areaCm2: number | null;
   pathLengthM: number | null;
@@ -18,6 +20,7 @@ export interface GroupedCostItem {
   key: string;
   lineType: "material" | "dystans" | "led";
   materialName: string | null;
+  category: string | null;
   thicknessMm: number | null;
   unitCost: number;
   totalCost: number;
@@ -79,6 +82,7 @@ function buildGroupedItems(items: ElementCostItem[]): GroupedCostItem[] {
         key,
         lineType: item.lineType,
         materialName: item.materialName,
+        category: item.category,
         thicknessMm: item.thicknessMm,
         unitCost: item.unitCost,
         totalCost: 0,
@@ -124,6 +128,7 @@ export function calculatePricing(
         label: ledMaterial.name,
         lineType: "led",
         materialName: ledMaterial.name,
+        category: ledMaterial.category,
         thicknessMm: null,
         areaCm2: null,
         pathLengthM: ledConfig.lengthM,
@@ -160,6 +165,7 @@ export function calculatePricing(
         label,
         lineType: "dystans",
         materialName: material.name,
+        category: material.category,
         thicknessMm: null,
         areaCm2: null,
         pathLengthM: null,
@@ -182,6 +188,7 @@ export function calculatePricing(
         label,
         lineType: "material",
         materialName: material.name,
+        category: material.category,
         thicknessMm: thickness,
         areaCm2,
         pathLengthM: null,
@@ -204,6 +211,7 @@ export function calculatePricing(
             label,
             lineType: "material",
             materialName: `${material.name} — cięcie`,
+            category: material.category,
             thicknessMm: thickness,
             areaCm2: null,
             pathLengthM,
@@ -231,6 +239,7 @@ export function calculatePricing(
         label,
         lineType: "material",
         materialName: material.name,
+        category: material.category,
         thicknessMm: thickness,
         areaCm2,
         pathLengthM,

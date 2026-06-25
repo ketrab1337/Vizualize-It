@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useGenerationStore } from "../../stores/generationStore";
 import type { CameraConfig } from "../../types";
 
@@ -25,11 +25,13 @@ function ensureThree(cb: () => void): void {
 }
 
 // ---------------------------------------------------------------------------
-// Snap constants — co 15° dla rotacji, co 5 dla forward, co 0.2 dla tilt
+// Snap constants — co 15° dla rotacji, co 1 dla forward; tilt: 5 kroków = 5 stanów
+// promptu (mocno/lekko z góry, poziom, lekko/mocno z dołu — patrz buildCameraPrompt).
 // ---------------------------------------------------------------------------
 const ROTATE_STEPS = [-90, -75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75, 90] as const;
 const FORWARD_STEPS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
-const TILT_STEPS = [-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1] as const;
+// -1/-0.5 → mocno/lekko z góry (ptasi), 0 → poziom, 0.5/1 → lekko/mocno z dołu (żabi).
+const TILT_STEPS = [-1, -0.5, 0, 0.5, 1] as const;
 
 function snapNearest(val: number, steps: readonly number[]): number {
   return steps.reduce((a, b) => (Math.abs(b - val) < Math.abs(a - val) ? b : a));
@@ -461,14 +463,15 @@ function SlidersTab({ camera, onChange }: SlidersTabProps) {
         </div>
       </div>
 
-      {/* Pochylenie — 11 pozycji (−1..1 co 0.2) */}
+      {/* Pochylenie — 5 pozycji (−1..1 co 0.5) */}
       <div className="space-y-2">
         <div className="flex justify-between text-xs">
           <span className="text-gray-400">Pochylenie</span>
           <span className="text-gray-300 font-mono">{tiltLabel}</span>
         </div>
         <input
-          type="range" min={0} max={10} step={1} value={tiltIdx >= 0 ? tiltIdx : 5}
+          type="range" min={0} max={TILT_STEPS.length - 1} step={1}
+          value={tiltIdx >= 0 ? tiltIdx : Math.floor(TILT_STEPS.length / 2)}
           onChange={(e) => onChange({ ...camera, verticalTilt: TILT_STEPS[+e.target.value] })}
           className="w-full cursor-pointer accent-pink-500"
         />
@@ -486,9 +489,13 @@ function SlidersTab({ camera, onChange }: SlidersTabProps) {
 interface CameraWidgetProps {
   value?: CameraConfig;
   onChange?: (cam: CameraConfig) => void;
+  /** Gdy false — treść widgetu (3D + suwaki) jest przyciemniona i nieklikalna; pasek zakładek z przełącznikiem pozostaje aktywny. */
+  enabled?: boolean;
+  /** Slot po prawej stronie paska zakładek (np. przełącznik trybu). Zastępuje dawny napis „Kamera". */
+  headerRight?: ReactNode;
 }
 
-export function CameraWidget({ value, onChange }: CameraWidgetProps = {}) {
+export function CameraWidget({ value, onChange, enabled = true, headerRight }: CameraWidgetProps = {}) {
   const { camera: storeCamera, setCamera: storeSetCamera } = useGenerationStore();
   const camera = value !== undefined ? value : storeCamera;
   const setCamera = onChange !== undefined ? onChange : storeSetCamera;
@@ -528,7 +535,7 @@ export function CameraWidget({ value, onChange }: CameraWidgetProps = {}) {
 
   return (
     <section className="bg-[#1a1a1a] rounded-lg overflow-hidden">
-      {/* Tab bar */}
+      {/* Tab bar — zawsze aktywny (w prawym slocie mieści przełącznik trybu) */}
       <div className="flex items-center border-b border-gray-800 h-10">
         {(["3d", "suwaki"] as const).map((t) => (
           <button
@@ -543,20 +550,21 @@ export function CameraWidget({ value, onChange }: CameraWidgetProps = {}) {
             {t === "3d" ? "Widok 3D" : "Suwaki"}
           </button>
         ))}
-        <span className="ml-auto pr-3 text-[10px] text-gray-400 uppercase tracking-widest">
-          Kamera
-        </span>
+        {headerRight && <div className="ml-auto pr-4 flex items-center">{headerRight}</div>}
       </div>
 
-      {/* Three.js container — always mounted so the scene persists; hidden via CSS when on Suwaki tab */}
-      <div
-        ref={containerRef}
-        className="relative"
-        style={{ height: 320, display: tab === "3d" ? "block" : "none" }}
-      />
+      {/* Treść — przyciemniona i nieklikalna gdy enabled === false (pasek wyżej zostaje aktywny) */}
+      <div className={enabled ? "" : "opacity-40 pointer-events-none"}>
+        {/* Three.js container — always mounted so the scene persists; hidden via CSS when on Suwaki tab */}
+        <div
+          ref={containerRef}
+          className="relative"
+          style={{ height: 320, display: tab === "3d" ? "block" : "none" }}
+        />
 
-      {/* Sliders fallback */}
-      {tab === "suwaki" && <SlidersTab camera={camera} onChange={setCamera} />}
+        {/* Sliders fallback */}
+        {tab === "suwaki" && <SlidersTab camera={camera} onChange={setCamera} />}
+      </div>
     </section>
   );
 }

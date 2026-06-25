@@ -772,13 +772,16 @@ async fn generate_via_edits(config: &GenerationConfig) -> Result<Vec<GeneratedIm
         Ok(form.part("image[]", part))
     };
 
-    // Kolejność: scena (svg composite albo tło) → referencje.
-    // Pierwszy obraz to "główna" scena którą model będzie modyfikował.
-    // Composite (svg_image) ma priorytet bo zawiera tło + nałożony szyld.
-    if let Some(svg) = &config.svg_image {
-        form = add_image_part(form, &svg.data, &svg.mime_type, "scene.png".to_string())?;
-    } else if let Some(bg) = &config.background_image {
+    // Kolejność: Obraz 1 → Obraz 2 → referencje. Pierwszy obraz to scena, którą model
+    // modyfikuje. Przy ROZDZIELONYCH obrazach (szyld + tło): background_image = scena
+    // (zdjęcie + półprzezroczysty footprint), svg_image = czysty projekt. Wysyłamy OBA,
+    // w kolejności bg → svg, spójnie z numeracją „Obraz 1/2" w prompcie i z providerem Google.
+    // Stare przypadki (sam kompozyt produktowy / sam projekt bez tła) wysyłają tylko jeden z nich.
+    if let Some(bg) = &config.background_image {
         form = add_image_part(form, &bg.data, &bg.mime_type, "scene.png".to_string())?;
+    }
+    if let Some(svg) = &config.svg_image {
+        form = add_image_part(form, &svg.data, &svg.mime_type, "design.png".to_string())?;
     }
 
     for (idx, r) in config.reference_images.iter().enumerate() {

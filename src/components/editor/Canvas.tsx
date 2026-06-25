@@ -12,7 +12,6 @@ import { useToastStore } from "../../stores/toastStore";
 import {
   saveFnRef, resizeElementFnRef, captureCanvasFnRef, pushHistoryRef,
   runNestingFnRef, clearNestingFnRef, exportNestingSvgFnRef,
-  type CanvasCapture,
 } from "../../lib/paperCanvas";
 import { computeNesting } from "./canvas/nestingEngine";
 import { mergeLetterHoles } from "./canvas/mergeHoles";
@@ -760,96 +759,128 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const canvas = canvasRef.current;
       if (!canvas) return null;
 
-      // Supersampling: kompozyt do AI renderujemy w SCALE× rozdzielczości viewportu.
-      // Sam zrzut viewportu (canvas.width = offsetWidth) bywa < rozdzielczości roboczej
-      // modelu, więc litery/logo docierały w niskim detalu i wychodziły blado. Kluczowe:
-      // warstwę SVG RE-rasteryzujemy świeżo w wysokiej rozdzielczości (rasterize,
-      // insert:false → bez mutacji projektu) — inaczej skalowalibyśmy tylko rozmyty
-      // canvas. Wszystko w try/catch z fallbackiem do dawnego, niskoroz. zrzutu.
+      // Supersampling: obrazy do AI renderujemy w SCALE× rozdzielczości viewportu —
+      // sam zrzut viewportu bywa < rozdzielczości roboczej modelu, przez co litery/logo
+      // docierały w niskim detalu. Warstwę SVG RE-rasteryzujemy świeżo (rasterize,
+      // insert:false → bez mutacji projektu).
       const SCALE = 2;
-
-      // Dawne zachowanie — używane jako bezpieczny fallback gdy supersampling zawiedzie.
-      const lowResFallback = (): CanvasCapture | null => {
+      const toB64 = (c: HTMLCanvasElement) =>
+        c.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+      const rasterizeLayer = (resolution: number): HTMLCanvasElement | null => {
+        const layer = svgLayerRef.current;
+        if (!layer || layer.children.length === 0) return null;
         try {
-          const bgImg = backgroundImgRef.current;
-          const hasBg = !!(bgImg && bgImg.complete && bgImg.naturalWidth > 0);
-          if (!hasBg) {
-            return { pngBase64: canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "") };
-          }
-          const off = document.createElement("canvas");
-          off.width = canvas.width;
-          off.height = canvas.height;
-          const ctx = off.getContext("2d");
-          if (!ctx) return null;
-          const iw = bgImg!.naturalWidth, ih = bgImg!.naturalHeight;
-          const scale = Math.max(off.width / iw, off.height / ih);
-          const dw = iw * scale, dh = ih * scale;
-          ctx.drawImage(bgImg!, (off.width - dw) / 2, (off.height - dh) / 2, dw, dh);
-          ctx.drawImage(canvas, 0, 0);
-          return { pngBase64: off.toDataURL("image/png").replace(/^data:image\/png;base64,/, "") };
+          const raster = (layer as unknown as {
+            rasterize: (opts: { resolution: number; insert: boolean }) => paper.Raster;
+          }).rasterize({ resolution, insert: false });
+          return (raster as unknown as { canvas?: HTMLCanvasElement }).canvas ?? null;
         } catch {
           return null;
         }
       };
 
-      try {
-        const off = document.createElement("canvas");
-        off.width = canvas.width * SCALE;
-        off.height = canvas.height * SCALE;
-        const ctx = off.getContext("2d");
-        if (!ctx) return lowResFallback();
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
+      const bgImg = backgroundImgRef.current;
+      const hasBg = !!(bgImg && bgImg.complete && bgImg.naturalWidth > 0);
+      const svgLayer = svgLayerRef.current;
+      const bounds = svgLayer && svgLayer.children.length > 0 ? svgLayer.bounds : null;
+      const hasSvgBounds = !!(bounds && bounds.width > 0 && bounds.height > 0);
 
-        // Tło (object-fit: cover) — rysowane w SCALE×; obraz źródłowy jest wysokiej
-        // rozdzielczości, więc to realnie dokłada detalu, nie rozmywa.
-        const bgImg = backgroundImgRef.current;
-        const hasBg = !!(bgImg && bgImg.complete && bgImg.naturalWidth > 0);
-        if (hasBg) {
-          const iw = bgImg!.naturalWidth, ih = bgImg!.naturalHeight;
-          const scale = Math.max(off.width / iw, off.height / ih);
-          const dw = iw * scale, dh = ih * scale;
-          ctx.drawImage(bgImg!, (off.width - dw) / 2, (off.height - dh) / 2, dw, dh);
+      // ── Raster warstwy SVG w rozdzielczości viewportu + jego prostokąt w pikselach
+      //    off-canvasu (do kompozytu tło+SVG / legacy produktów). ───────────────────
+      let viewRaster: HTMLCanvasElement | null = null;
+      let viewRect: { x: number; y: number; w: number; h: number } | null = null;
+      if (hasSvgBounds) {
+        const rc = rasterizeLayer(72 * paper.view.zoom * SCALE);
+        if (rc) {
+          const tl = paper.view.projectToView(bounds!.topLeft);
+          const br = paper.view.projectToView(bounds!.bottomRight);
+          viewRaster = rc;
+          viewRect = {
+            x: tl.x * SCALE, y: tl.y * SCALE,
+            w: (br.x - tl.x) * SCALE, h: (br.y - tl.y) * SCALE,
+          };
         }
-
-        // SVG — świeża rasteryzacja warstwy w wysokiej rozdzielczości, wrysowana
-        // w bieżącej pozycji/zoomie widoku × SCALE (zachowuje położenie z edytora).
-        let svgDrawn = false;
-        const svgLayer = svgLayerRef.current;
-        if (svgLayer && svgLayer.children.length > 0) {
-          const bounds = svgLayer.bounds;
-          if (bounds && bounds.width > 0 && bounds.height > 0) {
-            try {
-              const zoom = paper.view.zoom;
-              const raster = (svgLayer as unknown as {
-                rasterize: (opts: { resolution: number; insert: boolean }) => paper.Raster;
-              }).rasterize({ resolution: 72 * zoom * SCALE, insert: false });
-              const rc = (raster as unknown as { canvas?: HTMLCanvasElement }).canvas;
-              if (rc) {
-                const tl = paper.view.projectToView(bounds.topLeft);
-                const br = paper.view.projectToView(bounds.bottomRight);
-                ctx.drawImage(rc, tl.x * SCALE, tl.y * SCALE, (br.x - tl.x) * SCALE, (br.y - tl.y) * SCALE);
-                svgDrawn = true;
-              }
-            } catch {
-              svgDrawn = false;
-            }
-          }
-        } else {
-          // Brak elementów SVG do narysowania — to nie błąd (np. samo tło).
-          svgDrawn = true;
-        }
-
-        // Rasteryzacja zawiodła — dorysuj zwykły canvas przeskalowany (gorszy detal
-        // SVG, ale poprawna treść). Nie psuje wyniku, tylko traci ostrość.
-        if (!svgDrawn) {
-          ctx.drawImage(canvas, 0, 0, off.width, off.height);
-        }
-
-        return { pngBase64: off.toDataURL("image/png").replace(/^data:image\/png;base64,/, "") };
-      } catch {
-        return lowResFallback();
       }
+
+      const drawCover = (ctx: CanvasRenderingContext2D, ow: number, oh: number) => {
+        const iw = bgImg!.naturalWidth, ih = bgImg!.naturalHeight;
+        const s = Math.max(ow / iw, oh / ih);
+        const dw = iw * s, dh = ih * s;
+        ctx.drawImage(bgImg!, (ow - dw) / 2, (oh - dh) / 2, dw, dh);
+      };
+
+      // ── designPngBase64: czysty projekt na neutralnym jasnoszarym tle, wyśrodkowany
+      //    z marginesem (niezależny od zoom/pan — „karta projektu" dla modelu). ─────
+      let designPngBase64: string | null = null;
+      if (hasSvgBounds) {
+        const TARGET_LONG = 1536;
+        const longSide = Math.max(bounds!.width, bounds!.height);
+        const drc =
+          rasterizeLayer(72 * (TARGET_LONG / longSide)) ?? viewRaster; // fallback: raster viewportu
+        if (drc && drc.width > 0 && drc.height > 0) {
+          try {
+            const margin = Math.round(Math.max(drc.width, drc.height) * 0.1);
+            const dc = document.createElement("canvas");
+            dc.width = drc.width + margin * 2;
+            dc.height = drc.height + margin * 2;
+            const dctx = dc.getContext("2d");
+            if (dctx) {
+              dctx.fillStyle = "#e9e9ec";
+              dctx.fillRect(0, 0, dc.width, dc.height);
+              dctx.imageSmoothingEnabled = true;
+              dctx.imageSmoothingQuality = "high";
+              dctx.drawImage(drc, margin, margin);
+              designPngBase64 = toB64(dc);
+            }
+          } catch {
+            designPngBase64 = null;
+          }
+        }
+        // Ostateczny fallback — surowy zrzut viewportu (gdy rasteryzacja zawiodła).
+        if (!designPngBase64) designPngBase64 = toB64(canvas);
+      }
+
+      // ── scenePngBase64: samo zdjęcie ściany (object-fit cover viewportu), BEZ footprintu —
+      //    Obraz 1 dla szyldu na tle. Renderowane z backgroundImgRef (<img>), więc działa dla
+      //    blob: ORAZ data: URL; dataUrlToBase64(backgroundDataUrl) na blob: zwracało null,
+      //    przez co tło nie docierało do modelu i wymyślał własną scenę.
+      // ── compositePngBase64: legacy kompozyt (tło + opaque SVG) — TYLKO do produktów <image>.
+      let scenePngBase64: string | null = null;
+      let compositePngBase64: string | null = null;
+      if (hasBg) {
+        const ow = canvas.width * SCALE, oh = canvas.height * SCALE;
+        try {
+          const sc = document.createElement("canvas");
+          sc.width = ow; sc.height = oh;
+          const sctx = sc.getContext("2d");
+          if (sctx) {
+            sctx.imageSmoothingEnabled = true;
+            sctx.imageSmoothingQuality = "high";
+            drawCover(sctx, ow, oh);
+            scenePngBase64 = toB64(sc);
+          }
+        } catch {
+          scenePngBase64 = null;
+        }
+        if (viewRaster && viewRect) {
+          try {
+            const cc = document.createElement("canvas");
+            cc.width = ow; cc.height = oh;
+            const cctx = cc.getContext("2d");
+            if (cctx) {
+              cctx.imageSmoothingEnabled = true;
+              cctx.imageSmoothingQuality = "high";
+              drawCover(cctx, ow, oh);
+              cctx.drawImage(viewRaster, viewRect.x, viewRect.y, viewRect.w, viewRect.h);
+              compositePngBase64 = toB64(cc);
+            }
+          } catch {
+            compositePngBase64 = null;
+          }
+        }
+      }
+
+      return { designPngBase64, scenePngBase64, compositePngBase64 };
     };
     return () => {
       saveFnRef.current = null;

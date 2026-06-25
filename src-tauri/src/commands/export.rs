@@ -7,7 +7,6 @@ use std::io::BufWriter;
 
 #[derive(Debug, Deserialize)]
 pub struct CostLineItem {
-    pub label: String,
     pub material_name: Option<String>,
     pub thickness_mm: Option<f64>,
     pub area_cm2: Option<f64>,
@@ -20,6 +19,9 @@ pub struct CostLineItem {
 pub struct GroupedCostItemInput {
     pub line_type: String, // "material" | "dystans" | "led"
     pub material_name: Option<String>,
+    /// Czytelna nazwa typu/kategorii (np. „Pleksa") — prefiks w podsumowaniu. Opcjonalne (stary payload).
+    #[serde(default)]
+    pub category_label: Option<String>,
     pub thickness_mm: Option<f64>,
     pub total_area_cm2: Option<f64>,
     pub total_path_length_m: Option<f64>,
@@ -90,13 +92,14 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
         .map_err(|e| format!("Błąd czcionki: {e}"))?;
 
     // ── Tabela GŁÓWNA (Podsumowanie pogrupowane) ───────────────────────────
-    // Mniej kolumn, dopasowane do A4 pionowego.
+    // Materiał = szeroka kolumna tekstowa (15→85). Kolumny numeryczne rozłożone
+    // z RÓWNYM odstępem 22 mm (85, 107, 129, 151, 173), aby paddingi były spójne.
     let g_col_mat = M;
-    let g_col_grub = 90.0;
-    let g_col_pow = 105.0;
-    let g_col_len = 130.0;
-    let g_col_qty = 155.0;
-    let g_col_total = 175.0;
+    let g_col_grub = 85.0;
+    let g_col_pow = 107.0;
+    let g_col_len = 129.0;
+    let g_col_qty = 151.0;
+    let g_col_total = 173.0;
 
     let draw_grouped_headers = |layer: &PdfLayerReference, y: f64| {
         draw_table_row(
@@ -105,40 +108,13 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             y,
             &[
                 ("Materiał", g_col_mat),
-                ("Grub.", g_col_grub),
+                ("Grubość", g_col_grub),
                 ("Pow.cm2", g_col_pow),
                 ("Cięcie m", g_col_len),
                 ("Ilość", g_col_qty),
                 ("Wartość", g_col_total),
             ],
             8.5,
-        );
-    };
-
-    // ── Tabela SZCZEGÓŁOWA (per element) ───────────────────────────────────
-    let d_col_label = M;
-    let d_col_mat = 60.0;
-    let d_col_grub = 105.0;
-    let d_col_pow = 120.0;
-    let d_col_len = 140.0;
-    let d_col_qty = 158.0;
-    let d_col_total = 175.0;
-
-    let draw_detail_headers = |layer: &PdfLayerReference, y: f64| {
-        draw_table_row(
-            layer,
-            &font,
-            y,
-            &[
-                ("Element", d_col_label),
-                ("Materiał", d_col_mat),
-                ("Grub.", d_col_grub),
-                ("Pow.cm2", d_col_pow),
-                ("Cięcie m", d_col_len),
-                ("Ilość", d_col_qty),
-                ("Wartość", d_col_total),
-            ],
-            8.0,
         );
     };
 
@@ -176,6 +152,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             .map(|i| GroupedCostItemInput {
                 line_type: "material".into(),
                 material_name: i.material_name.clone(),
+                category_label: None,
                 thickness_mm: i.thickness_mm,
                 total_area_cm2: i.area_cm2,
                 total_path_length_m: i.path_length_m,
@@ -190,6 +167,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             .map(|g| GroupedCostItemInput {
                 line_type: g.line_type.clone(),
                 material_name: g.material_name.clone(),
+                category_label: g.category_label.clone(),
                 thickness_mm: g.thickness_mm,
                 total_area_cm2: g.total_area_cm2,
                 total_path_length_m: g.total_path_length_m,
@@ -213,7 +191,14 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
         let mat_label = match g.line_type.as_str() {
             "led" => format!("LED — {}", g.material_name.as_deref().unwrap_or("—")),
             "dystans" => format!("Dystans — {}", g.material_name.as_deref().unwrap_or("—")),
-            _ => g.material_name.clone().unwrap_or_else(|| "—".into()),
+            // Materiał — prefiks typem (np. „Pleksa — Plexa czerwona"), jeśli znamy kategorię.
+            _ => {
+                let name = g.material_name.as_deref().unwrap_or("—");
+                match g.category_label.as_deref() {
+                    Some(cat) if !cat.is_empty() => format!("{} — {}", cat, name),
+                    _ => name.to_string(),
+                }
+            }
         };
         let mat_short = if mat_label.chars().count() > 38 {
             // .chars().take(N) zamiast slice'a bajtów — polskie znaki (ą, ć, ł)
@@ -299,86 +284,6 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
         mm(y - 2.0),
         &font,
     );
-    y -= 9.0;
-
-    if input.is_quote && input.margin_pct > 0.0 {
-        layer.use_text(
-            &format!("(marża {}%)", input.margin_pct as u32),
-            8.0,
-            mm(g_col_total - 50.0),
-            mm(y),
-            &font,
-        );
-        y -= 5.0;
-    }
-
-    // ── SEKCJA 2: Szczegóły (per element) ──────────────────────────────────
-    if !input.items.is_empty() {
-        y -= 6.0;
-        if y < M + 30.0 {
-            let (nl, ny) = new_page(&doc);
-            layer = nl;
-            y = ny;
-        }
-        layer.use_text("SZCZEGÓŁY", 13.0, mm(M), mm(y), &font);
-        y -= 7.0;
-        draw_detail_headers(&layer, y);
-        y -= 6.0;
-
-        for item in &input.items {
-            if y < M + 15.0 {
-                let (nl, ny) = new_page(&doc);
-                layer = nl;
-                y = ny;
-                draw_detail_headers(&layer, y);
-                y -= 6.0;
-            }
-
-            let display_cost = apply_margin(item.total_cost, input.is_quote, input.margin_pct);
-
-            let mat = item.material_name.as_deref().unwrap_or("—");
-            let grub = item
-                .thickness_mm
-                .map(|v| format!("{:.0}mm", v))
-                .unwrap_or_else(|| "—".to_string());
-            let pow = item
-                .area_cm2
-                .map(|v| format!("{:.1}", v))
-                .unwrap_or_else(|| "—".to_string());
-            let cie = item
-                .path_length_m
-                .map(|v| format!("{:.3}", v))
-                .unwrap_or_else(|| "—".to_string());
-            let qty = item
-                .quantity
-                .map(|v| format!("{:.0}", v))
-                .unwrap_or_else(|| "—".to_string());
-
-            let label = if item.label.chars().count() > 24 {
-                // .chars().take(N) zamiast slice'a bajtów — patrz komentarz wyżej.
-                format!("{}…", item.label.chars().take(23).collect::<String>())
-            } else {
-                item.label.clone()
-            };
-
-            draw_table_row(
-                &layer,
-                &font,
-                y,
-                &[
-                    (&label, d_col_label),
-                    (mat, d_col_mat),
-                    (&grub, d_col_grub),
-                    (&pow, d_col_pow),
-                    (&cie, d_col_len),
-                    (&qty, d_col_qty),
-                    (&format_pln(display_cost), d_col_total),
-                ],
-                7.5,
-            );
-            y -= 5.5;
-        }
-    }
 
     let file = std::fs::File::create(&input.save_path)
         .map_err(|e| format!("Nie można zapisać pliku: {e}"))?;

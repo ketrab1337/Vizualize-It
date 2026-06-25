@@ -105,27 +105,37 @@ export function useGeneration() {
 
     setGenerating(true);
     try {
-      // Kompozyt canvas (tło + SVG bez etykiet — etykiety były dosłownie rysowane przez AI)
+      // Obrazy do AI (patrz captureCanvas / CanvasCapture).
       const capture = captureCanvas();
 
       // buildElements używa nodeId jako label — te same identyfikatory trafiają do
       // promptu, AI rozpoznaje elementy po kolorach hex (nie po wizualnych etykietach).
       const elements = buildElements(nodeOverrides, materials, categories);
 
-      // Przygotuj obrazy wejściowe.
-      // WAŻNE: captureCanvas() zwraca KOMPOZYT (tło + SVG) gdy jest tło.
-      // Wysyłanie tła osobno DODATKOWO myli model (widzi 2 obrazy z tłem — przed/po)
-      // i powoduje że losowo bierze jedno lub miesza. Dlatego:
-      //   - jest SVG + (opcjonalnie tło) → wysyłamy TYLKO kompozyt jako svgImageInput
-      //   - brak SVG, ale jest tło → wysyłamy samo tło jako backgroundImageInput
-      //   - brak obu → wysyłamy nic z edytora
-      // UWAGA: capture != null NIE oznacza że jest SVG — pusty canvas też zwraca PNG.
-      // Używamy svgContent (store) jako sygnał że SVG faktycznie jest załadowany.
+      // Sygnały treści SVG (te same flagi trafiają do visualInputs niżej).
+      const hasSvgGeometry = /<(path|rect|circle|ellipse|polygon|polyline|line|text)[\s>]/i.test(svgContent ?? "");
+      const hasProducts = /<image[\s>]/i.test(svgContent ?? "");
+
+      const productNoun = getProductNoun(project.product_type ?? null);
+
+      // Dobór obrazów wejściowych:
+      //   - szyld/produkty na tle → KOMPOZYT (nakładka SVG wtopiona w zdjęcie) jako svg_image.
+      //     Rozmiar i proporcje masz z nakładki (pixel-perfect); prompt każe wyrenderować ją
+      //     w perspektywie ściany (sprawdzona formuła 22.06, bez footprintu-kotwicy).
+      //   - sam projekt bez tła → czysty render projektu jako svg_image.
+      //   - samo tło bez geometrii szyldu → tło (z canvasu, blob-safe) jako background_image.
+      // WAŻNE: tło bierzemy z capture.scenePngBase64 (render z <img>), NIE z
+      // dataUrlToBase64(backgroundDataUrl) — backgroundDataUrl bywa blob: URL (ładowanie
+      // projektu), a wtedy dataUrlToBase64 zwraca null i tło nie dociera do modelu.
       let backgroundImageInput: { data: string; mime_type: string } | null = null;
       let svgImageInput: { data: string; mime_type: string } | null = null;
 
-      if (capture && svgContent) {
-        svgImageInput = { data: capture.pngBase64, mime_type: "image/png" };
+      if (capture?.compositePngBase64) {
+        svgImageInput = { data: capture.compositePngBase64, mime_type: "image/png" };
+      } else if (capture?.designPngBase64) {
+        svgImageInput = { data: capture.designPngBase64, mime_type: "image/png" };
+      } else if (capture?.scenePngBase64) {
+        backgroundImageInput = { data: capture.scenePngBase64, mime_type: "image/png" };
       } else if (backgroundDataUrl) {
         backgroundImageInput = dataUrlToBase64(backgroundDataUrl);
       }
@@ -140,13 +150,12 @@ export function useGeneration() {
       // zamiast "czysty SVG bez tła".
       const visualInputs: VisualInputs = {
         hasBackground: !!backgroundDataUrl,
-        // hasSvg = jest faktyczna GEOMETRIA szyldu (nie tylko produkt). Kompozyt i tak
-        // leci jako svg_image gdy svgContent istnieje, ale prompt musi rozróżnić scenę
-        // „szyld na zdjęciu" od „sam produkt na zdjęciu" (inne ZADANIE).
-        hasSvg: /<(path|rect|circle|ellipse|polygon|polyline|line|text)[\s>]/i.test(svgContent ?? ""),
-        // Produkty są osadzone w svgContent jako <image> (tło trzymane osobno jako plik),
-        // więc obecność <image> w svgContent oznacza produkt(y) do wtopienia w scenę.
-        hasProducts: /<image[\s>]/i.test(svgContent ?? ""),
+        // hasSvg = jest faktyczna GEOMETRIA szyldu (nie tylko produkt). Prompt rozróżnia
+        // scenę „szyld na zdjęciu" od „sam produkt na zdjęciu" (inne ZADANIE).
+        hasSvg: hasSvgGeometry,
+        // Produkty osadzone w svgContent jako <image> (tło trzymane osobno jako plik) →
+        // obecność <image> oznacza produkt(y) do wtopienia w scenę (legacy kompozyt).
+        hasProducts,
         referenceImageCount: referenceImageInputs.length,
         referenceDescriptions: referenceImages.map((img) => img.description ?? ""),
         svgTexts: extractSvgTexts(svgContent),
@@ -166,7 +175,6 @@ export function useGeneration() {
       // assembler składa z bieżącej konfiguracji + presetów na ich anchorach.
       const presetEntries = await loadPresetEntries(activePresetIds, presetAnchors, presetTextOverrides);
 
-      const productNoun = getProductNoun(project.product_type ?? null);
       const ledActive = led.backlit.enabled || led.frontlit.enabled;
       const hasBg = !!backgroundDataUrl;
       const todAutoText = buildTimeOfDayPrompt(timeOfDay, ledActive, hasBg, productNoun);
