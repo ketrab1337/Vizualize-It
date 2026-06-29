@@ -83,7 +83,9 @@ export function drawPageBackground(bgLayer: paper.Layer, page: PageDims, hasBg =
   const rect = new paper.Shape.Rectangle(
     new paper.Rectangle(0, 0, page.width, page.height),
   );
-  rect.fillColor = hasBg ? null : new paper.Color("white");
+  // Szare (nie białe) tło pustej strony — biała plexa szyldu pozostaje widoczna,
+  // gdy użytkownik nie ustawił własnego tła.
+  rect.fillColor = hasBg ? null : new paper.Color("#d9dadf");
   rect.strokeColor = hasBg ? null : new paper.Color(0.7, 0.71, 0.76, 1);
   rect.strokeWidth = hasBg ? 0 : 1;
   rect.locked = true;

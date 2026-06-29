@@ -215,14 +215,26 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             .total_area_cm2
             .map(|v| format!("{:.1}", v))
             .unwrap_or_else(|| "—".into());
-        let cie = g
-            .total_path_length_m
-            .map(|v| format!("{:.3}", v))
-            .unwrap_or_else(|| "—".into());
-        let qty = g
-            .total_quantity
-            .map(|v| format!("{:.0}", v))
-            .unwrap_or_else(|| "—".into());
+        // LED: długość taśmy idzie do kolumny „Ilość" (mb), kolumna „Cięcie" zostaje pusta.
+        // Pozostałe materiały: długość → „Cięcie", sztuki → „Ilość".
+        let (cie, qty) = if g.line_type == "led" {
+            let q = g
+                .total_path_length_m
+                .map(|v| format!("{:.2} mb", v))
+                .or_else(|| g.total_quantity.map(|v| format!("{:.0} szt.", v)))
+                .unwrap_or_else(|| "—".into());
+            ("—".to_string(), q)
+        } else {
+            let cie = g
+                .total_path_length_m
+                .map(|v| format!("{:.3}", v))
+                .unwrap_or_else(|| "—".into());
+            let qty = g
+                .total_quantity
+                .map(|v| format!("{:.0}", v))
+                .unwrap_or_else(|| "—".into());
+            (cie, qty)
+        };
 
         draw_table_row(
             &layer,

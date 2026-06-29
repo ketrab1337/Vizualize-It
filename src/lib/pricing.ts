@@ -121,8 +121,6 @@ export function calculatePricing(
     const ledMaterial = materials.find((m) => m.id === ledConfig.materialId);
     if (ledMaterial) {
       const ledCost = ledConfig.lengthM * (ledMaterial.base_price ?? 0);
-      const supplyCost = ledConfig.hasPowerSupply ? (ledConfig.powerSupplyPrice ?? 0) : 0;
-      const total = ledCost + supplyCost;
       items.push({
         nodeId: "__led__",
         label: ledMaterial.name,
@@ -134,9 +132,28 @@ export function calculatePricing(
         pathLengthM: ledConfig.lengthM,
         quantity: null,
         unitCost: ledMaterial.base_price ?? 0,
-        totalCost: total,
+        totalCost: ledCost,
       });
-      totalLed += total;
+      totalLed += ledCost;
+
+      // Zasilacz — osobna pozycja w podsumowaniu (nie doliczany do linii taśmy LED)
+      if (ledConfig.hasPowerSupply) {
+        const supplyCost = ledConfig.powerSupplyPrice ?? 0;
+        items.push({
+          nodeId: "__led_psu__",
+          label: "Zasilacz LED",
+          lineType: "led",
+          materialName: "Zasilacz",
+          category: null,
+          thicknessMm: null,
+          areaCm2: null,
+          pathLengthM: null,
+          quantity: 1,
+          unitCost: supplyCost,
+          totalCost: supplyCost,
+        });
+        totalLed += supplyCost;
+      }
     }
   }
 
