@@ -1,4 +1,7 @@
-import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Library, Save, Donut, Package } from "lucide-react";
+import { Upload, Loader2, Download, ImageIcon, X, LayoutGrid, Library, Save, Donut, Package, Crop, Wand2 } from "lucide-react";
+import type { ImageFormat } from "../../../types";
+
+const ASPECT_OPTIONS: ImageFormat[] = ["16:9", "4:3", "1:1", "3:4", "9:16"];
 
 interface CanvasToolbarProps {
   hasSvg: boolean;
@@ -9,6 +12,9 @@ interface CanvasToolbarProps {
   backgroundDataUrl: string | null;
   backgroundFilename: string;
   isNestingOpen: boolean;
+  aspectRatio: ImageFormat;
+  onChangeAspect: (aspect: ImageFormat) => void;
+  onAutoAspect: () => void;
   onImportSvg: () => void;
   onExportSvg: () => void;
   onMergeHoles: () => void;
@@ -24,6 +30,7 @@ export function CanvasToolbar({
   hasSvg, isImportingSvg, isImportingBg, isSavingBgToLibrary, isAddingProduct,
   backgroundDataUrl, backgroundFilename,
   isNestingOpen,
+  aspectRatio, onChangeAspect, onAutoAspect,
   onImportSvg, onExportSvg, onMergeHoles, onImportBackground, onPickBackgroundFromLibrary,
   onSaveBackgroundToLibrary, onRemoveBackground, onAddProduct,
   onToggleNesting,
@@ -93,6 +100,32 @@ export function CanvasToolbar({
           </button>
         </div>
       )}
+
+      <div className="h-5 w-px bg-gray-800 mx-1" />
+
+      {/* Proporcja canvasu = ramki wyjściowej do AI */}
+      <div className="flex items-center gap-1.5" title="Proporcja canvasu — w niej renderowany jest obraz do AI (zdjęcie tła nie jest przycinane do kształtu okna)">
+        <Crop className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+        <select
+          value={aspectRatio}
+          onChange={(e) => onChangeAspect(e.target.value as ImageFormat)}
+          className="text-sm bg-[#252525] border border-gray-700 hover:border-gray-600 rounded text-gray-300 px-1.5 py-1 outline-none focus:border-blue-500 cursor-pointer"
+        >
+          {ASPECT_OPTIONS.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        {backgroundDataUrl && (
+          <button
+            onClick={onAutoAspect}
+            title="Dopasuj proporcję canvasu do wgranego zdjęcia"
+            className="flex items-center gap-1 px-2 py-1 rounded text-sm text-gray-300 bg-[#252525] hover:bg-[#2e2e2e] border border-gray-700 hover:border-gray-600 transition-colors"
+          >
+            <Wand2 className="w-3.5 h-3.5" />
+            Dopasuj do zdjęcia
+          </button>
+        )}
+      </div>
 
       <div className="h-5 w-px bg-gray-800 mx-1" />
       <button

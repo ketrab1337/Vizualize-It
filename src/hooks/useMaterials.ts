@@ -18,15 +18,20 @@ export function useCategories() {
     const id = `cat-${crypto.randomUUID()}`;
     const slug = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
     const now = new Date().toISOString();
+    // Auto-wykrycie kategorii dystansów po nazwie/slugu — w duchu isLedCategory (CostPanel),
+    // które wykrywa LED przez .includes("led"). Bez tego ręcznie dodana „Dystanse" dostawałaby
+    // is_distance=0 (picker Złoty/Srebrny/Czarny by się nie pokazał): migracja 019 ustawia flagę
+    // tylko jednorazowo, dla kategorii istniejących w chwili jej uruchomienia.
+    const isDistance = `${slug} ${name}`.toLowerCase().includes("dystans") ? 1 : 0;
     const maxOrder = await db.select<{ max_order: number | null }[]>(
       "SELECT MAX(sort_order) as max_order FROM material_categories"
     );
     const nextOrder = (maxOrder[0]?.max_order ?? 1) + 1;
     await db.execute(
-      "INSERT INTO material_categories (id, name, slug, is_system, sort_order, created_at) VALUES ($1,$2,$3,0,$4,$5)",
-      [id, name.trim(), slug, nextOrder, now]
+      "INSERT INTO material_categories (id, name, slug, is_system, is_distance, sort_order, created_at) VALUES ($1,$2,$3,0,$4,$5,$6)",
+      [id, name.trim(), slug, isDistance, nextOrder, now]
     );
-    return { id, name: name.trim(), slug, is_system: 0, is_distance: 0, sort_order: nextOrder, created_at: now };
+    return { id, name: name.trim(), slug, is_system: 0, is_distance: isDistance, sort_order: nextOrder, created_at: now };
   }, []);
 
   const updateCategory = useCallback(async (id: string, name: string): Promise<void> => {

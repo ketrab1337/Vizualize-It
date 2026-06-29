@@ -12,7 +12,7 @@ import type { VisualInputs, PresetEntry } from "../lib/promptAssembler";
 import { buildElements } from "../lib/buildElements";
 import { providerForModel } from "../lib/provider";
 import { captureCanvas } from "../lib/paperCanvas";
-import type { SignConfig, GeneratedImageFile } from "../types";
+import type { SignConfig, GeneratedImageFile, ImageFormat } from "../types";
 
 /** Pobiera base64 z data URL (format "data:mime;base64,XXX"). */
 function dataUrlToBase64(dataUrl: string): { data: string; mime_type: string } | null {
@@ -81,7 +81,6 @@ export function useGeneration() {
   const { materials, categories } = useMaterialsStore();
   const {
     model,
-    format,
     count,
     led,
     camera,
@@ -102,6 +101,11 @@ export function useGeneration() {
   const generate = useCallback(async () => {
     const project = projects.find((p) => p.id === activeProjectId);
     if (!project) return;
+
+    // Format wyjściowy DYKTUJE proporcja canvasu projektu (`aspect_ratio`), a nie
+    // osobne pole w panelu — kompozyt/scenę wysyłamy w tej proporcji, więc output
+    // modelu musi się zgadzać (inaczej model dokłada pasy lub przycina).
+    const outputFormat: ImageFormat = project.aspect_ratio ?? "1:1";
 
     setGenerating(true);
     try {
@@ -192,7 +196,7 @@ export function useGeneration() {
         project_slug: project.slug,
         prompt: finalPrompt,
         model,
-        format,
+        format: outputFormat,
         count,
         background_image: backgroundImageInput,
         svg_image: svgImageInput,
@@ -222,7 +226,7 @@ export function useGeneration() {
             project.id,
             project.slug,
             model,
-            format,
+            outputFormat,
             count,
             finalPrompt,
             // Zapisujemy tylko parametr dotyczącego dostawcy — drugi zostaje NULL.
@@ -261,7 +265,7 @@ export function useGeneration() {
           project.id,
           finalPrompt,
           model,
-          format,
+          outputFormat,
           count,
           camera.rotateDeg,
           camera.verticalTilt,
@@ -316,7 +320,6 @@ export function useGeneration() {
     backgroundDataUrl,
     svgContent,
     model,
-    format,
     count,
     led,
     camera,

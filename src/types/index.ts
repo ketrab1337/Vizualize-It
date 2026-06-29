@@ -10,6 +10,12 @@ export interface Project {
    * NULL = domyślnie "szyld" (kompat-wstecz; istniejące projekty bez ustawionego typu).
    */
   product_type: string | null;
+  /**
+   * Proporcja canvasu edytora = ramki wyjściowej do AI ("16:9".."9:16").
+   * NULL/undefined = domyślnie "1:1" (projekty sprzed migracji 025 oraz świeżo
+   * utworzone — backend `create_project` nie zwraca tego pola, default w froncie).
+   */
+  aspect_ratio?: ImageFormat | null;
 }
 
 /**

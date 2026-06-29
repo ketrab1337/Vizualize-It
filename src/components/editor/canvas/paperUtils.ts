@@ -1,22 +1,87 @@
 import paper from "paper";
 import type { LayerItem } from "../LayersPanel";
+import type { ImageFormat } from "../../../types";
 
-export const CANVAS_SIZE_MM = 7500; // stały rozmiar obszaru roboczego w mm
+/** Dłuższy bok strony roboczej w mm — krótszy wyliczany z proporcji (patrz `pageDimsForAspect`). */
+export const CANVAS_LONG_MM = 7500;
 export const BG_COLOR = "#e8e9ed";
 
-export function fitViewToPage(viewSize: paper.Size) {
-  if (viewSize.width === 0 || viewSize.height === 0) return;
-  const zoom = Math.min(viewSize.width, viewSize.height) / CANVAS_SIZE_MM * 0.88;
-  paper.view.zoom = zoom;
-  paper.view.center = new paper.Point(CANVAS_SIZE_MM / 2, CANVAS_SIZE_MM / 2);
+/** Domyślna proporcja canvasu nowego projektu (zob. migracja 025). */
+export const DEFAULT_ASPECT: ImageFormat = "1:1";
+
+export interface PageDims {
+  width: number;
+  height: number;
 }
 
-export function drawPageBackground(bgLayer: paper.Layer, hasBg = false): paper.Shape {
+/**
+ * Wymiary strony roboczej (mm) dla danej proporcji. Dłuższy bok = `CANVAS_LONG_MM`,
+ * krótszy liczony z proporcji. To ramka, w której renderujemy do AI (koniec
+ * przycinania tła do prostokątnego viewportu).
+ */
+export function pageDimsForAspect(aspect: ImageFormat | null | undefined): PageDims {
+  const [aw, ah] = (aspect ?? DEFAULT_ASPECT).split(":").map(Number);
+  const w = aw || 1;
+  const h = ah || 1;
+  if (w >= h) return { width: CANVAS_LONG_MM, height: Math.round((CANVAS_LONG_MM * h) / w) };
+  return { width: Math.round((CANVAS_LONG_MM * w) / h), height: CANVAS_LONG_MM };
+}
+
+const ASPECT_RATIOS: { id: ImageFormat; ratio: number }[] = [
+  { id: "16:9", ratio: 16 / 9 },
+  { id: "4:3", ratio: 4 / 3 },
+  { id: "1:1", ratio: 1 },
+  { id: "3:4", ratio: 3 / 4 },
+  { id: "9:16", ratio: 9 / 16 },
+];
+
+/** Najbliższy z 5 presetów dla zadanych wymiarów zdjęcia (przycisk „Dopasuj do zdjęcia"). */
+export function nearestAspect(width: number, height: number): ImageFormat {
+  if (!width || !height) return DEFAULT_ASPECT;
+  const r = width / height;
+  return ASPECT_RATIOS.reduce((best, cur) =>
+    Math.abs(cur.ratio - r) < Math.abs(best.ratio - r) ? cur : best
+  ).id;
+}
+
+export function fitViewToPage(viewSize: paper.Size, page: PageDims) {
+  if (viewSize.width === 0 || viewSize.height === 0) return;
+  const zoom = Math.min(viewSize.width / page.width, viewSize.height / page.height) * 0.88;
+  paper.view.zoom = zoom;
+  paper.view.center = new paper.Point(page.width / 2, page.height / 2);
+}
+
+/**
+ * Ogranicza `paper.view.center` tak, aby ramka strony (powiększona o margines)
+ * nie wyjeżdżała poza widok. Gdy cała strona mieści się w danej osi (np. przy max
+ * oddaleniu), środek jest przyklejany do środka strony → przewijanie samo się
+ * blokuje. Wywoływać po każdym panie/zoomie.
+ */
+export function clampViewCenter(page: PageDims): void {
+  const z = paper.view.zoom;
+  if (!z) return;
+  const margin = CANVAS_LONG_MM * 0.1;
+  const vs = paper.view.viewSize;
+  const halfW = vs.width / z / 2;
+  const halfH = vs.height / z / 2;
+  const axis = (center: number, size: number, halfView: number): number => {
+    const min = -margin;
+    const max = size + margin;
+    if (2 * halfView >= max - min) return (min + max) / 2;
+    return Math.min(Math.max(center, min + halfView), max - halfView);
+  };
+  const c = paper.view.center;
+  const nx = axis(c.x, page.width, halfW);
+  const ny = axis(c.y, page.height, halfH);
+  if (nx !== c.x || ny !== c.y) paper.view.center = new paper.Point(nx, ny);
+}
+
+export function drawPageBackground(bgLayer: paper.Layer, page: PageDims, hasBg = false): paper.Shape {
   bgLayer.removeChildren();
   const prev = paper.project.activeLayer;
   bgLayer.activate();
   const rect = new paper.Shape.Rectangle(
-    new paper.Rectangle(0, 0, CANVAS_SIZE_MM, CANVAS_SIZE_MM),
+    new paper.Rectangle(0, 0, page.width, page.height),
   );
   rect.fillColor = hasBg ? null : new paper.Color("white");
   rect.strokeColor = hasBg ? null : new paper.Color(0.7, 0.71, 0.76, 1);

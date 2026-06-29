@@ -42,7 +42,7 @@ export function ZoomWidget({
           aria-label="Poziom przybliżenia kanwy w procentach"
           type="number"
           min={10}
-          max={500}
+          max={1000}
           value={zoomInput}
           onChange={(e) => setZoomInput(e.target.value)}
           onBlur={(e) => onZoomInputCommit(e.target.value)}

@@ -86,15 +86,30 @@ impl ImageFormat {
     /// Nie zależne od `ImageFormat`, ale logicznie pasuje obok parse().
 
     pub fn to_openai_dimensions(&self) -> (u32, u32) {
-        // gpt-image-2 wspiera tylko: 1024×1024, 1024×1536 (portrait), 1536×1024 (landscape).
-        // 4:3 i 9:16 nie mają dokładnego odpowiednika — mapujemy na najbliższy dozwolony
-        // landscape/portrait, żeby API nie zwracało 400 "Unknown size".
+        // gpt-image-2 (i gpt-image-2-2026-04-21) wspiera DOWOLNE rozmiary WIDTHxHEIGHT:
+        // oba boki ÷16, stosunek dłuższy/krótszy ≤ 3:1, max bok 3840px, łączna liczba
+        // pikseli 655 360..8 294 400. Endpoint /v1/images/edits przyjmuje te same rozmiary.
+        // Dlatego mapujemy DOKŁADNIE na proporcję canvasu (koniec wciskania 16:9/4:3 w 3:2),
+        // żeby output zgadzał się z ramką edytora. Dłuższy bok 1536 (jak dotąd dla
+        // landscape/portrait), krótszy z proporcji — wszystkie wartości są podzielne przez 16.
         match self {
-            Self::Landscape16x9 => (1536, 1024),
-            Self::Landscape4x3 => (1536, 1024),
-            Self::Square => (1024, 1024),
-            Self::Portrait3x4 => (1024, 1536),
-            Self::Portrait9x16 => (1024, 1536),
+            Self::Landscape16x9 => (1536, 864),  // 16:9 dokładnie
+            Self::Landscape4x3 => (1536, 1152),  // 4:3 dokładnie
+            Self::Square => (1024, 1024),        // 1:1
+            Self::Portrait3x4 => (1152, 1536),   // 3:4 dokładnie
+            Self::Portrait9x16 => (864, 1536),   // 9:16 dokładnie
+        }
+    }
+
+    /// Proporcja dla Gemini `imageConfig.aspectRatio` — identyczna ze stringiem formatu.
+    /// Gemini-3 image (flash + pro) honoruje to pole, więc output ma dokładnie tę proporcję.
+    pub fn to_google_aspect_ratio(&self) -> &'static str {
+        match self {
+            Self::Landscape16x9 => "16:9",
+            Self::Landscape4x3 => "4:3",
+            Self::Square => "1:1",
+            Self::Portrait3x4 => "3:4",
+            Self::Portrait9x16 => "9:16",
         }
     }
 }

@@ -342,6 +342,30 @@ Warstwa "ui"   ← nakładki (hover highlight, rubber band), elementy locked=tru
 
 ---
 
+## Proporcja canvasu (ramka robocza = ramka wyjściowa do AI)
+
+Per projekt wybierana proporcja strony roboczej: `16:9 | 4:3 | 1:1 | 3:4 | 9:16`. To JEDNOCZEŚNIE kształt białej strony w edytorze i proporcja obrazu renderowanego do AI — koniec przycinania tła do prostokątnego okna edytora.
+
+- **Storage**: kolumna `projects.aspect_ratio TEXT` (migracja 025). NULL/undefined = domyślnie `1:1` (default obsłużony w froncie, bo `create_project` w Rust nie zwraca tego pola). Typ `ImageFormat` z `types/index.ts`. Zapis: `useProject.updateAspectRatio(id, aspect)`.
+- **Wymiary strony**: `paperUtils.ts::pageDimsForAspect(aspect)` — dłuższy bok = `CANVAS_LONG_MM` (7500mm), krótszy z proporcji. Zastąpiło dawną stałą `CANVAS_SIZE_MM` (kwadrat 7500²). `fitViewToPage(viewSize, page)` i `drawPageBackground(bgLayer, page, hasBg)` przyjmują teraz wymiary strony.
+- **Stan w edytorze**: `Canvas.tsx` trzyma `aspect` (state, init z `project.aspect_ratio`) + `pageDimsRef` (aktualizowany co render). Zmiana proporcji → efekt `[aspect]` przerysowuje stronę i robi `fitViewToPage`. `Canvas` jest `key={project.id}`, więc remount izoluje stan między projektami.
+- **Tło WYSIWYG**: w edytorze `<img object-cover>` siedzi w wrapperze (`bgClipRef`) przyciętym DOKŁADNIE do ramki strony — pozycjonowanym w px ekranu przez `projectToView` w `drawRulersRef` (aktualizuje się przy zoom/pan/resize). Dzięki temu to, co widać = to, co poleci do AI.
+- **Toolbar** (`CanvasToolbar.tsx`): dropdown proporcji + przycisk „Dopasuj do zdjęcia" (`nearestAspect(naturalW, naturalH)` — najbliższy z 5 presetów wg wymiarów wgranego tła).
+- **Zmiana proporcji NIE przesuwa elementów** — zostają na swoich pozycjach mm; zmienia się tylko ramka i centrowanie nowo importowanych elementów (`pageDimsRef.current` zamiast środka kwadratu).
+
+### Blokada przewijania + zoom do 1000%
+- `paperUtils.ts::clampViewCenter(page)` ogranicza `view.center`, by ramka strony (+margines `CANVAS_LONG_MM*0.1`) nie wyjeżdżała poza widok. Gdy cała strona mieści się w osi (np. max oddalenie) → środek przyklejony do środka strony, więc przewijanie samo się blokuje. Wołane po każdym panie/zoomie (kółko, shift+scroll, drag-pan, przyciski zoom).
+- Max zoom podniesiony z 500% do **1000%** (`ZOOM_MAX=10` w `useZoomActions.ts`, `Math.min(10, …)` w kółku `Canvas.tsx`, `max={1000}` w `ZoomWidget.tsx`). Reset widoku robi teraz `fitViewToPage` zamiast sztywnego 0.5.
+
+### Format wyjściowy = proporcja canvasu (jedno źródło prawdy)
+Format obrazu wysyłany do AI (`generate_image` input + kolumny `format` w `generation_sessions`/`batch_jobs`) DYKTUJE `project.aspect_ratio`, NIE osobne pole panelu. `useGeneration.generate()` liczy `outputFormat = project.aspect_ratio ?? "1:1"` i używa go wszędzie (zignorowane zostało `generationStore.format`). `ModelSelector.tsx` pokazuje format jako READ-ONLY plakietkę („wynika z proporcji canvasu — zmień w edytorze"). Powód: kompozyt/scenę renderujemy w proporcji canvasu, więc output modelu musi się zgadzać — inaczej model dokłada pasy lub przycina. `generationStore.format`/`setFormat` zostają (snapshot/szablony, wstecz-kompat), ale nie wpływają już na output.
+
+**Output realnie zgodny z proporcją u OBU dostawców** (`providers/`):
+- **OpenAI gpt-image-2**: `ImageFormat::to_openai_dimensions` (`providers/mod.rs`) zwraca DOKŁADNE rozmiary per proporcja — `16:9→1536×864`, `4:3→1536×1152`, `1:1→1024×1024`, `3:4→1152×1536`, `9:16→864×1536`. gpt-image-2 (i `/v1/images/edits`) wspiera dowolne `WIDTHxHEIGHT` (oba boki ÷16, stosunek ≤3:1, max bok 3840px, px 655 360..8 294 400), więc NIE trzeba już wciskać 16:9/4:3 w 3:2 (stare mapowanie na 1536×1024/1024×1536 było ograniczeniem gpt-image-1).
+- **Google Nano Banana**: `build_request` ustawia `generationConfig.imageConfig { aspectRatio: <format>, imageSize }` (`GeminiImageConfig::from_format`). Gemini-3 image honoruje `aspectRatio` → output dokładnie w proporcji. `imageSize` jest **per model** (`GoogleAiProvider::image_size`), dobrane tak, by koszt był IDENTYCZNY jak przed dodaniem `imageConfig` (modele dawały wtedy domyślnie 1K): **Pro → "2K"** (u Gemini 3 Pro Image 1K i 2K są w tym samym progu $0.134/obraz — darmowy bonus jakości), **Flash → "1K"** (u Flash Image 2K kosztuje więcej, więc trzymamy 1K = ta sama cena). `to_prompt_suffix` (tekst „w proporcjach X") zostaje jako wzmocnienie. **Metoda `edit`** (zmiana kąta/marker) ma `image_config: None` — proporcję dyktuje obraz wejściowy, nie wymuszamy.
+
+---
+
 ## Adaptery AI
 
 ### Co lata do AI z edytora — KOMPOZYT (nakładka SVG wtopiona w zdjęcie)
@@ -349,9 +373,11 @@ Warstwa "ui"   ← nakładki (hover highlight, rubber band), elementy locked=tru
 
 - **Szyld/produkty na realnym tle** (typowy) → `compositePngBase64` jako `svg_image` (Obraz 1) — nakładka SVG narysowana na zdjęciu. **Rozmiar i proporcje niesie sama nakładka (pixel-perfect), a prompt każe model wyrenderować ją W PERSPEKTYWIE ściany.** To sprawdzona formuła z 22.06 (patrz niżej). Historia (czego NIE robić): kompozyt z promptem „ten sam obszar + identyczne proporcje" kotwiczył frontalnie; osobny projekt + półprzezroczysty axis-aligned footprint TEŻ kotwiczył frontalnie / psuł rozmiar; rozdzielenie + rozmiar „słownie" gubiło rozmiar (model przesadzał). Zwycięzca: **kompozyt + prompt rozdzielający „pozycja/regiony z nakładki" od „kąt z fotografii".**
   - `designPngBase64` = czysty render warstwy SVG na neutralnym jasnoszarym (`#e9e9ec`), wyśrodkowany — używany TYLKO gdy NIE ma tła.
-  - `scenePngBase64` = samo zdjęcie ściany (`object-fit: cover` viewportu) — używane TYLKO gdy jest tło, ale NIE ma geometrii szyldu. **Renderowane z `backgroundImgRef` (`<img>`)** — NIE przez `dataUrlToBase64(backgroundDataUrl)`, bo `backgroundDataUrl` bywa `blob:` URL (ładowanie projektu w `useProject`), na którym `dataUrlToBase64` zwraca `null` i tło nie dociera do modelu.
+  - `scenePngBase64` = samo zdjęcie ściany (`object-fit: cover` **RAMKI STRONY = proporcji canvasu**, nie viewportu) — używane TYLKO gdy jest tło, ale NIE ma geometrii szyldu. **Renderowane z `backgroundImgRef` (`<img>`)** — NIE przez `dataUrlToBase64(backgroundDataUrl)`, bo `backgroundDataUrl` bywa `blob:` URL (ładowanie projektu w `useProject`), na którym `dataUrlToBase64` zwraca `null` i tło nie dociera do modelu.
 - **Sam projekt bez tła** → `designPngBase64` jako `svg_image`.
 - **Samo tło bez geometrii szyldu** → `scenePngBase64` jako `background_image`.
+
+**Render w proporcji canvasu, nie viewportu (od 2026-06-29).** `scenePngBase64`/`compositePngBase64` renderowane są w PROPORCJI STRONY (canvasu) o stałym dłuższym boku (`OUT_LONG = 2048` px), a NIE w wymiarach prostokątnego viewportu (`canvas.width × SCALE`, jak było wcześniej). Powód: wcześniej `drawCover` przycinał zdjęcie do kształtu okna edytora → kwadratowe/pionowe zdjęcia traciły górę i dół, a wygenerowany obraz wracał w proporcji okna. Teraz user wybiera proporcję canvasu pod zdjęcie (patrz „Proporcja canvasu" niżej) → brak przycięcia. Nakładka SVG w kompozycie mapowana jest względem ramki strony `[0..page.width × 0..page.height]` (skala `s = OUT_LONG / max(page)` px/mm, raster SVG w `rasterizeLayer(72*s)`), więc jest niezależna od zoom/pan (wcześniej szła przez `projectToView` zależne od widoku).
 
 Kolejność w backendzie (oba providery): `background_image` → `svg_image` → referencje. OpenAI `generate_via_edits` wysyła OBA sloty gdy oba są ustawione (poprawione — wcześniej tylko jeden).
 
@@ -681,4 +707,4 @@ cutting_rates_global(id, category TEXT, thickness_mm REAL, price_per_m REAL, UNI
 
 ---
 
-*Ostatnia aktualizacja: 2026-06-25*
+*Ostatnia aktualizacja: 2026-06-29*

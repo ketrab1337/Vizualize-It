@@ -159,6 +159,12 @@ pub fn run() {
             sql: include_str!("db/migrations/024_batch_job_params.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 25,
+            description: "project_aspect_ratio",
+            sql: include_str!("db/migrations/025_project_aspect_ratio.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

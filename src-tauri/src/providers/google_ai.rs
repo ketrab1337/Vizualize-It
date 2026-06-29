@@ -2,7 +2,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BatchPoll, BatchSubmit, GeneratedImage, GenerationConfig, ImageGenerator,
+    BatchPoll, BatchSubmit, GeneratedImage, GenerationConfig, ImageFormat, ImageGenerator,
 };
 use crate::commands::keyring::get_api_key;
 
@@ -52,6 +52,29 @@ struct GeminiGenConfig {
     /// Empirycznie: 1.0 → "Green-partners.pl" → "Green Partnership"; 0.35 → tekst zostaje.
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// Wymusza proporcję i rozdzielczość obrazu wynikowego. Bez tego Gemini zgadywał
+    /// proporcję z promptu + obrazu wejściowego (px niezdefiniowane). Teraz output ma
+    /// DOKŁADNIE proporcję canvasu. `imageSize` "2K" honoruje pro; flash może ograniczyć
+    /// do 1K (zachowując proporcję) — to akceptowalny soft-degrade.
+    #[serde(rename = "imageConfig", skip_serializing_if = "Option::is_none")]
+    image_config: Option<GeminiImageConfig>,
+}
+
+#[derive(Serialize, Clone)]
+struct GeminiImageConfig {
+    #[serde(rename = "aspectRatio")]
+    aspect_ratio: String,
+    #[serde(rename = "imageSize")]
+    image_size: String,
+}
+
+impl GeminiImageConfig {
+    fn from_format(format: &ImageFormat, image_size: &str) -> Self {
+        Self {
+            aspect_ratio: format.to_google_aspect_ratio().to_string(),
+            image_size: image_size.to_string(),
+        }
+    }
 }
 
 // ── Response structures ───────────────────────────────────────────────────
@@ -137,6 +160,16 @@ impl GoogleAiProvider {
     fn batch_endpoint(&self) -> String {
         format!("{ENDPOINT_BASE}/models/{}:batchGenerateContent", self.model)
     }
+
+    /// Rozdzielczość obrazu wynikowego per model — dobrana tak, by koszt był IDENTYCZNY
+    /// jak przed wprowadzeniem `imageConfig` (gdy modele dawały domyślnie 1K):
+    /// - Pro: "2K" — u Gemini 3 Pro Image 1K i 2K są w tym samym progu cenowym
+    ///   ($0.134/obraz), więc 2K to darmowy bonus jakości.
+    /// - Flash: "1K" — u Flash Image 2K kosztuje więcej niż 1K, więc trzymamy 1K =
+    ///   ta sama cena co wcześniej. Proporcja i tak wymuszana przez `aspectRatio`.
+    fn image_size(&self) -> &'static str {
+        if self.model.contains("pro") { "2K" } else { "1K" }
+    }
 }
 
 fn mask_key_in_error(msg: &str) -> String {
@@ -190,7 +223,7 @@ fn build_client() -> Result<reqwest::Client, String> {
 /// materiały → referencje. Tekst na początku daje modelowi kontekst zanim "zobaczy" obrazy,
 /// co stabilizuje wyniki (Google docs: "tekst instrukcji powinien poprzedzać obrazy
 /// referencyjne"). Numeracja "Obraz 1, 2, ..." w prompcie odpowiada kolejności w parts.
-fn build_request(config: &GenerationConfig) -> GeminiRequest {
+fn build_request(config: &GenerationConfig, image_size: &str) -> GeminiRequest {
     let mut parts: Vec<GeminiPart> = Vec::new();
 
     // 1. TEKST PIERWSZY — opis zadania + opisy "Obraz 1, 2, 3..."
@@ -242,6 +275,7 @@ fn build_request(config: &GenerationConfig) -> GeminiRequest {
             // Temperatura z ustawień użytkownika; brak → 0.35 (default 1.0 powodował
             // mutację tekstów na szyldzie).
             temperature: config.temperature.or(Some(0.35)),
+            image_config: Some(GeminiImageConfig::from_format(&config.format, image_size)),
         },
     }
 }
@@ -327,7 +361,7 @@ async fn single_call_generate(
 impl ImageGenerator for GoogleAiProvider {
     async fn generate(&self, config: GenerationConfig) -> Result<Vec<GeneratedImage>, String> {
         let key = read_key().await?;
-        let request = build_request(&config);
+        let request = build_request(&config, self.image_size());
         let url = format!("{}?key={}", self.generate_endpoint(), key);
         let client = build_client()?;
 
@@ -422,6 +456,9 @@ impl ImageGenerator for GoogleAiProvider {
                 response_modalities: vec!["TEXT".to_string(), "IMAGE".to_string()],
                 candidate_count: None,
                 temperature: Some(0.35),
+                // Edycja (zmiana kąta / marker) — proporcję dyktuje obraz wejściowy,
+                // NIE wymuszamy formatu (forsowanie aspectRatio zniekształciłoby kadr).
+                image_config: None,
             },
         };
 
@@ -455,7 +492,7 @@ impl ImageGenerator for GoogleAiProvider {
     async fn submit_batch(&self, config: GenerationConfig) -> Result<BatchSubmit, String> {
         let key = read_key().await?;
         let client = build_client()?;
-        let request = build_request(&config);
+        let request = build_request(&config, self.image_size());
 
         // Inlined batch z N żądaniami — Gemini image-preview NIE wspiera candidateCount > 1,
         // więc dla count > 1 wstawiamy N kopii tego samego żądania z różnymi metadata.key.

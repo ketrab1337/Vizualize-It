@@ -19,12 +19,14 @@ import { NestingPanel } from "./NestingPanel";
 import { updateSvgWithOverrides, patchSvgLayerState } from "../../lib/svgHelpers";
 import { RULER_SIZE, RULER_BG, RULER_BORDER, drawHRuler, drawVRuler } from "./canvas/rulers";
 import {
-  CANVAS_SIZE_MM, BG_COLOR,
+  BG_COLOR,
   fitViewToPage, drawPageBackground, exportSvgLayer, withPhysicalSizeMm,
+  pageDimsForAspect, clampViewCenter, nearestAspect, type PageDims,
   assignMissingNames, findItemByName, applyFillByName, stripStrokeIfFilled,
   getItemType, getDefaultName, calcTotalLength, calcTotalArea,
   parseSvgDimension, toMm,
 } from "./canvas/paperUtils";
+import { useProject } from "../../hooks/useProject";
 import { HANDLE_PX, HANDLE_CURSORS, computeResizeDelta, type HandleType } from "./canvas/resize";
 import { CanvasToolbar } from "./canvas/CanvasToolbar";
 import { BackgroundPickerModal } from "./BackgroundPickerModal";
@@ -36,7 +38,7 @@ import { DragOverlay, type DragOverKind } from "./canvas/DragOverlay";
 import { useCanvasHistory } from "./canvas/useCanvasHistory";
 import { useZoomActions } from "./canvas/useZoomActions";
 import type { LayerItem } from "./LayersPanel";
-import type { NodeOverride, Project, ElementRole } from "../../types";
+import type { NodeOverride, Project, ElementRole, ImageFormat } from "../../types";
 
 function setBoundsRecursive(
   item: paper.Item,
@@ -186,6 +188,9 @@ export function Canvas({ project }: CanvasProps) {
   const topRulerRef = useRef<HTMLCanvasElement>(null);
   const leftRulerRef = useRef<HTMLCanvasElement>(null);
   const backgroundImgRef = useRef<HTMLImageElement>(null);
+  // Wrapper przycinający tło do ramki strony (proporcja canvasu) — pozycjonowany
+  // w px ekranu wg projectToView strony, aktualizowany w drawRulersRef.
+  const bgClipRef = useRef<HTMLDivElement>(null);
   const drawRulersRef = useRef<() => void>(() => {});
 
   // Refs — stan imperatywny
@@ -249,6 +254,12 @@ export function Canvas({ project }: CanvasProps) {
   const rotateCenterRef        = useRef<paper.Point | null>(null);
 
 
+  const [aspect, setAspect] = useState<ImageFormat>(project.aspect_ratio ?? "1:1");
+  const pageDims = pageDimsForAspect(aspect);
+  const pageDimsRef = useRef<PageDims>(pageDims);
+  pageDimsRef.current = pageDims;
+  const { updateAspectRatio } = useProject();
+
   const [hasSvg, setHasSvg] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [zoomInput, setZoomInput] = useState<string | null>(null);
@@ -295,7 +306,37 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       rect.strokeColor = new paper.Color(0.7, 0.71, 0.76, 1);
       rect.strokeWidth = 1;
     }
+    // Tło właśnie się pojawiło/zniknęło — ustaw wrapper na ramce strony.
+    drawRulersRef.current();
   }, [backgroundDataUrl]);
+
+  // Zmiana proporcji canvasu → przerysuj ramkę strony, dopasuj widok, zapisz do projektu.
+  useEffect(() => {
+    if (!paperReadyRef.current) return;
+    const bgLayer = bgLayerRef.current;
+    if (bgLayer) {
+      pageRectRef.current = drawPageBackground(bgLayer, pageDimsRef.current, !!backgroundDataUrl);
+    }
+    fitViewToPage(paper.view.viewSize, pageDimsRef.current);
+    setZoomLevel(paper.view.zoom);
+    drawRulersRef.current();
+    toolCbRef.current.drawResizeHandles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aspect]);
+
+  const handleChangeAspect = useCallback((next: ImageFormat) => {
+    setAspect(next);
+    void updateAspectRatio(project.id, next);
+  }, [updateAspectRatio, project.id]);
+
+  const handleAutoAspect = useCallback(() => {
+    const img = backgroundImgRef.current;
+    if (!img || !img.naturalWidth || !img.naturalHeight) {
+      addToast("Najpierw dodaj tło, aby dopasować proporcję.", "info");
+      return;
+    }
+    handleChangeAspect(nearestAspect(img.naturalWidth, img.naturalHeight));
+  }, [handleChangeAspect, addToast]);
 
   // ── Callbacki (stabilne — używane w Tool) ─────────────────────────────────
 
@@ -743,6 +784,19 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     const mpu = mmPerUnitRef.current;
     if (top) drawHRuler(top, zoom, center.x, vs.width, mpu);
     if (left) drawVRuler(left, zoom, center.y, vs.height, mpu);
+
+    // Pozycjonuj wrapper tła dokładnie na ramce strony (w px ekranu), żeby zdjęcie
+    // pokazywało DOKŁADNIE to, co poleci do AI (object-cover w proporcji canvasu).
+    const wrap = bgClipRef.current;
+    if (wrap) {
+      const page = pageDimsRef.current;
+      const tl = paper.view.projectToView(new paper.Point(0, 0));
+      const br = paper.view.projectToView(new paper.Point(page.width, page.height));
+      wrap.style.left = `${tl.x}px`;
+      wrap.style.top = `${tl.y}px`;
+      wrap.style.width = `${br.x - tl.x}px`;
+      wrap.style.height = `${br.y - tl.y}px`;
+    }
   };
 
   // ── Rejestracja funkcji zapisu ─────────────────────────────────────────────
@@ -785,21 +839,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const bounds = svgLayer && svgLayer.children.length > 0 ? svgLayer.bounds : null;
       const hasSvgBounds = !!(bounds && bounds.width > 0 && bounds.height > 0);
 
-      // ── Raster warstwy SVG w rozdzielczości viewportu + jego prostokąt w pikselach
-      //    off-canvasu (do kompozytu tło+SVG / legacy produktów). ───────────────────
+      // ── Raster warstwy SVG w rozdzielczości viewportu — fallback dla designPngBase64. ─
       let viewRaster: HTMLCanvasElement | null = null;
-      let viewRect: { x: number; y: number; w: number; h: number } | null = null;
       if (hasSvgBounds) {
-        const rc = rasterizeLayer(72 * paper.view.zoom * SCALE);
-        if (rc) {
-          const tl = paper.view.projectToView(bounds!.topLeft);
-          const br = paper.view.projectToView(bounds!.bottomRight);
-          viewRaster = rc;
-          viewRect = {
-            x: tl.x * SCALE, y: tl.y * SCALE,
-            w: (br.x - tl.x) * SCALE, h: (br.y - tl.y) * SCALE,
-          };
-        }
+        viewRaster = rasterizeLayer(72 * paper.view.zoom * SCALE);
       }
 
       const drawCover = (ctx: CanvasRenderingContext2D, ow: number, oh: number) => {
@@ -840,15 +883,20 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         if (!designPngBase64) designPngBase64 = toB64(canvas);
       }
 
-      // ── scenePngBase64: samo zdjęcie ściany (object-fit cover viewportu), BEZ footprintu —
-      //    Obraz 1 dla szyldu na tle. Renderowane z backgroundImgRef (<img>), więc działa dla
-      //    blob: ORAZ data: URL; dataUrlToBase64(backgroundDataUrl) na blob: zwracało null,
-      //    przez co tło nie docierało do modelu i wymyślał własną scenę.
-      // ── compositePngBase64: legacy kompozyt (tło + opaque SVG) — TYLKO do produktów <image>.
+      // ── scenePngBase64 / compositePngBase64 — renderowane w PROPORCJI STRONY (canvasu),
+      //    NIE prostokątnego viewportu. Dzięki temu zdjęcie tła nie jest przycinane do
+      //    kształtu okna edytora (user dobiera proporcję canvasu pod zdjęcie). Tło: object-fit
+      //    cover w ramce strony (= dokładnie to, co widać w edytorze). Nakładka SVG mapowana
+      //    względem RAMKI STRONY [0..page.width × 0..page.height] — niezależna od zoom/pan.
+      //    scenePngBase64 renderowane z backgroundImgRef (<img>) → działa dla blob: ORAZ data:.
       let scenePngBase64: string | null = null;
       let compositePngBase64: string | null = null;
       if (hasBg) {
-        const ow = canvas.width * SCALE, oh = canvas.height * SCALE;
+        const page = pageDimsRef.current;
+        const OUT_LONG = 2048;
+        const s = OUT_LONG / Math.max(page.width, page.height); // px wyjściowych na mm
+        const ow = Math.round(page.width * s);
+        const oh = Math.round(page.height * s);
         try {
           const sc = document.createElement("canvas");
           sc.width = ow; sc.height = oh;
@@ -862,17 +910,20 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         } catch {
           scenePngBase64 = null;
         }
-        if (viewRaster && viewRect) {
+        if (hasSvgBounds) {
           try {
-            const cc = document.createElement("canvas");
-            cc.width = ow; cc.height = oh;
-            const cctx = cc.getContext("2d");
-            if (cctx) {
-              cctx.imageSmoothingEnabled = true;
-              cctx.imageSmoothingQuality = "high";
-              drawCover(cctx, ow, oh);
-              cctx.drawImage(viewRaster, viewRect.x, viewRect.y, viewRect.w, viewRect.h);
-              compositePngBase64 = toB64(cc);
+            const rc = rasterizeLayer(72 * s); // SVG w rozdzielczości wyjściowej (crisp 1:1)
+            if (rc) {
+              const cc = document.createElement("canvas");
+              cc.width = ow; cc.height = oh;
+              const cctx = cc.getContext("2d");
+              if (cctx) {
+                cctx.imageSmoothingEnabled = true;
+                cctx.imageSmoothingQuality = "high";
+                drawCover(cctx, ow, oh);
+                cctx.drawImage(rc, bounds!.x * s, bounds!.y * s, bounds!.width * s, bounds!.height * s);
+                compositePngBase64 = toB64(cc);
+              }
             }
           } catch {
             compositePngBase64 = null;
@@ -926,15 +977,16 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         plateOriginX = maxRight + 100;
         plateOriginY = topY;
       } else {
+        const pageMidY = pageDimsRef.current.height / 2;
         let maxRight = 0;
-        let minTop = CANVAS_SIZE_MM / 2;
+        let minTop = pageMidY;
         svgLayer.children.forEach((child) => {
           const it = child as paper.Item;
           if (it.bounds.right > maxRight) maxRight = it.bounds.right;
           if (it.bounds.top < minTop) minTop = it.bounds.top;
         });
         plateOriginX = maxRight > 0 ? maxRight + 100 : 100;
-        plateOriginY = minTop < CANVAS_SIZE_MM / 2 ? minTop : 100;
+        plateOriginY = minTop < pageMidY ? minTop : 100;
       }
 
       // Narysuj obrys NOWEJ płyty (bez czyszczenia poprzednich)
@@ -1128,7 +1180,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     const bgLayer = paper.project.activeLayer;
     bgLayer.name = "bg";
     bgLayerRef.current = bgLayer;
-    pageRectRef.current = drawPageBackground(bgLayer, !!backgroundDataUrl);
+    pageRectRef.current = drawPageBackground(bgLayer, pageDimsRef.current, !!backgroundDataUrl);
 
     const nestingLayer = new paper.Layer({ name: "nesting" });
     nestingLayerRef.current = nestingLayer;
@@ -1140,8 +1192,8 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     uiLayerRef.current = uiLayer;
     svgLayer.activate();
 
-    // Dopasuj widok do strony 7500x7500mm
-    fitViewToPage(paper.view.viewSize);
+    // Dopasuj widok do strony (proporcja canvasu)
+    fitViewToPage(paper.view.viewSize, pageDimsRef.current);
 
     // Paper.js Tool — deleguje do toolCbRef.current (zawsze aktualny)
     const tool = new paper.Tool();
@@ -1252,6 +1304,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         paper.view.center = paper.view.center.subtract(
           new paper.Point(dxScreen / z, dyScreen / z)
         );
+        clampViewCenter(pageDimsRef.current);
         drawRulersRef.current();
         return;
       }
@@ -1479,6 +1532,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
     tool.activate();
     paperReadyRef.current = true;
+    drawRulersRef.current(); // ustaw linijki + wrapper tła na ramce strony od razu po init
 
     // ── Menu kontekstowe — prawy przycisk ───────────────────────────────────
     const onCtxMenu = (e: MouseEvent) => {
@@ -1532,7 +1586,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const newSize = new paper.Size(Math.floor(width), Math.floor(height));
       paper.view.viewSize = newSize;
       // Jeśli zoom jest 0 (setup trafił na 0x0 kontener), dopasuj widok teraz
-      if (paper.view.zoom === 0) fitViewToPage(newSize);
+      if (paper.view.zoom === 0) fitViewToPage(newSize, pageDimsRef.current);
       drawRulersRef.current();
     });
     ro.observe(container);
@@ -1553,7 +1607,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       paper.project.clear();
       const bgLayer = new paper.Layer({ name: "bg" });
       bgLayerRef.current = bgLayer;
-      pageRectRef.current = drawPageBackground(bgLayer, !!backgroundDataUrl);
+      pageRectRef.current = drawPageBackground(bgLayer, pageDimsRef.current, !!backgroundDataUrl);
       const svgLayer = new paper.Layer({ name: "svg" });
       svgLayerRef.current = svgLayer;
       const uiLayer = new paper.Layer({ name: "ui" });
@@ -1565,7 +1619,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       setSelectedItemNames([]);
       setSelectedElementIds([]);
       clearNodeOverrides();
-      fitViewToPage(paper.view.viewSize);
+      fitViewToPage(paper.view.viewSize, pageDimsRef.current);
       return;
     }
 
@@ -1582,7 +1636,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     // Odtwórz warstwy po clear() (od dołu: bg → nesting → svg → ui)
     const bgLayer = new paper.Layer({ name: "bg" });
     bgLayerRef.current = bgLayer;
-    pageRectRef.current = drawPageBackground(bgLayer, !!backgroundDataUrl);
+    pageRectRef.current = drawPageBackground(bgLayer, pageDimsRef.current, !!backgroundDataUrl);
     const nestingLayer = new paper.Layer({ name: "nesting" });
     nestingLayerRef.current = nestingLayer;
     const svgLayer = new paper.Layer({ name: "svg" });
@@ -1695,7 +1749,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     // Dopasuj widok do strony tylko przy pierwszym imporcie (nie przy undo/redo,
     // gdzie widok jest zachowywany powyżej).
     if (!isUndoRedoRef.current) {
-      fitViewToPage(paper.view.viewSize);
+      fitViewToPage(paper.view.viewSize, pageDimsRef.current);
     }
 
     // Rozwiń wrapper root-grupy — importSVG zawsze opakowuje w Group (korzeń <svg>),
@@ -1723,7 +1777,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const layerChildren = svgLayer.children as paper.Item[];
       if (layerChildren.length > 0) {
         const allBounds = layerChildren.map((c) => c.bounds).reduce((a, b) => a.unite(b));
-        const pageCenter = new paper.Point(CANVAS_SIZE_MM / 2, CANVAS_SIZE_MM / 2);
+        const pageCenter = new paper.Point(pageDimsRef.current.width / 2, pageDimsRef.current.height / 2);
         const offset = pageCenter.subtract(allBounds.center);
         layerChildren.forEach((c) => { c.position = c.position.add(offset); });
       }
@@ -1799,10 +1853,11 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         const screenPt = new paper.Point(e.clientX - rect.left, e.clientY - rect.top);
         const projPt = paper.view.viewToProject(screenPt);
         const oldZoom = paper.view.zoom;
-        const newZoom = Math.max(0.1, Math.min(5, oldZoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+        const newZoom = Math.max(0.1, Math.min(10, oldZoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
         const oldCenter = paper.view.center;
         paper.view.zoom = newZoom;
         paper.view.center = projPt.subtract(projPt.subtract(oldCenter).multiply(oldZoom / newZoom));
+        clampViewCenter(pageDimsRef.current);
         setZoomLevel(newZoom);
         toolCbRef.current.drawResizeHandles();
         const _uiSw = 1 / newZoom;
@@ -1812,10 +1867,12 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         // Shift+scroll → pan lewo/prawo
         const delta = e.deltaY / paper.view.zoom;
         paper.view.center = paper.view.center.add(new paper.Point(delta, 0));
+        clampViewCenter(pageDimsRef.current);
       } else {
         // scroll → pan góra/dół
         const delta = e.deltaY / paper.view.zoom;
         paper.view.center = paper.view.center.add(new paper.Point(0, delta));
+        clampViewCenter(pageDimsRef.current);
       }
       drawRulersRef.current();
     };
@@ -1826,7 +1883,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   // ── Przyciski zoom ─────────────────────────────────────────────────────────
 
   const { handleZoomIn, handleZoomOut, handleResetView, handleZoomInputCommit } = useZoomActions({
-    setZoomLevel, setZoomInput, drawRulersRef, toolCbRef, hoverRectRef, rubberBandRectRef,
+    setZoomLevel, setZoomInput, drawRulersRef, toolCbRef, hoverRectRef, rubberBandRectRef, pageDimsRef,
   });
 
   // ── Grupowanie / Rozgrupowanie ─────────────────────────────────────────────
@@ -2199,7 +2256,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       if (newKids.length > 0) {
         const allBounds = newKids.map((k) => k.bounds);
         const combinedBounds = allBounds.reduce((acc, b) => acc.unite(b));
-        const pageCenter = new paper.Point(CANVAS_SIZE_MM / 2, CANVAS_SIZE_MM / 2);
+        const pageCenter = new paper.Point(pageDimsRef.current.width / 2, pageDimsRef.current.height / 2);
         const offset = pageCenter.subtract(combinedBounds.center);
         newKids.forEach((k) => { k.position = k.position.add(offset); });
       }
@@ -2305,7 +2362,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         // Domyślny rozmiar na płycie: dłuższy bok ≈ 2500 mm (czytelny, ~1/3 obszaru 7500 mm).
         const longEdgePx = Math.max(raster.width, raster.height);
         if (longEdgePx > 0) raster.scale(2500 / longEdgePx);
-        raster.position = new paper.Point(CANVAS_SIZE_MM / 2, CANVAS_SIZE_MM / 2);
+        raster.position = new paper.Point(pageDimsRef.current.width / 2, pageDimsRef.current.height / 2);
         setHasSvg(true);
         clearSelection();
         addToSelection(raster);
@@ -2517,6 +2574,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         backgroundDataUrl={backgroundDataUrl}
         backgroundFilename={bgFilename}
         isNestingOpen={isNestingPanelOpen}
+        aspectRatio={aspect}
+        onChangeAspect={handleChangeAspect}
+        onAutoAspect={handleAutoAspect}
         onImportSvg={handleImportSvg}
         onExportSvg={handleExportSvg}
         onMergeHoles={handleMergeHoles}
@@ -2549,12 +2609,18 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
           <div ref={containerRef} className="flex-1 relative overflow-hidden">
             {backgroundDataUrl && (
-              <img
-                ref={backgroundImgRef}
-                src={backgroundDataUrl}
-                alt=""
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none select-none"
-              />
+              <div
+                ref={bgClipRef}
+                className="absolute overflow-hidden pointer-events-none"
+                style={{ left: 0, top: 0, width: 0, height: 0 }}
+              >
+                <img
+                  ref={backgroundImgRef}
+                  src={backgroundDataUrl}
+                  alt=""
+                  className="w-full h-full object-cover select-none"
+                />
+              </div>
             )}
 
             <canvas

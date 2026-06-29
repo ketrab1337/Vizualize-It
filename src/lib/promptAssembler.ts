@@ -390,12 +390,21 @@ export function assemblePromptFragments(
     } else if (visualInputs.hasBackground) {
       const sceneLabel = imgLabel(imgIdx);
       if (visualInputs.hasProducts) {
-        // Tło + produkt(y), BEZ szyldu (wizualizacja produktu na ladzie/półce).
-        // Samo „zachowaj zdjęcie"; właściwą robotę robi klauzula produktowa niżej.
+        // Tło + produkt(y), BEZ szyldu (wizualizacja produktu w scenie). Produkt bywa REALNYM
+        // zdjęciem wyrobu zrobionym pod innym kątem niż scena — wklejony „na płasko" nigdy nie
+        // pasuje. Dlatego NIE blokujemy go sztywno: scena (lokalizacja) trzymana twardo, ale
+        // produkt wolno przesunąć/przeskalować/obrócić/lekko przekształcić, by usiadł w
+        // perspektywie sceny (szczegóły w klauzuli produktowej niżej). JAWNY zakaz wymyślania
+        // NOWYCH obiektów zostaje (model dorzucał losowe meble/dekoracje).
+        // Osobna klauzula OpenAI — generyczna mówi o „obszarze szyldu", a tu nie ma szyldu.
+        const openaiProductClause = isOpenai
+          ? ` Potraktuj ${imgLabel(1)} jako obraz wejściowy do edycji — zmieniaj wyłącznie produkty nałożone przez użytkownika (ich osadzenie, perspektywę, oświetlenie i cienie), a tło lokalizacji pozostaw nienaruszone.`
+          : "";
         imgRefs.push(
-          `ZADANIE: edycja zdjęcia. ${sceneLabel} to PRAWDZIWE ZDJĘCIE lokalizacji — ` +
-          `zachowaj je pixel-perfect: tło, otoczenie, oświetlenie i perspektywa bez zmian.` +
-          openaiEditClause
+          `ZADANIE: wkomponuj produkty w zdjęcie. ${sceneLabel} to PRAWDZIWE ZDJĘCIE lokalizacji, na które użytkownik nałożył produkty. Produkty są na razie wklejone „na płasko" i nie pasują jeszcze perspektywą, skalą ani światłem do sceny — Twoim zadaniem jest osadzić je tak, by wyglądały jak naprawdę sfotografowane w tym miejscu. ` +
+          `Zachowaj samą lokalizację bez zmian — tło, otoczenie, istniejące meble i wyposażenie, powierzchnie, oświetlenie, kolorystykę i perspektywę pozostaw dokładnie jak na zdjęciu. ` +
+          `NIE dodawaj, nie usuwaj ani nie wymyślaj żadnych obiektów, mebli, dekoracji, roślin, urządzeń ani napisów, których nie ma na zdjęciu — edytuj wyłącznie produkty nałożone przez użytkownika.` +
+          openaiProductClause
         );
       } else {
         imgRefs.push(
@@ -412,10 +421,17 @@ export function assemblePromptFragments(
     // Produkty wtapiane w scenę — są CZĘŚCIĄ Obrazu 1 (kompozyt), nie osobnym obrazem,
     // więc nie zwiększają numeracji „Obraz N". Instrukcja, by model osadził je realistycznie.
     if (visualInputs.hasProducts && (visualInputs.hasSvg || visualInputs.hasBackground)) {
+      // Produkty SĄ JUŻ na Obrazie 1 (kompozyt), ale często jako REALNE zdjęcie wyrobu zrobione
+      // pod innym kątem niż scena — wklejone „na płasko" wyglądają sztucznie. Dlatego traktujemy
+      // je jako WZORZEC WYGLĄDU (projekt/materiał/kolor/proporcje — zachować rozpoznawalność),
+      // a NIE sztywną wklejkę: wolno przesunąć/przeskalować/obrócić/lekko przekształcić produkt,
+      // by usiadł w perspektywie sceny i stabilnie na powierzchni. Plus dopasowanie światła/cienia.
+      // Powierzchnia kontaktu ogólnie (podłoże LUB ściana, odbicie warunkowo).
       imgRefs.push(
-        `Na scenie (Obraz 1) znajdują się dodatkowe PRZEDMIOTY/PRODUKTY postawione przez użytkownika (np. na ladzie, półce lub blacie). ` +
-        `Wtop każdy z nich fotorealistycznie tak, jakby fizycznie stał w tym miejscu: dodaj kontaktowy cień, miękkie odbicie na powierzchni pod spodem, oraz oświetlenie i perspektywę spójne z resztą sceny. ` +
-        `Zachowaj kształt, kolory, etykiety/napisy i proporcje tych przedmiotów dokładnie takie, jakie są, i naturalnie osadź je w otoczeniu.`
+        `Produkty nałożone przez użytkownika potraktuj jako WZORZEC WYGLĄDU (projekt, materiał, kolor, etykiety/napisy/logo, ogólne proporcje) — mają pozostać rozpoznawalnie tym samym wyrobem — a NIE jako sztywno zablokowaną wklejkę. ` +
+        `Wolno Ci skorygować ich położenie, skalę, obrót, perspektywę (skrót perspektywiczny), a w razie potrzeby nieznacznie kształt, jeśli dzięki temu produkt będzie realistycznie i stabilnie osadzony na powierzchni sceny (spoczywa na podłodze/blacie albo przylega do ściany — nie unosi się w powietrzu) i zgodny z perspektywą oraz linią wzroku zdjęcia. ` +
+        `Dopasuj oświetlenie i kontakt ze sceną: kontaktowy cień i miękkie ambient occlusion w miejscu styku z podłożem lub ścianą; jasność oraz kierunek, miękkość i temperaturę barwową światła i cieni zgodne z resztą sceny; refleksy otoczenia na błyszczących fragmentach produktu, a jeśli powierzchnia pod nim lub za nim jest błyszcząca — subtelne odbicie; oraz tę samą ostrość, ziarno i głębię ostrości co zdjęcie. ` +
+        `Nie powielaj produktów i nie dodawaj wokół nich żadnych nowych przedmiotów, dekoracji ani napisów.`
       );
     }
 

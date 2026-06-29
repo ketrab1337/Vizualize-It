@@ -7,7 +7,7 @@ import { useGenerationStore, type GenerationSnapshot } from "../stores/generatio
 import { useToastStore } from "../stores/toastStore";
 import { updateSvgWithOverrides } from "../lib/svgHelpers";
 import { getDb } from "../lib/db";
-import type { Project } from "../types";
+import type { Project, ImageFormat } from "../types";
 
 export function useProject() {
   const { projects, setProjects, activeProjectId, setActiveProject } = useProjectStore();
@@ -252,6 +252,34 @@ export function useProject() {
     [projects, setProjects, addToast]
   );
 
+  /**
+   * Zapisuje proporcję canvasu projektu ("16:9".."9:16"). Trafia do
+   * `projects.aspect_ratio` i wyznacza zarówno kształt strony w edytorze, jak i
+   * proporcję obrazu renderowanego do AI (koniec przycinania tła do viewportu).
+   */
+  const updateAspectRatio = useCallback(
+    async (id: string, aspect: ImageFormat): Promise<boolean> => {
+      try {
+        const db = await getDb();
+        const now = new Date().toISOString();
+        await db.execute(
+          "UPDATE projects SET aspect_ratio = $1, updated_at = $2 WHERE id = $3",
+          [aspect, now, id]
+        );
+        setProjects(
+          projects.map((p) =>
+            p.id === id ? { ...p, aspect_ratio: aspect, updated_at: now } : p
+          )
+        );
+        return true;
+      } catch (e) {
+        addToast(`Błąd zapisu proporcji canvasu: ${e}`, "error");
+        return false;
+      }
+    },
+    [projects, setProjects, addToast]
+  );
+
   // ── Per-projekt stan generowania (prompt + presety + ustawienia panelu) ─────
   // JSON w `projects.generation_state_json` — patrz migracja 014. Powód: bez tego
   // wybór presetów i prompt wyciekały między projektami (cały generationStore był
@@ -307,6 +335,7 @@ export function useProject() {
     deleteProject,
     renameProject,
     updateProductType,
+    updateAspectRatio,
     saveEditorState,
     loadEditorState,
     saveGenerationState,

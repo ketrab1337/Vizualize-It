@@ -1,6 +1,7 @@
 import { useGenerationStore } from "../../stores/generationStore";
 import { useSettingsStore, type GptImageQuality } from "../../stores/settingsStore";
-import type { AiModel, ImageFormat } from "../../types";
+import { useProjectStore } from "../../stores/projectStore";
+import type { AiModel } from "../../types";
 
 const MODELS: { id: AiModel; label: string; desc: string; disabled?: boolean }[] = [
   {
@@ -20,14 +21,6 @@ const MODELS: { id: AiModel; label: string; desc: string; disabled?: boolean }[]
   },
 ];
 
-const FORMATS: { id: ImageFormat; label: string }[] = [
-  { id: "16:9", label: "16:9" },
-  { id: "4:3", label: "4:3" },
-  { id: "1:1", label: "1:1" },
-  { id: "3:4", label: "3:4" },
-  { id: "9:16", label: "9:16" },
-];
-
 const COUNTS = [1, 2, 3, 4] as const;
 
 const QUALITY_OPTIONS: { value: GptImageQuality; label: string }[] = [
@@ -37,7 +30,7 @@ const QUALITY_OPTIONS: { value: GptImageQuality; label: string }[] = [
 ];
 
 export function ModelSelector() {
-  const { model, format, count, batchMode, setModel, setFormat, setCount, setBatchMode } =
+  const { model, count, batchMode, setModel, setCount, setBatchMode } =
     useGenerationStore();
   const {
     gptImageQuality,
@@ -45,6 +38,9 @@ export function ModelSelector() {
     setGptImageQuality,
     setNanoBananaTemperature,
   } = useSettingsStore();
+  const { projects, activeProjectId } = useProjectStore();
+  // Format wyjściowy = proporcja canvasu projektu (źródło prawdy w edytorze).
+  const aspect = projects.find((p) => p.id === activeProjectId)?.aspect_ratio ?? "1:1";
   const isNanoBanana = model === "nano-banana-2" || model === "nano-banana-pro";
 
   return (
@@ -157,23 +153,16 @@ export function ModelSelector() {
         </label>
       </div>
 
-      {/* Format obrazu */}
+      {/* Format obrazu — wynika z proporcji canvasu (zmieniana w edytorze) */}
       <div>
         <p className="text-xs text-gray-400 font-medium mb-2">Format obrazu</p>
-        <div className="flex gap-1 flex-wrap">
-          {FORMATS.map((f) => (
-            <button
-              key={f.id}
-              onClick={() => setFormat(f.id)}
-              className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-                format === f.id
-                  ? "bg-blue-600 text-white"
-                  : "bg-[#222] text-gray-400 hover:text-gray-200 hover:bg-[#2a2a2a]"
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <span className="px-2.5 py-1 rounded text-xs font-medium bg-blue-600/20 text-blue-300 border border-blue-700/40">
+            {aspect}
+          </span>
+          <span className="text-[11px] text-gray-500">
+            wynika z proporcji canvasu — zmień w edytorze
+          </span>
         </div>
       </div>
 

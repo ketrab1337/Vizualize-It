@@ -15,11 +15,16 @@ export function resizeSelectedElement(widthMm: number, heightMm: number): void {
  *   ją w perspektywie ściany (sprawdzona formuła 22.06 — bez footprintu, który sam kotwiczył frontalnie).
  * - **sam projekt** (bez tła): `designPngBase64`.
  * - **samo tło** (bez geometrii szyldu): `scenePngBase64`.
+ *
+ * `scenePngBase64`/`compositePngBase64` renderowane są w PROPORCJI STRONY (canvasu,
+ * wybieranej per projekt: 16:9..9:16), a NIE prostokątnego viewportu — dzięki temu
+ * zdjęcie tła nie jest przycinane do kształtu okna edytora. Nakładka SVG mapowana
+ * względem ramki strony, więc jest niezależna od zoom/pan.
  */
 export interface CanvasCapture {
   /** Czysty render projektu SVG na neutralnym jasnoszarym tle. Null gdy brak geometrii SVG. */
   designPngBase64: string | null;
-  /** Samo zdjęcie ściany (object-fit cover viewportu) — używane gdy NIE ma geometrii szyldu. Renderowane z <img>, więc blob-safe. Null gdy brak tła. */
+  /** Samo zdjęcie ściany (object-fit cover RAMKI STRONY = proporcji canvasu, nie viewportu) — używane gdy NIE ma geometrii szyldu. Renderowane z <img>, więc blob-safe. Null gdy brak tła. */
   scenePngBase64: string | null;
   /** Kompozyt tło+SVG — nakładka SVG wtopiona w zdjęcie (szyld na tle ORAZ produkty <image>). Null gdy brak tła lub brak SVG. */
   compositePngBase64: string | null;
