@@ -16,6 +16,7 @@ interface FormState {
   color_hex: string;
   pricing_unit: "per_piece" | "per_m2" | "per_mb_cut" | "none";
   base_price: string;
+  quote_price: string;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -25,6 +26,7 @@ const DEFAULT_FORM: FormState = {
   color_hex: "#ffffff",
   pricing_unit: "per_m2",
   base_price: "",
+  quote_price: "",
 };
 
 const PRICING_UNIT_LABELS: Record<string, string> = {
@@ -386,6 +388,7 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
           color_hex: material.color_hex ?? "#ffffff",
           pricing_unit: (material.pricing_unit ?? "none") as FormState["pricing_unit"],
           base_price: material.base_price != null ? String(material.base_price) : "",
+          quote_price: material.quote_price != null ? String(material.quote_price) : "",
         }
       : { ...DEFAULT_FORM, category: initialCategory }
   );
@@ -407,6 +410,7 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
     setIsSaving(true);
     try {
       const basePrice = form.base_price !== "" ? parseFloat(form.base_price) : null;
+      const quotePrice = form.quote_price !== "" ? parseFloat(form.quote_price) : null;
       const pricingUnit = form.pricing_unit === "none" ? null : form.pricing_unit;
       const catAllowsSurface =
         form.category === "plexa" ||
@@ -418,6 +422,7 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
         color_hex: form.color_hex || null,
         pricing_unit: pricingUnit,
         base_price: pricingUnit != null && basePrice != null && isFinite(basePrice) ? basePrice : null,
+        quote_price: pricingUnit != null && quotePrice != null && isFinite(quotePrice) ? quotePrice : null,
         default_thickness_mm: null,
       };
       if (material) {
@@ -586,22 +591,45 @@ function MaterialModal({ material, defaultCategory, categories, onClose, onSaved
               </select>
             </div>
 
-            {/* Cena bazowa — ukryte gdy Brak */}
+            {/* Ceny — ukryte gdy Brak */}
             {form.pricing_unit !== "none" && (
-            <div>
-              <label className="block text-gray-400 text-xs mb-1.5">
-                Cena (zł / {PRICING_UNIT_LABELS[form.pricing_unit]})
-              </label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.base_price}
-                onChange={(e) => setField("base_price", e.target.value)}
-                placeholder="0.00"
-                className="w-full bg-[#161616] border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-              />
-            </div>
+            <>
+              {/* Koszt własny — ile materiał kosztuje mnie */}
+              <div>
+                <label className="block text-gray-400 text-xs mb-1.5">
+                  Koszt własny (zł / {PRICING_UNIT_LABELS[form.pricing_unit]})
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.base_price}
+                  onChange={(e) => setField("base_price", e.target.value)}
+                  placeholder="0.00"
+                  className="w-full bg-[#161616] border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                />
+                <p className="text-gray-600 text-[11px] mt-1">Ile materiał kosztuje Ciebie (koszty własne).</p>
+              </div>
+
+              {/* Cena w wycenie — kwota wliczana do wyceny dla klienta */}
+              <div>
+                <label className="block text-gray-400 text-xs mb-1.5">
+                  Cena w wycenie (zł / {PRICING_UNIT_LABELS[form.pricing_unit]})
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.quote_price}
+                  onChange={(e) => setField("quote_price", e.target.value)}
+                  placeholder="np. wyższa niż koszt własny"
+                  className="w-full bg-[#161616] border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                />
+                <p className="text-gray-600 text-[11px] mt-1">
+                  Kwota wliczana do wyceny dla klienta. Puste = użyj kosztu własnego. Marża z edytora liczona dodatkowo na wierzch.
+                </p>
+              </div>
+            </>
             )}
 
           </div>

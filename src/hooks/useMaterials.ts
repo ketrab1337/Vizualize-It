@@ -9,6 +9,8 @@ export interface MaterialInput {
   color_hex: string | null;
   pricing_unit: "per_piece" | "per_m2" | "per_mb_cut" | null;
   base_price: number | null;
+  /** Cena wliczana do wyceny dla klienta (ta sama jednostka co base_price). null = użyj base_price. */
+  quote_price: number | null;
   default_thickness_mm: number | null;
 }
 
@@ -72,8 +74,8 @@ export function useMaterials() {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     await db.execute(
-      "INSERT INTO materials (id, name, category, material_type, color_hex, pricing_unit, base_price, default_thickness_mm, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-      [id, input.name, input.category, input.material_type, input.color_hex, input.pricing_unit, input.base_price, input.default_thickness_mm, now]
+      "INSERT INTO materials (id, name, category, material_type, color_hex, pricing_unit, base_price, quote_price, default_thickness_mm, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+      [id, input.name, input.category, input.material_type, input.color_hex, input.pricing_unit, input.base_price, input.quote_price, input.default_thickness_mm, now]
     );
     return { id, ...input, created_at: now };
   }, []);
@@ -81,8 +83,8 @@ export function useMaterials() {
   const updateMaterial = useCallback(async (id: string, input: MaterialInput): Promise<void> => {
     const db = await getDb();
     await db.execute(
-      "UPDATE materials SET name=$1, category=$2, material_type=$3, color_hex=$4, pricing_unit=$5, base_price=$6, default_thickness_mm=$7 WHERE id=$8",
-      [input.name, input.category, input.material_type, input.color_hex, input.pricing_unit, input.base_price, input.default_thickness_mm, id]
+      "UPDATE materials SET name=$1, category=$2, material_type=$3, color_hex=$4, pricing_unit=$5, base_price=$6, quote_price=$7, default_thickness_mm=$8 WHERE id=$9",
+      [input.name, input.category, input.material_type, input.color_hex, input.pricing_unit, input.base_price, input.quote_price, input.default_thickness_mm, id]
     );
   }, []);
 

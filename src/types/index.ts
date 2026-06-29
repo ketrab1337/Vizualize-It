@@ -16,6 +16,11 @@ export interface Project {
    * utworzone — backend `create_project` nie zwraca tego pola, default w froncie).
    */
   aspect_ratio?: ImageFormat | null;
+  /**
+   * Koszt wysyłki doliczany płasko (bez marży) do sumy wyceny. NULL/undefined =
+   * brak wysyłki. Edytowany w panelu kosztów, zapisywany w `projects.shipping_cost`.
+   */
+  shipping_cost?: number | null;
 }
 
 /**
@@ -69,6 +74,12 @@ export interface Material {
   created_at: string;
   pricing_unit: "per_piece" | "per_m2" | "per_mb_cut" | null;
   base_price: number | null;
+  /**
+   * Cena tego materiału wliczana do WYCENY dla klienta (ta sama jednostka co
+   * `base_price`). NULL = brak osobnej ceny wycenowej → wycena używa `base_price`.
+   * Marża z panelu edytora liczona jest NA TO dodatkowo.
+   */
+  quote_price: number | null;
   default_thickness_mm: number | null;
 }
 
@@ -143,6 +154,13 @@ export interface NodeOverride {
   ledBacklit: boolean | null;
   /** Per-element flag dla podświetlenia FRONTOWEGO (front-lit, litery od przodu). */
   ledFrontlit: boolean | null;
+  /**
+   * Element oklejany taśmą (folią). Koszt taśmy liczony jest WSPÓLNIE dla wszystkich
+   * oklejanych elementów — z prostokąta otaczającego (bounding box), nie z pól liter —
+   * i tylko w KOSZTACH WŁASNYCH (nie w wycenie dla klienta). Materiał taśmy wykrywany
+   * po nazwie zawierającej „Taśma".
+   */
+  hasTape: boolean | null;
   /**
    * Dla roli "cutout" — nodeId elementu który widoczny jest PRZEZ wycięcia.
    * Np. plexa z wyciętymi literami pokazuje plexę pod spodem (`cutoutBackingId`

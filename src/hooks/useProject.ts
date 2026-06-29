@@ -11,21 +11,21 @@ import type { Project, ImageFormat } from "../types";
 
 export function useProject() {
   const { projects, setProjects, activeProjectId, setActiveProject } = useProjectStore();
-  const { resetEditor, setSvgContent, setBackground, setLedConfig } = useEditorStore();
+  const { resetEditor, setSvgContent, setBackground, setLedConfig, setShippingCost } = useEditorStore();
   const addToast = useToastStore((s) => s.addToast);
 
   // Czyta stan bezpośrednio ze store w momencie wywołania — bez stale closure
   const saveEditorState = useCallback(async (projectId: string) => {
     try {
-      const { svgContent, nodeOverrides, backgroundPath, ledConfig } = useEditorStore.getState();
+      const { svgContent, nodeOverrides, backgroundPath, ledConfig, shippingCost } = useEditorStore.getState();
       const svgToSave = svgContent
         ? updateSvgWithOverrides(svgContent, nodeOverrides)
         : null;
       const db = await getDb();
       const now = new Date().toISOString();
       await db.execute(
-        "UPDATE projects SET svg_content = $1, background_path = $2, updated_at = $3, led_config_json = $4 WHERE id = $5",
-        [svgToSave ?? null, backgroundPath ?? null, now, JSON.stringify(ledConfig), projectId]
+        "UPDATE projects SET svg_content = $1, background_path = $2, updated_at = $3, led_config_json = $4, shipping_cost = $5 WHERE id = $6",
+        [svgToSave ?? null, backgroundPath ?? null, now, JSON.stringify(ledConfig), shippingCost ?? null, projectId]
       );
     } catch (e) {
       console.error("Błąd zapisu stanu edytora:", e);
@@ -42,8 +42,9 @@ export function useProject() {
           svg_content: string | null;
           background_path: string | null;
           led_config_json: string | null;
+          shipping_cost: number | null;
         }[]>(
-          "SELECT svg_content, background_path, led_config_json FROM projects WHERE id = $1",
+          "SELECT svg_content, background_path, led_config_json, shipping_cost FROM projects WHERE id = $1",
           [projectId]
         );
         const row = rows[0];
@@ -52,6 +53,8 @@ export function useProject() {
         if (row.svg_content) {
           setSvgContent(row.svg_content);
         }
+
+        setShippingCost(row.shipping_cost ?? null);
 
         if (row.led_config_json) {
           try {
@@ -79,7 +82,7 @@ export function useProject() {
         console.error("Błąd ładowania stanu edytora:", e);
       }
     },
-    [resetEditor, setSvgContent, setBackground, setLedConfig]
+    [resetEditor, setSvgContent, setBackground, setLedConfig, setShippingCost]
   );
 
   const loadProjects = useCallback(async () => {

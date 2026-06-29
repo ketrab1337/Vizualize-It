@@ -165,6 +165,12 @@ pub fn run() {
             sql: include_str!("db/migrations/025_project_aspect_ratio.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 26,
+            description: "quote_price_shipping",
+            sql: include_str!("db/migrations/026_quote_price_shipping.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

@@ -285,6 +285,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     selectedElementIds: _sel, setSelectedElementIds,
     backgroundDataUrl, backgroundPath, setBackground, clearBackground,
     nodeOverrides, setNodeOverride, renameNodeOverride, removeNodeOverride, clearNodeOverrides,
+    boundsPerElement, setTapeBoundsMm,
   } = useEditorStore();
   void _sel; // używane tylko przez ElementPanel przez store
   const addToast = useToastStore((s) => s.addToast);
@@ -292,6 +293,44 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
   svgContentRef.current = svgContent;
   nodeOverridesRef.current = nodeOverrides;
+
+  // ── Taśma (oklejanie) — WSPÓLNY bounding box oklejanych elementów ──────────
+  // Liczony na żywo z Paper.js (pozycje zmieniają się przy drag, a boundsPerElement
+  // nie trzyma pozycji). Wynik (szer.×wys. mm) → editorStore.tapeBoundsMm; wycena mnoży
+  // to przez cenę taśmy/m². Stabilny (czyta overrides przez getState), więc bezpieczny w refie.
+  const recomputeTapeBounds = useCallback(() => {
+    const layer = svgLayerRef.current;
+    const mm = mmPerUnitRef.current;
+    if (!layer) { setTapeBoundsMm(null); return; }
+    const overrides = useEditorStore.getState().nodeOverrides;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let found = false;
+    const walk = (item: paper.Item) => {
+      if (item.name && overrides[item.name]?.hasTape) {
+        const b = item.bounds;
+        if (b.x < minX) minX = b.x;
+        if (b.y < minY) minY = b.y;
+        if (b.x + b.width > maxX) maxX = b.x + b.width;
+        if (b.y + b.height > maxY) maxY = b.y + b.height;
+        found = true;
+      }
+      const g = item as paper.Group;
+      if (g.children && !(item instanceof paper.CompoundPath)) {
+        (g.children as paper.Item[]).forEach(walk);
+      }
+    };
+    (layer.children as paper.Item[]).forEach(walk);
+    if (!found || maxX <= minX || maxY <= minY) { setTapeBoundsMm(null); return; }
+    setTapeBoundsMm({ widthMm: (maxX - minX) * mm, heightMm: (maxY - minY) * mm });
+  }, [setTapeBoundsMm]);
+  const recomputeTapeBoundsRef = useRef(recomputeTapeBounds);
+  recomputeTapeBoundsRef.current = recomputeTapeBounds;
+
+  // Przelicz przy zmianie flag taśmy (nodeOverrides), imporcie oraz resize/rotate
+  // (boundsPerElement). Plain drag-move dowoła ręcznie z mouseUp (nie rusza boundsPerElement).
+  useEffect(() => {
+    recomputeTapeBounds();
+  }, [nodeOverrides, boundsPerElement, recomputeTapeBounds]);
 
   // Synchronizuj wypełnienie i obramowanie prostokąta strony z obecnością tła
   useEffect(() => {
@@ -1448,6 +1487,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         if (isDraggingItemRef.current) {
           isDraggingItemRef.current = false;
           toolCbRef.current.pushHistory();
+          recomputeTapeBoundsRef.current();
         }
         drawRulersRef.current();
         return;
@@ -1478,6 +1518,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         isDraggingItemRef.current = false;
         toolCbRef.current.pushHistory();
         toolCbRef.current.drawResizeHandles();
+        recomputeTapeBoundsRef.current();
       }
 
       drawRulersRef.current();
@@ -1676,6 +1717,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       role: ElementRole | null;
       ledBacklit: boolean | null;
       ledFrontlit: boolean | null;
+      hasTape: boolean | null;
       cutoutBackingId: string | null;
     }>();
     doc.querySelectorAll("[id]").forEach((el) => {
@@ -1691,8 +1733,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       const roleStr = el.getAttribute("data-role");
       const ledBacklitStr = el.getAttribute("data-led-backlit");
       const ledFrontlitStr = el.getAttribute("data-led-frontlit");
+      const hasTapeStr = el.getAttribute("data-has-tape");
       const cutoutBackingStr = el.getAttribute("data-cutout-backing");
-      if (fill || materialId || tStr || qStr || ledLStr || roleStr || ledBacklitStr || ledFrontlitStr || cutoutBackingStr) {
+      if (fill || materialId || tStr || qStr || ledLStr || roleStr || ledBacklitStr || ledFrontlitStr || hasTapeStr || cutoutBackingStr) {
         savedAttrs.set(id, {
           fill: fill ?? "",
           materialId,
@@ -1705,6 +1748,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
           role: (roleStr as ElementRole | null) || null,
           ledBacklit: ledBacklitStr === "1" ? true : null,
           ledFrontlit: ledFrontlitStr === "1" ? true : null,
+          hasTape: hasTapeStr === "1" ? true : null,
           cutoutBackingId: cutoutBackingStr || null,
         });
       }
@@ -1819,6 +1863,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         role: attrs.role,
         ledBacklit: attrs.ledBacklit,
         ledFrontlit: attrs.ledFrontlit,
+        hasTape: attrs.hasTape,
         cutoutBackingId: attrs.cutoutBackingId,
       });
       if (attrs.fill) applyFillByName(id, attrs.fill);
@@ -1973,9 +2018,11 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     const layer = svgLayerRef.current;
     if (!layer) return;
 
-    const result = mergeLetterHoles([...(layer.children as paper.Item[])]);
+    // "#000000" → litery/kształty bez wypełnienia od razu wypełniają się na czarno,
+    // żeby było widać sylwetkę (import liniowy z lasera ma fill="none").
+    const result = mergeLetterHoles([...(layer.children as paper.Item[])], "#000000");
 
-    if (result.merged === 0 && result.fixedFillRule === 0) {
+    if (result.merged === 0 && result.fixedFillRule === 0 && result.filledNames.length === 0) {
       addToast("Nie znaleziono liter z otworami do scalenia.", "info");
       return;
     }
@@ -1986,6 +2033,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       removeBoundsForElement(n);
       removeFromParentMap(n);
     });
+
+    // Zapisz nadany kolor jako override.fill — źródło prawdy dla koloru (prompt, panel,
+    // persystencja przez updateSvgWithOverrides). Paper.js fill ustawił już mergeLetterHoles.
+    result.filledNames.forEach((n) => setNodeOverride(n, { fill: "#000000" }));
 
     clearSelection();
 
@@ -2003,12 +2054,15 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     }
     pushHistory();
 
-    const parts = [`Scalono otwory w ${result.merged} literach`];
+    const parts: string[] = [];
+    if (result.merged > 0) parts.push(`scalono otwory w ${result.merged} literach`);
     if (result.fixedFillRule > 0) parts.push(`naprawiono ${result.fixedFillRule}`);
-    addToast(`${parts.join(", ")}.`, "success");
+    if (result.filledNames.length > 0) parts.push(`wypełniono ${result.filledNames.length} elementów`);
+    const msg = parts.length > 0 ? parts.join(", ") : "Gotowe";
+    addToast(`${msg.charAt(0).toUpperCase()}${msg.slice(1)}.`, "success");
   }, [
     clearSelection, addToast, setSvgContent, rebuildLayerItems, pushHistory,
-    setParentMap, setBoundsForElement, removeNodeOverride, removeBoundsForElement, removeFromParentMap,
+    setParentMap, setBoundsForElement, setNodeOverride, removeNodeOverride, removeBoundsForElement, removeFromParentMap,
   ]);
 
   // ── Skróty klawiszowe ─────────────────────────────────────────────────────

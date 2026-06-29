@@ -56,7 +56,7 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
 
   const [plateW, setPlateW] = useState("0");
   const [plateH, setPlateH] = useState("0");
-  const [gapMm, setGapMm] = useState("3");
+  const [gapMm, setGapMm] = useState("1");
   const [rotationStep, setRotationStep] = useState<RotationStep>(90);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   // true po pierwszym ustawieniu listy — gotowy na live-sync z canvasa

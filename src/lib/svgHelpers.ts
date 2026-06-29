@@ -48,6 +48,7 @@ export function updateSvgWithOverrides(
     el.attr("data-role", override.role || null);
     el.attr("data-led-backlit", override.ledBacklit ? "1" : null);
     el.attr("data-led-frontlit", override.ledFrontlit ? "1" : null);
+    el.attr("data-has-tape", override.hasTape ? "1" : null);
     el.attr("data-cutout-backing", override.cutoutBackingId || null);
   });
 

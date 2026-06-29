@@ -699,6 +699,27 @@ cutting_rates_global(id, category TEXT, thickness_mm REAL, price_per_m REAL, UNI
 ### Grupowanie kosztów w CostPanel
 `PricingSummary.groupedItems: GroupedCostItem[]` — elementy pogrupowane po `(lineType, materialName, thicknessMm)`. `GroupedRow` w `CostPanel.tsx` pokazuje wiersz sumaryczny z chevronem rozwijającym szczegóły per-element.
 
+### LED liczony tylko raz (nie podwójnie jako materiał + LED)
+LED rozliczany jest WYŁĄCZNIE projekt-poziom przez `ledConfig` (sekcja „Taśma LED" w `CostPanel`). Picker materiału elementu (`ElementPanel`) pokazuje WSZYSTKIE kategorie (też LED), więc user MÓGŁBY przypisać materiał LED do elementu → wtedy bez ochrony wpadłby i do „Materiały", i do „LED". `calculatePricing` dostaje `ledCategorySlugs` (z `usePricing`, kategorie wykryte przez `isLedCategory` = slug/nazwa zawiera „led") i w pętli materiałów **pomija** element gdy `material.category` jest LED-owy LUB `material.id === ledConfig.materialId` (zabezpiecza też brak kategorii LED — picker LED ma fallback na wszystkie materiały). Produkty (`productIds`, paper.Raster) nie mają materiału (panel produktu zamiast pickera) → naturalnie poza wyceną.
+
+### Dwie ceny materiału: koszt własny vs cena w wycenie (migracja 026)
+Każdy materiał ma DWIE ceny (`materials.base_price` + `materials.quote_price`, ta sama jednostka):
+- **`base_price`** = koszt własny (ile materiał kosztuje szyldiarza) → „Koszty własne".
+- **`quote_price`** = cena wliczana do WYCENY dla klienta. NULL → fallback na `base_price`. Edytowane w `MaterialLibrary.tsx` (pole „Cena w wycenie" pod „Koszt własny").
+
+`calculatePricing` liczy per pozycję `totalCost` (po `base_price`) ORAZ `quoteTotalCost` (po `quote_price ?? base_price`); `PricingSummary.quoteGrandTotal` = suma cen wycenowych przed marżą. Cięcie (stawka globalna) i zasilacz LED nie mają wariantu wycenowego → w wycenie po koszcie. **Marża z panelu (`marginPct`) liczona jest NA wartość wycenową, dodatkowo na wierzch.** Wzór ceny dla klienta: `quoteGrandTotal × (1 + marża%) + wysyłka`.
+
+### Wysyłka (migracja 026)
+`projects.shipping_cost` (per projekt, `editorStore.shippingCost`, zapis/odczyt w `useProject.saveEditorState`/`loadEditorState`). Doliczana **płasko, bez marży, na końcu** sumy wyceny. Pole w `CostPanel` (sekcja podsumowania).
+
+### Taśma (oklejanie plexy) — TYLKO koszty własne
+Flaga per element `NodeOverride.hasTape` (checkbox „Taśma (oklejanie)" w `ElementPanel`, single ORAZ multi-select; zapis przez `data-has-tape` w svgHelpers/import). Koszt liczony **z WSPÓLNEGO prostokąta otaczającego** wszystkie oklejane elementy (`szer.×wys.`, NIE z pól liter): `editorStore.tapeBoundsMm` liczone na żywo w `Canvas.recomputeTapeBounds` (walk po warstwie „svg", union bbox oklejanych itemów → mm). Liczone na żywo, bo pozycje zmieniają się przy drag, a `boundsPerElement` nie trzyma pozycji — recompute woła się z efektu `[nodeOverrides, boundsPerElement]` (flaga/import/resize/rotate) oraz ręcznie z mouseUp po drag-move. Materiał taśmy wykrywany po **nazwie zawierającej „taśma"** (`pricing.ts`, `base_price` jako zł/m²). `costKind/lineType "tape"`, `quoteTotalCost=0` → wchodzi do `grandTotal`/`totalTape`, ale NIE do `quoteGrandTotal`. W `CostPanel.exportPdf` wiersze taśmy są **odfiltrowane gdy `isQuote`**, więc w wycenie dla klienta taśmy nie ma (ani pozycji, ani w sumie); w kosztach własnych jest wiersz „Taśma — …" + podsuma „Taśma:". Na ekranie linia „Taśma (tylko koszt własny)" w podsumowaniu.
+
+### PDF: zaokrąglanie w górę do pełnych złotych (`export.rs`)
+WSZYSTKIE kwoty w `export_costs_pdf` zaokrąglane w górę do pełnych zł (`format_pln_int` = `v.ceil()`). **Jedno źródło prawdy: zaokrąglone wiersze tabeli.** W pętli tabeli każde `display_cost = ceil(...)` trafia do `rows_total` ORAZ do kubełka `sum_material`/`sum_cutting`/`sum_led` wg `cost_kind` grupy. Podsumy kategorii (Materiały/Cięcie/LED) = te kubełki, a RAZEM / KOSZTY ŁĄCZNIE = `rows_total` (+ wysyłka, też ceil). Dzięki temu podsumy sumują się DOKŁADNIE do RAZEM (koniec rozjazdu „207 vs 208" z `ceil(suma)` ≠ `suma(ceil)`). `cost_kind` (`"material"|"cutting"|"dystans"|"led"`) niesie `ElementCostItem`/`GroupedCostItem` z `pricing.ts` — bo w grouped items linia cięcia ma `line_type:"material"` i nie da się jej odróżnić po nazwie. **Dystanse mają osobną podsumę** „Dystanse" (między „Materiały" a „Cięcie", tylko gdy `sum_dystans>0`), więc „Materiały" = same płyty (`PricingSummary.totalDystans` osobno od `totalMaterial`; oba w `grandTotal`). Powód: dystans (per szt.) wpadał wcześniej do „Materiały" i mylił z LED gdy kwoty się pokrywały. Payload z `CostPanel.exportPdf`: w wycenie `total_cost` per grupa = `quoteTotalCost`, `shipping_cost` = wysyłka; w kosztach własnych = `totalCost`, wysyłka 0. Pola `total_material/total_cutting/total_led/grand_total` w payloadzie są IGNOROWANE (allow(dead_code), zachowane dla zgodności) — liczy się z wierszy.
+
+Dystanse w kolumnie „Ilość" PDF pokazują `N szt.` (gałąź `line_type=="dystans"`), jak LED. Marża w `CostPanel` domyślnie **0%** (`useState(0)`).
+
 ---
 
 ## Komunikacja z użytkownikiem

@@ -7,7 +7,7 @@ import { useEditorStore } from "../../stores/editorStore";
 import { useMaterialsStore } from "../../stores/materialsStore";
 import { useToastStore } from "../../stores/toastStore";
 import { usePricing } from "../../hooks/usePricing";
-import type { GroupedCostItem } from "../../lib/pricing";
+import { isLedCategory, type GroupedCostItem } from "../../lib/pricing";
 
 // ── Formatowanie ──────────────────────────────────────────────────────────────
 
@@ -127,11 +127,6 @@ function GroupedSection({ title, icon, groups, showMargin, marginPct }: GroupedS
 
 // ── LedSection — projekt-poziom: wybór materiału LED + długość ───────────────
 
-function isLedCategory(cat: { slug: string; name: string }) {
-  const hay = (cat.slug + " " + cat.name).toLowerCase();
-  return hay.includes("led");
-}
-
 function LedSection({ totalLed }: { totalLed: number }) {
   const { ledConfig, setLedConfig } = useEditorStore();
   const { categories, materials, refresh } = useMaterialsStore();
@@ -245,12 +240,13 @@ export function CostPanelContent() {
   const pricing = usePricing();
   const { projects, activeProjectId } = useProjectStore();
   const { categories } = useMaterialsStore();
+  const { shippingCost, setShippingCost } = useEditorStore();
   const addToast = useToastStore((s) => s.addToast);
 
   // Slug kategorii → czytelna nazwa typu (np. "pleksa" → "Pleksa") na potrzeby PDF.
   const categoryLabel = (slug: string | null): string | null =>
     slug ? (categories.find((c) => c.slug === slug)?.name ?? slug) : null;
-  const [marginPct, setMarginPct] = useState(30);
+  const [marginPct, setMarginPct] = useState(0);
   const [exporting, setExporting] = useState(false);
 
   const activeProject = projects.find((p) => p.id === activeProjectId);
@@ -277,32 +273,41 @@ export function CostPanelContent() {
         input: {
           project_name: activeProject.name,
           save_path: savePath,
-          items: pricing.items.map((item) => ({
-            label: item.label,
-            material_name: item.materialName,
-            thickness_mm: item.thicknessMm,
-            area_cm2: item.areaCm2,
-            path_length_m: item.pathLengthM,
-            quantity: item.quantity,
-            unit_cost: item.unitCost,
-            total_cost: item.totalCost,
-            line_type: item.lineType,
-          })),
-          grouped_items: pricing.groupedItems.map((g) => ({
-            line_type: g.lineType,
-            material_name: g.materialName,
-            category_label: categoryLabel(g.category),
-            thickness_mm: g.thicknessMm,
-            total_area_cm2: g.totalAreaCm2,
-            total_path_length_m: g.totalPathLengthM,
-            total_quantity: g.totalQuantity,
-            total_cost: g.totalCost,
-          })),
+          // W wycenie wartości materiałów idą po cenach WYCENOWYCH; w kosztach własnych po cenach zakupu.
+          // Taśma (costKind "tape") TYLKO w kosztach własnych — w wycenie ją wykluczamy.
+          items: pricing.items
+            .filter((item) => !isQuote || item.costKind !== "tape")
+            .map((item) => ({
+              label: item.label,
+              material_name: item.materialName,
+              thickness_mm: item.thicknessMm,
+              area_cm2: item.areaCm2,
+              path_length_m: item.pathLengthM,
+              quantity: item.quantity,
+              unit_cost: isQuote ? item.quoteUnitCost : item.unitCost,
+              total_cost: isQuote ? item.quoteTotalCost : item.totalCost,
+              line_type: item.lineType,
+            })),
+          grouped_items: pricing.groupedItems
+            .filter((g) => !isQuote || g.costKind !== "tape")
+            .map((g) => ({
+              line_type: g.lineType,
+              cost_kind: g.costKind,
+              material_name: g.materialName,
+              category_label: categoryLabel(g.category),
+              thickness_mm: g.thicknessMm,
+              total_area_cm2: g.totalAreaCm2,
+              total_path_length_m: g.totalPathLengthM,
+              total_quantity: g.totalQuantity,
+              total_cost: isQuote ? g.quoteTotalCost : g.totalCost,
+            })),
           total_material: pricing.totalMaterial,
           total_cutting: pricing.totalCutting,
           total_led: pricing.totalLed,
-          grand_total: pricing.grandTotal,
+          grand_total: isQuote ? pricing.quoteGrandTotal : pricing.grandTotal,
           margin_pct: isQuote ? marginPct : 0,
+          // Wysyłka doliczana płasko (bez marży) tylko do wyceny.
+          shipping_cost: isQuote ? (shippingCost ?? 0) : 0,
           is_quote: isQuote,
         },
       });
@@ -342,9 +347,15 @@ export function CostPanelContent() {
       {hasAnyData && (
         <div className="border-t border-gray-800 px-3 py-3 space-y-1.5 shrink-0">
           <div className="flex justify-between text-xs text-gray-500">
-            <span>Materiały</span>
+            <span>Plexa</span>
             <span className="font-mono">{formatPln(pricing.totalMaterial)}</span>
           </div>
+          {pricing.totalDystans > 0 && (
+            <div className="flex justify-between text-xs text-gray-500">
+              <span>Dystanse</span>
+              <span className="font-mono">{formatPln(pricing.totalDystans)}</span>
+            </div>
+          )}
           <div className="flex justify-between text-xs text-gray-500">
             <span>Cięcie</span>
             <span className="font-mono">{formatPln(pricing.totalCutting)}</span>
@@ -355,11 +366,24 @@ export function CostPanelContent() {
               <span className="font-mono">{formatPln(pricing.totalLed)}</span>
             </div>
           )}
+          {pricing.totalTape > 0 && (
+            <div className="flex justify-between text-xs text-gray-500">
+              <span>Taśma <span className="text-gray-600">(tylko koszt własny)</span></span>
+              <span className="font-mono">{formatPln(pricing.totalTape)}</span>
+            </div>
+          )}
           <div className="flex justify-between text-sm font-semibold text-gray-200 pt-1 border-t border-gray-800">
             <span>Koszty własne</span>
             <span className="font-mono">{formatPln(pricing.grandTotal)}</span>
           </div>
-          <div className="flex items-center gap-2 pt-1">
+
+          {/* Wartość wyceny (ceny wycenowe materiałów, przed marżą i wysyłką) */}
+          <div className="flex justify-between text-xs text-gray-500 pt-1">
+            <span>Wycena materiałów</span>
+            <span className="font-mono">{formatPln(pricing.quoteGrandTotal)}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
             <label htmlFor="cost-margin" className="text-gray-500 text-xs">Marża</label>
             <input
               id="cost-margin"
@@ -373,8 +397,39 @@ export function CostPanelContent() {
               className="w-14 bg-[#252525] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 text-center focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
             />
             <span className="text-gray-500 text-xs">%</span>
-            <span className="ml-auto text-gray-200 text-xs font-mono">
-              {formatPln(pricing.grandTotal * (1 + marginPct / 100))}
+            <span className="ml-auto text-gray-400 text-xs font-mono">
+              {formatPln(pricing.quoteGrandTotal * (1 + marginPct / 100))}
+            </span>
+          </div>
+
+          {/* Wysyłka — doliczana płasko (bez marży) do sumy wyceny */}
+          <div className="flex items-center gap-2">
+            <label htmlFor="cost-shipping" className="text-gray-500 text-xs">Wysyłka</label>
+            <input
+              id="cost-shipping"
+              name="cost_shipping"
+              type="number"
+              min="0"
+              step="0.01"
+              value={shippingCost ?? ""}
+              onChange={(e) => {
+                const v = e.target.value === "" ? null : parseFloat(e.target.value);
+                setShippingCost(v != null && isFinite(v) && v > 0 ? v : null);
+              }}
+              placeholder="0.00"
+              className="w-20 bg-[#252525] border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 text-center placeholder-gray-600 focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+            />
+            <span className="text-gray-500 text-xs">zł</span>
+            <span className="ml-auto text-gray-500 text-xs font-mono">
+              {formatPln(shippingCost ?? 0)}
+            </span>
+          </div>
+
+          {/* Razem dla klienta = wycena materiałów × marża + wysyłka */}
+          <div className="flex justify-between text-sm font-semibold text-blue-300 pt-1.5 border-t border-gray-800">
+            <span>Razem dla klienta</span>
+            <span className="font-mono">
+              {formatPln(pricing.quoteGrandTotal * (1 + marginPct / 100) + (shippingCost ?? 0))}
             </span>
           </div>
         </div>

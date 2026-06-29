@@ -219,6 +219,16 @@ function PropertiesTab() {
     [selectedElementId, setNodeOverride]
   );
 
+  // Taśma (oklejanie) — flaga per element; działa też dla wielu zaznaczonych naraz.
+  const applyTape = useCallback(
+    (ids: string[], checked: boolean) => {
+      ids.forEach((id) => setNodeOverride(id, { hasTape: checked ? true : null }));
+      saveCanvasToStore();
+      setTimeout(() => pushCanvasHistory(), 0);
+    },
+    [setNodeOverride]
+  );
+
   const handleCutoutBackingChange = useCallback(
     (val: string) => {
       if (!selectedElementId) return;
@@ -285,6 +295,20 @@ function PropertiesTab() {
             <div className="text-sm text-gray-500 italic">Różne materiały</div>
           )}
         </div>
+
+        {/* Taśma (oklejanie) — dla wszystkich zaznaczonych naraz */}
+        <label className="flex items-center gap-2 cursor-pointer group pt-1 border-t border-gray-800">
+          <input
+            name="multi_has_tape"
+            type="checkbox"
+            checked={selectedElementIds.every((id) => nodeOverrides[id]?.hasTape === true)}
+            onChange={(e) => applyTape(selectedElementIds, e.target.checked)}
+            className="w-3.5 h-3.5 accent-blue-600 cursor-pointer"
+          />
+          <span className="text-xs text-gray-300 group-hover:text-gray-100">
+            Taśma (oklejanie) — liczona w kosztach własnych
+          </span>
+        </label>
 
         {/* Łączne wymiary */}
         {selectedItemBounds && (
@@ -548,6 +572,25 @@ function PropertiesTab() {
             </span>
           </label>
         </div>
+      </div>
+
+      {/* Taśma (oklejanie) — koszt liczony wspólnie z prostokąta otaczającego, tylko koszty własne.
+          Równe odstępy (12px) nad i pod checkboxem: pt-3 = 12px nad; marginBottom inline -8px
+          (przebija space-y-5, które ustawia margin-bottom:0 z wyższą specyficznością) zbija odstęp
+          do separatora „Wymiary" z 20px do 12px. */}
+      <div className="pt-3 border-t border-gray-800" style={{ marginBottom: "-8px" }}>
+        <label className="flex items-center gap-2 cursor-pointer group">
+          <input
+            name="el_has_tape"
+            type="checkbox"
+            checked={override?.hasTape === true}
+            onChange={(e) => selectedElementId && applyTape([selectedElementId], e.target.checked)}
+            className="w-3.5 h-3.5 accent-blue-600 cursor-pointer"
+          />
+          <span className="text-xs text-gray-300 group-hover:text-gray-100">
+            Taśma (oklejanie)
+          </span>
+        </label>
       </div>
 
       {/* Ilość sztuk — dla dystansów */}

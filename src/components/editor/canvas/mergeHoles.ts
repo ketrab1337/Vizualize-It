@@ -34,6 +34,8 @@ export interface MergeHolesResult {
   fixedFillRule: number;
   /** Nazwy usuniętych otworów — caller czyści z nich stores (override/bounds/parentMap). */
   removedNames: string[];
+  /** Nazwy elementów (liter), którym nadano wypełnienie — caller ustawia im override.fill. */
+  filledNames: string[];
 }
 
 type ClosedItem = paper.Path | paper.CompoundPath;
@@ -163,14 +165,18 @@ function moveContoursInto(cp: paper.CompoundPath, src: ClosedItem): void {
  * CompoundPath z evenodd. Mutuje warstwę: buduje compoundy i usuwa ścieżki-otwory.
  *
  * @param topLevel dzieci warstwy „svg" (elementy najwyższego poziomu)
- * @returns statystyki + nazwy usuniętych otworów (do czyszczenia stores)
+ * @param fillUnfilled gdy podany (np. "#000000") — każda litera/kształt BEZ wypełnienia
+ *   (import liniowy `fill="none"`) dostaje ten kolor, by od razu było widać sylwetkę.
+ *   Ramka/panel (obrys płyty) jest pomijana. Caller dostaje `filledNames` do ustawienia override.fill.
+ * @returns statystyki + nazwy usuniętych otworów (do czyszczenia stores) + nazwy wypełnionych
  */
-export function mergeLetterHoles(topLevel: paper.Item[]): MergeHolesResult {
+export function mergeLetterHoles(topLevel: paper.Item[], fillUnfilled?: string): MergeHolesResult {
   const result: MergeHolesResult = {
     merged: 0,
     holesConsumed: 0,
     fixedFillRule: 0,
     removedNames: [],
+    filledNames: [],
   };
 
   const work = topLevel.filter(isClosedCandidate) as ClosedItem[];
@@ -227,6 +233,11 @@ export function mergeLetterHoles(topLevel: paper.Item[]): MergeHolesResult {
     holesByOuter.set(parent, arr);
   }
 
+  // Elementy wchłonięte (outery zamienione w compound + ich otwory) — wykluczane z
+  // wypełniania jako osobne kształty. Nowe compoundy (litery) trzymamy osobno.
+  const absorbed = new Set<ClosedItem>();
+  const builtCompounds: ClosedItem[] = [];
+
   // Buduj CompoundPath per litera z otworami
   for (const [outer, holes] of holesByOuter) {
     // Pomiń jeśli sam „outer" jest otworem (parzystość nieparzysta) — to nie litera
@@ -270,10 +281,33 @@ export function mergeLetterHoles(topLevel: paper.Item[]): MergeHolesResult {
 
     parent.addChild(cp); // kolejność wśród osobnych liter nieistotna
     result.merged++;
+    absorbed.add(outer);
+    for (const h of holes) absorbed.add(h);
+    builtCompounds.push(cp);
   }
 
   // Napraw istniejące compoundy, które miały otwór w subpathach ale renderowały się pełne
   fixExistingCompounds(work, result);
+
+  // Wypełnij kolorem litery/kształty bez wypełnienia (import liniowy). Pomija ramkę
+  // (panel) i elementy już pokolorowane. Nowe compoundy + samodzielne litery (bez otworów).
+  if (fillUnfilled) {
+    let color: paper.Color | null = null;
+    try { color = new paper.Color(fillUnfilled); } catch { color = null; }
+    if (color) {
+      const targets: ClosedItem[] = [...builtCompounds];
+      for (const w of work) {
+        if (absorbed.has(w) || panels.has(w) || !w.parent) continue;
+        targets.push(w);
+      }
+      for (const t of targets) {
+        if (t.fillColor) continue; // już ma kolor — nie nadpisuj
+        t.fillColor = color.clone();
+        t.strokeColor = null; // wypełniony element nie nosi obrysu cięcia (jak stripStrokeIfFilled)
+        if (t.name) result.filledNames.push(t.name);
+      }
+    }
+  }
 
   return result;
 }

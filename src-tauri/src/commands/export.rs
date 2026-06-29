@@ -18,6 +18,9 @@ pub struct CostLineItem {
 #[derive(Debug, Deserialize)]
 pub struct GroupedCostItemInput {
     pub line_type: String, // "material" | "dystans" | "led"
+    /// Kubełek podsumowania: "material" | "cutting" | "led". Domyślnie wg `line_type` (stary payload).
+    #[serde(default)]
+    pub cost_kind: Option<String>,
     pub material_name: Option<String>,
     /// Czytelna nazwa typu/kategorii (np. „Pleksa") — prefiks w podsumowaniu. Opcjonalne (stary payload).
     #[serde(default)]
@@ -37,11 +40,24 @@ pub struct PdfCostsInput {
     /// Wiersze pogrupowane po (typ, materiał, grubość) — jeśli puste, użyj `items`.
     #[serde(default)]
     pub grouped_items: Vec<GroupedCostItemInput>,
+    /// Podsumy kategorii i RAZEM liczone są z zaokrąglonych wierszy (patrz pętla tabeli),
+    /// więc te zsumowane pola z payloadu są ignorowane — zachowane tylko dla zgodności.
+    #[serde(default)]
+    #[allow(dead_code)]
     pub total_material: f64,
+    #[serde(default)]
+    #[allow(dead_code)]
     pub total_cutting: f64,
+    #[serde(default)]
+    #[allow(dead_code)]
     pub total_led: f64,
+    #[serde(default)]
+    #[allow(dead_code)]
     pub grand_total: f64,
     pub margin_pct: f64,
+    /// Koszt wysyłki doliczany płasko (bez marży) do sumy wyceny. Tylko gdy `is_quote`.
+    #[serde(default)]
+    pub shipping_cost: f64,
     pub is_quote: bool, // true = wycena dla klienta, false = koszty własne
 }
 
@@ -59,8 +75,9 @@ fn draw_table_row(
     }
 }
 
-fn format_pln(v: f64) -> String {
-    format!("{:.2} zł", v)
+/// Kwota zaokrąglona w górę do pełnych złotych — wszystkie kwoty w PDF kosztów/wyceny.
+fn format_pln_int(v: f64) -> String {
+    format!("{} zł", v.ceil() as i64)
 }
 
 fn apply_margin(cost: f64, is_quote: bool, margin_pct: f64) -> f64 {
@@ -151,6 +168,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             .iter()
             .map(|i| GroupedCostItemInput {
                 line_type: "material".into(),
+                cost_kind: None,
                 material_name: i.material_name.clone(),
                 category_label: None,
                 thickness_mm: i.thickness_mm,
@@ -166,6 +184,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             .iter()
             .map(|g| GroupedCostItemInput {
                 line_type: g.line_type.clone(),
+                cost_kind: g.cost_kind.clone(),
                 material_name: g.material_name.clone(),
                 category_label: g.category_label.clone(),
                 thickness_mm: g.thickness_mm,
@@ -177,6 +196,16 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             .collect()
     };
 
+    // Sumy zaokrąglonych w górę wartości wierszy — bazują na nich i podsumy kategorii
+    // (Materiały/Cięcie/LED), i RAZEM / KOSZTY ŁĄCZNIE. Dzięki temu wszystko zgadza się
+    // z tym, co widać w kolumnie „Wartość" (koniec rozjazdu 207 vs 208).
+    let mut rows_total: f64 = 0.0;
+    let mut sum_material: f64 = 0.0;
+    let mut sum_dystans: f64 = 0.0;
+    let mut sum_cutting: f64 = 0.0;
+    let mut sum_led: f64 = 0.0;
+    let mut sum_tape: f64 = 0.0;
+
     for g in &groups {
         if y < M + 15.0 {
             let (new_layer, new_y) = new_page(&doc);
@@ -186,11 +215,22 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             y -= 6.5;
         }
 
-        let display_cost = apply_margin(g.total_cost, input.is_quote, input.margin_pct);
+        // „Wartość" zaokrąglana w górę do pełnych złotych.
+        let display_cost = apply_margin(g.total_cost, input.is_quote, input.margin_pct).ceil();
+        rows_total += display_cost;
+        // Kubełek podsumowania — z `cost_kind`, a gdy brak (stary payload) z `line_type`.
+        match g.cost_kind.as_deref().unwrap_or(g.line_type.as_str()) {
+            "led" => sum_led += display_cost,
+            "cutting" => sum_cutting += display_cost,
+            "dystans" => sum_dystans += display_cost,
+            "tape" => sum_tape += display_cost,
+            _ => sum_material += display_cost,
+        }
 
         let mat_label = match g.line_type.as_str() {
             "led" => format!("LED — {}", g.material_name.as_deref().unwrap_or("—")),
             "dystans" => format!("Dystans — {}", g.material_name.as_deref().unwrap_or("—")),
+            "tape" => format!("Taśma — {}", g.material_name.as_deref().unwrap_or("—")),
             // Materiał — prefiks typem (np. „Pleksa — Plexa czerwona"), jeśli znamy kategorię.
             _ => {
                 let name = g.material_name.as_deref().unwrap_or("—");
@@ -224,6 +264,13 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
                 .or_else(|| g.total_quantity.map(|v| format!("{:.0} szt.", v)))
                 .unwrap_or_else(|| "—".into());
             ("—".to_string(), q)
+        } else if g.line_type == "dystans" {
+            // Dystanse rozliczane od sztuki — pokaż „N szt." (jak LED), bez kolumny cięcia.
+            let q = g
+                .total_quantity
+                .map(|v| format!("{:.0} szt.", v))
+                .unwrap_or_else(|| "—".into());
+            ("—".to_string(), q)
         } else {
             let cie = g
                 .total_path_length_m
@@ -246,7 +293,7 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
                 (&pow, g_col_pow),
                 (&cie, g_col_len),
                 (&qty, g_col_qty),
-                (&format_pln(display_cost), g_col_total),
+                (&format_pln_int(display_cost), g_col_total),
             ],
             8.5,
         );
@@ -261,8 +308,29 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
             layer = nl;
             y = ny;
         }
+        // Podsumy kategorii = sumy ZAOKRĄGLONYCH wierszy z tabeli, więc dokładnie
+        // sumują się do KOSZTY ŁĄCZNIE (= rows_total).
         layer.use_text(
-            &format!("Materiały:  {}", format_pln(input.total_material)),
+            &format!("Plexa:      {}", format_pln_int(sum_material)),
+            9.0,
+            mm(g_col_total - 40.0),
+            mm(y),
+            &font,
+        );
+        y -= 6.0;
+        // Dystanse — osobna podsuma (tylko gdy są), by „Materiały" = same płyty.
+        if sum_dystans > 0.0 {
+            layer.use_text(
+                &format!("Dystanse:   {}", format_pln_int(sum_dystans)),
+                9.0,
+                mm(g_col_total - 40.0),
+                mm(y),
+                &font,
+            );
+            y -= 6.0;
+        }
+        layer.use_text(
+            &format!("Cięcie:     {}", format_pln_int(sum_cutting)),
             9.0,
             mm(g_col_total - 40.0),
             mm(y),
@@ -270,15 +338,36 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
         );
         y -= 6.0;
         layer.use_text(
-            &format!("Cięcie:     {}", format_pln(input.total_cutting)),
+            &format!("LED:        {}", format_pln_int(sum_led)),
             9.0,
             mm(g_col_total - 40.0),
             mm(y),
             &font,
         );
         y -= 6.0;
+        // Taśma — tylko koszty własne (w wycenie wiersze taśmy nie są wysyłane).
+        if sum_tape > 0.0 {
+            layer.use_text(
+                &format!("Taśma:      {}", format_pln_int(sum_tape)),
+                9.0,
+                mm(g_col_total - 40.0),
+                mm(y),
+                &font,
+            );
+            y -= 6.0;
+        }
+    }
+
+    // Wysyłka — tylko w wycenie, doliczana płasko (bez marży), zaokrąglona w górę.
+    let shipping = if input.is_quote { input.shipping_cost.max(0.0).ceil() } else { 0.0 };
+    if input.is_quote && shipping > 0.0 {
+        if y < M + 24.0 {
+            let (nl, ny) = new_page(&doc);
+            layer = nl;
+            y = ny;
+        }
         layer.use_text(
-            &format!("LED:        {}", format_pln(input.total_led)),
+            &format!("Wysyłka:  {}", format_pln_int(shipping)),
             9.0,
             mm(g_col_total - 40.0),
             mm(y),
@@ -288,9 +377,10 @@ pub async fn export_costs_pdf(input: PdfCostsInput) -> Result<(), String> {
     }
 
     let final_label = if input.is_quote { "RAZEM:" } else { "KOSZTY ŁĄCZNIE:" };
-    let final_value = apply_margin(input.grand_total, input.is_quote, input.margin_pct);
+    // Suma zaokrąglonych wierszy + wysyłka — spójna z kolumną „Wartość".
+    let final_value = rows_total + shipping;
     layer.use_text(
-        &format!("{}  {}", final_label, format_pln(final_value)),
+        &format!("{}  {}", final_label, format_pln_int(final_value)),
         11.0,
         mm(g_col_total - 50.0),
         mm(y - 2.0),

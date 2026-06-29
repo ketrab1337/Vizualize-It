@@ -38,6 +38,16 @@ interface EditorStore {
   backgroundPath: string | null;
   nodeOverrides: Record<string, NodeOverride>;
   ledConfig: LedProjectConfig;
+  /** Koszt wysyłki (zł) doliczany płasko do wyceny. null = brak. Per projekt. */
+  shippingCost: number | null;
+  setShippingCost: (value: number | null) => void;
+  /**
+   * Wymiary WSPÓLNEGO prostokąta otaczającego elementy oklejane taśmą (mm). null =
+   * brak oklejanych elementów. Liczone na żywo z Paper.js (pozycje zmieniają się przy
+   * przeciąganiu, a `boundsPerElement` nie trzyma pozycji) — patrz Canvas recomputeTapeBounds.
+   */
+  tapeBoundsMm: { widthMm: number; heightMm: number } | null;
+  setTapeBoundsMm: (b: { widthMm: number; heightMm: number } | null) => void;
   setElements: (elements: SignElement[]) => void;
   setSelectedElement: (id: string | null) => void;
   setSelectedItemBounds: (bounds: SelectedItemBounds | null) => void;
@@ -77,6 +87,10 @@ export const useEditorStore = create<EditorStore>((set) => ({
   backgroundPath: null,
   nodeOverrides: {},
   ledConfig: { ...LED_CONFIG_DEFAULT },
+  shippingCost: null,
+  setShippingCost: (value) => set({ shippingCost: value }),
+  tapeBoundsMm: null,
+  setTapeBoundsMm: (b) => set({ tapeBoundsMm: b }),
   selectedElementIds: [],
   setSelectedElementIds: (ids) => set({ selectedElementIds: ids }),
   productIds: [],
@@ -163,5 +177,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       backgroundPath: null,
       nodeOverrides: {},
       ledConfig: { ...LED_CONFIG_DEFAULT },
+      shippingCost: null,
+      tapeBoundsMm: null,
     }),
 }));
