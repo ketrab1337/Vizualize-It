@@ -63,6 +63,6 @@ export interface NestingRunResult {
   fillPercent?: number;
 }
 
-export const runNestingFnRef: { current: ((config: NestingConfig) => Promise<NestingRunResult | null>) | null } = { current: null };
+export const runNestingFnRef: { current: ((config: NestingConfig, onPrepared?: () => void) => Promise<NestingRunResult | null>) | null } = { current: null };
 export const clearNestingFnRef: { current: (() => void) | null } = { current: null };
 export const exportNestingSvgFnRef: { current: (() => string | null) | null } = { current: null };

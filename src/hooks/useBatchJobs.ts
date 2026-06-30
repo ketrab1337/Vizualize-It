@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../lib/db";
+import { notifyIfBackground } from "../lib/notify";
 import type { BatchJob, PollBatchResult } from "../types";
 
 /**
@@ -178,6 +179,10 @@ export function useBatchJobs(projectId: string | null) {
               : j
           )
         );
+        notifyIfBackground(
+          "Generowanie zakończone",
+          `Gotowe ${result.files.length} wizualizacji — sprawdź galerię.`
+        );
       } else if (result.status === "failed") {
         await db.execute(
           `UPDATE batch_jobs SET status='error', error_text=$1, updated_at=$2 WHERE id=$3`,
@@ -194,6 +199,10 @@ export function useBatchJobs(projectId: string | null) {
               : j
           )
         );
+        notifyIfBackground(
+          "Generowanie nie powiodło się",
+          "Zadanie batch zakończyło się błędem — otwórz aplikację, by zobaczyć szczegóły."
+        );
       } else if (result.status === "cancelled") {
         await db.execute(
           `UPDATE batch_jobs SET status='cancelled', updated_at=$1 WHERE id=$2`,
@@ -205,6 +214,10 @@ export function useBatchJobs(projectId: string | null) {
         }).catch(() => {});
         setJobs((prev) =>
           prev.map((j) => (j.id === job.id ? { ...j, status: "cancelled", updated_at: now } : j))
+        );
+        notifyIfBackground(
+          "Generowanie anulowane",
+          "Zadanie batch zostało anulowane."
         );
       }
     } catch (e) {

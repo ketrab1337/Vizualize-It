@@ -52,6 +52,29 @@ export function fitViewToPage(viewSize: paper.Size, page: PageDims) {
 }
 
 /**
+ * Dopasowuje widok do obwiedni zawartości (mm) z marginesem — używane po dodaniu SVG,
+ * żeby świeżo wstawione elementy były wyśrodkowane i powiększone (focus), zamiast tonąć
+ * jako mały obiekt na środku ogromnej strony.
+ *
+ * Zoom ograniczony z góry przez `maxZoom` (= ZOOM_MAX edytora) i z dołu przez dopasowanie
+ * do całej strony — nigdy nie oddalamy poniżej widoku strony ani nie zbliżamy ponad limit.
+ */
+export function fitViewToBounds(
+  viewSize: paper.Size,
+  bounds: paper.Rectangle,
+  page: PageDims,
+  maxZoom = 10,
+): void {
+  if (viewSize.width === 0 || viewSize.height === 0) return;
+  if (bounds.width <= 0 || bounds.height <= 0) return;
+  const pageZoom = Math.min(viewSize.width / page.width, viewSize.height / page.height) * 0.88;
+  const fitZoom = Math.min(viewSize.width / bounds.width, viewSize.height / bounds.height) * 0.7;
+  const zoom = Math.max(pageZoom, Math.min(maxZoom, fitZoom));
+  paper.view.zoom = zoom;
+  paper.view.center = bounds.center.clone();
+}
+
+/**
  * Ogranicza `paper.view.center` tak, aby ramka strony (powiększona o margines)
  * nie wyjeżdżała poza widok. Gdy cała strona mieści się w danej osi (np. przy max
  * oddaleniu), środek jest przyklejany do środka strony → przewijanie samo się

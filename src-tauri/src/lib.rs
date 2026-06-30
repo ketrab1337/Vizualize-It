@@ -183,6 +183,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let docs_dir = app.path().document_dir()?;
             let data_dir = docs_dir.join("VizualizeIt");

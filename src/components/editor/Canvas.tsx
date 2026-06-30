@@ -21,8 +21,8 @@ import { updateSvgWithOverrides, patchSvgLayerState } from "../../lib/svgHelpers
 import { RULER_SIZE, RULER_BG, RULER_BORDER, drawHRuler, drawVRuler } from "./canvas/rulers";
 import {
   BG_COLOR,
-  fitViewToPage, drawPageBackground, exportSvgLayer, withPhysicalSizeMm,
-  pageDimsForAspect, clampViewCenter, nearestAspect, type PageDims,
+  fitViewToPage, fitViewToBounds, drawPageBackground, exportSvgLayer, withPhysicalSizeMm,
+  pageDimsForAspect, nearestAspect, type PageDims,
   assignMissingNames, findItemByName, applyFillByName, stripStrokeIfFilled,
   getItemType, getDefaultName, calcTotalLength, calcTotalArea,
   parseSvgDimension, toMm,
@@ -982,7 +982,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   // ── Nesting ────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    runNestingFnRef.current = async (config) => {
+    runNestingFnRef.current = async (config, onPrepared) => {
       const svgLayer = svgLayerRef.current;
       const nestingLayer = nestingLayerRef.current;
       if (!svgLayer || !nestingLayer) return null;
@@ -1052,6 +1052,8 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         config.gapMm,
         config.rotationStep,
       );
+      // Rasteryzacja masek skończona — main thread wolny, workery przejmują.
+      onPrepared?.();
       const attempts = config.attempts ?? 1;
 
       // Skan w puli workerów (równolegle dla attempts>1). Gdy workery niedostępne lub zawiodą —
@@ -1132,13 +1134,19 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
           )
         : [];
 
-      // Buduj SVG: tymczasowa warstwa → eksport → usuń
+      if (placedItems.length === 0) return null;
+
+      // Bounding-box ułożonych elementów — bez obrysów płyty
+      let b = placedItems[0].bounds.clone();
+      for (let i = 1; i < placedItems.length; i++) {
+        b = b.unite(placedItems[i].bounds);
+      }
+
+      // Buduj SVG: tymczasowa warstwa → eksport → usuń (same elementy, bez płyty)
       const prevLayer = paper.project.activeLayer;
       const tempLayer = new paper.Layer();
-      plateItems.forEach((c) => tempLayer.addChild(c.clone({ insert: false })));
       placedItems.forEach((item) => tempLayer.addChild(item.clone({ insert: false })));
 
-      const b = nestingLayer.bounds;
       const svgEl = tempLayer.exportSVG({ asString: false }) as SVGElement;
       tempLayer.remove();
       prevLayer.activate();
@@ -1368,7 +1376,6 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         paper.view.center = paper.view.center.subtract(
           new paper.Point(dxScreen / z, dyScreen / z)
         );
-        clampViewCenter(pageDimsRef.current);
         drawRulersRef.current();
         return;
       }
@@ -1927,7 +1934,6 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         const oldCenter = paper.view.center;
         paper.view.zoom = newZoom;
         paper.view.center = projPt.subtract(projPt.subtract(oldCenter).multiply(oldZoom / newZoom));
-        clampViewCenter(pageDimsRef.current);
         setZoomLevel(newZoom);
         toolCbRef.current.drawResizeHandles();
         const _uiSw = 1 / newZoom;
@@ -1937,12 +1943,10 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         // Shift+scroll → pan lewo/prawo
         const delta = e.deltaY / paper.view.zoom;
         paper.view.center = paper.view.center.add(new paper.Point(delta, 0));
-        clampViewCenter(pageDimsRef.current);
       } else {
         // scroll → pan góra/dół
         const delta = e.deltaY / paper.view.zoom;
         paper.view.center = paper.view.center.add(new paper.Point(0, delta));
-        clampViewCenter(pageDimsRef.current);
       }
       drawRulersRef.current();
     };
@@ -2369,6 +2373,18 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
       setHasSvg(true);
       setTimeout(() => rebuildLayerItems(), 0);
+
+      // Po dodaniu: focus widoku na świeżych elementach + zaznacz je, żeby user od razu
+      // widział co wpadło i mógł działać (przypisać materiał, przesunąć).
+      if (newKids.length > 0) {
+        const addedBounds = newKids.map((k) => k.bounds).reduce((a, b) => a.unite(b));
+        fitViewToBounds(paper.view.viewSize, addedBounds, pageDimsRef.current);
+        setZoomLevel(paper.view.zoom);
+        clearSelection();
+        newKids.forEach((kid) => addToSelection(kid));
+        drawRulersRef.current();
+      }
+
       pushHistory();
       addToast("Plik SVG został dodany do projektu.", "success");
     } catch (e) {
@@ -2378,7 +2394,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       // Zwolnij blokadę po przetworzeniu wszystkich zmian stanu przez Reacta
       setTimeout(() => { _addingSvg = false; isAddingSvgRef.current = false; }, 200);
     }
-  }, [project.slug, addToast, setNodeOverride, setBoundsForElement, rebuildLayerItems, pushHistory]);
+  }, [project.slug, addToast, setNodeOverride, setBoundsForElement, rebuildLayerItems, pushHistory, clearSelection, addToSelection]);
 
   // ── Import SVG (dialog) ────────────────────────────────────────────────────
   // Przycisk "Importuj SVG" zawsze MERGEUJE z istniejącą zawartością — user może
@@ -2536,26 +2552,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     }
 
     if (svgPath) {
-      // hasSvg to React state — pewniejszy niż inspekcja Paper.js layer.children
-      // (layer może być chwilowo pusty podczas inicjalizacji mimo że projekt ma SVG).
-      // dropHandlerRef jest reassignowany przy każdym renderze, więc hasSvg jest zawsze świeże.
-      if (hasSvg) {
-        // Jest już SVG — dodaj scalając (user może swobodnie mieszać wiele plików)
-        await handleAddSvg(svgPath);
-      } else {
-        setIsImportingSvg(true);
-        try {
-          const result = await invoke<SvgImportResult>("import_svg", {
-            slug: project.slug,
-            sourcePath: svgPath,
-          });
-          setSvgContent(result.content);
-        } catch {
-          addToast("Nie udało się wczytać pliku SVG.", "error");
-        } finally {
-          setIsImportingSvg(false);
-        }
-      }
+      // handleAddSvg obsługuje zarówno scalanie (hasSvg=true) jak i pierwszy import
+      // (hasSvg=false) — wywołuje fitViewToBounds i poprawnie zapisuje do historii.
+      await handleAddSvg(svgPath);
       return;
     }
 

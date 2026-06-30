@@ -64,8 +64,7 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
   const pushHistory = useCallback(() => {
     if (isUndoRedoRef.current) return; // nie zapisuj podczas cofania/ponawiania
     const layer = svgLayerRef.current;
-    const content = svgContentRef.current;
-    if (!layer || !content) return;
+    if (!layer || layer.children.length === 0) return;
     const exported = exportSvgLayer(layer, mmPerUnitRef.current);
     // Czytaj bezpośrednio ze store (synchroniczny Zustand), nie z ref — ref aktualizuje się
     // dopiero po renderze, a pushHistory może być wołany z setTimeout(0) przed renderem.
@@ -79,7 +78,7 @@ export function useCanvasHistory(params: UseCanvasHistoryParams): UseCanvasHisto
     // (deterministyczne porównanie content zamiast wcześniejszego setTimeout-based isSavingRef).
     lastSavedContentRef.current = withOverrides;
     setSvgContent(withOverrides);
-  }, [svgLayerRef, svgContentRef, nodeOverridesRef, mmPerUnitRef, selectedItemsRef, lastSavedContentRef, setSvgContent]);
+  }, [svgLayerRef, mmPerUnitRef, selectedItemsRef, lastSavedContentRef, setSvgContent]);
 
   const pushHistoryDirect = useCallback((svg: string) => {
     if (isUndoRedoRef.current) return;

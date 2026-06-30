@@ -685,7 +685,7 @@ export function ElementPanel() {
   const [activeTab, setActiveTab] = useState<PanelTab>("wlasciwosci");
 
   return (
-    <aside className="w-64 shrink-0 bg-[#1a1a1a] border-l border-gray-800 flex flex-col overflow-hidden">
+    <aside className="w-80 shrink-0 bg-[#1a1a1a] border-l border-gray-800 flex flex-col overflow-hidden">
         {/* Zakładki */}
         <div className="flex border-b border-gray-800 shrink-0">
           <button

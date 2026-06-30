@@ -23,6 +23,31 @@ export interface NestResult {
   filledCells: number;
   /** Pole obwiedni ułożonych elementów (komórki siatki). 0 gdy nic nie ułożono. Mniejsze = ciaśniej. */
   bboxCells: number;
+  /** Liczniki diagnostyczne (tymczasowe, do profilowania — gdzie idzie czas skanu). */
+  diag?: NestDiag;
+}
+
+/** Liczniki profilujące jedną próbę `runPlacement` (tymczasowe — diagnoza wydajności). */
+export interface NestDiag {
+  elements: number;
+  /** Ile elementów rozwiązał szybki `frontierScan`. */
+  frontierScans: number;
+  /** Ile razy odpalił DROGI pełny `coarseScan(true)` (fallback gdy frontier nic nie znalazł). */
+  coarseFallbacks: number;
+  /** Ile razy odpalił narożny skan pierwszego elementu (`coarseScan(false)`). */
+  firstScans: number;
+  /** Łączna liczba wywołań `evalPos`. */
+  evalPos: number;
+  /** Łączna liczba wywołań `fits` (po cutoff, gdy NIE pominięto zgrubnie). */
+  fits: number;
+  /** Ile pozycji pominięto zgrubnym pre-checkiem B' (pusty obszar — bez fits/enclosure/contact). */
+  coarseSkips: number;
+  /** Suma rozmiarów frontiera w chwili skanu każdego elementu. */
+  frontierSum: number;
+  /** Maksymalny rozmiar frontiera w trakcie. */
+  maxFrontier: number;
+  /** Czas tej próby w ms. */
+  ms: number;
 }
 
 /**
@@ -40,9 +65,10 @@ export interface NestStrategy {
 }
 
 /**
- * Maska serializowalna (przesyłana do workera): same typed-arraye, bez `Set` (Set odtwarzamy
- * w `materialize`). `angle` w stopniach, `mw`/`mh` w komórkach, `cellDx`/`cellDy` to offsety
- * pokrytych komórek od rogu maski.
+ * Maska serializowalna (przesyłana do workera): SAME typed-arraye, bez żadnego `Set`. Komórki
+ * brzegowe i kierunki „na zewnątrz" liczone RAZ na głównym wątku (`computeBoundary`), nie per próba
+ * — to było źródło OOM (Set per maska × liczba workerów równolegle).
+ * `angle` w stopniach, `mw`/`mh` w komórkach, `cellDx`/`cellDy` to offsety pokrytych komórek.
  */
 export interface SerMask {
   angle: number;
@@ -50,6 +76,48 @@ export interface SerMask {
   mh: number;
   cellDx: Int16Array;
   cellDy: Int16Array;
+  /** Komórki BRZEGOWE (≥1 sąsiad poza maską) — `contactScore` liczy styk tylko z nich (O(obwód)). */
+  boundaryDx: Int16Array;
+  boundaryDy: Int16Array;
+  /** Per komórka brzegowa: bity kierunków NA ZEWNĄTRZ maski (1=prawo, 2=lewo, 4=dół, 8=góra = NEIGH). */
+  boundaryOut: Uint8Array;
+}
+
+/**
+ * Liczy komórki brzegowe maski + kierunki „na zewnątrz" (bity wg NEIGH: 1=prawo,2=lewo,4=dół,8=góra).
+ * Komórka brzegowa = ma ≥1 sąsiada poza obwiednią LUB niewypełnionego. Używa transientnego `Set`
+ * TYLKO tu (główny wątek, jedna maska naraz, GC), więc runtime/worker są od `Set` wolne.
+ */
+export function computeBoundary(
+  cellDx: Int16Array,
+  cellDy: Int16Array,
+  mw: number,
+  mh: number,
+): { boundaryDx: Int16Array; boundaryDy: Int16Array; boundaryOut: Uint8Array } {
+  const set = new Set<number>();
+  for (let i = 0; i < cellDx.length; i++) set.add(cellDy[i] * mw + cellDx[i]);
+  const bdx: number[] = [];
+  const bdy: number[] = [];
+  const bout: number[] = [];
+  for (let i = 0; i < cellDx.length; i++) {
+    const dx = cellDx[i];
+    const dy = cellDy[i];
+    let out = 0;
+    if (dx + 1 >= mw || !set.has(dy * mw + (dx + 1))) out |= 1; // prawo
+    if (dx - 1 < 0 || !set.has(dy * mw + (dx - 1))) out |= 2; // lewo
+    if (dy + 1 >= mh || !set.has((dy + 1) * mw + dx)) out |= 4; // dół
+    if (dy - 1 < 0 || !set.has((dy - 1) * mw + dx)) out |= 8; // góra
+    if (out !== 0) {
+      bdx.push(dx);
+      bdy.push(dy);
+      bout.push(out);
+    }
+  }
+  return {
+    boundaryDx: Int16Array.from(bdx),
+    boundaryDy: Int16Array.from(bdy),
+    boundaryOut: Uint8Array.from(bout),
+  };
 }
 
 /** Element po rasteryzacji: maski per kąt (już odfiltrowane do płyty i posortowane po footprincie). */
@@ -78,12 +146,70 @@ export interface PreparedNest {
 const TARGET_GRID = 900;
 /** Najdrobniejsza rozdzielczość komórki (mm). */
 const MIN_RES = 0.6;
-/** Twardy limit liczby komórek siatki — chroni pamięć i czas skanu. */
-const MAX_CELLS = 1_500_000;
+/**
+ * Twardy limit liczby komórek siatki — chroni pamięć i czas skanu. 4M (2026-06-30): na dużych
+ * płytach (1500 mm) limit zgrubiał res do ~1,22 mm → maski „puchły", drobne gubiły dziury →
+ * upakowanie spadało. 4M sadza 1500 mm na res ~0,75 mm = zmierzony sweet spot (gęstość 40%→49,5%;
+ * drobniej NIE poprawia). Koszt ~2-3× czasu — świadomie (jakość > prędkość).
+ *
+ * PAMIĘĆ: bezpieczne dopiero PO usunięciu `Set` z runtime (`computeBoundary` na głównym wątku).
+ * 4M bez Setów (~2,7 jedn. pamięci masek) zużywa MNIEJ niż stare 1,5M z Setami (~13 jedn.), które
+ * działało — bo `Set` to ~10× narzut nad typed-arrayami. Pierwsza próba 4M Z Setami dała OOM (~35 jedn.).
+ */
+const MAX_CELLS = 4_000_000;
 /** Maks. liczba pozycji na kąt — limit włączany TYLKO przy rozdmuchanej-pustej obwiedni. */
 const MAX_POS_PER_ANGLE = 6_000;
 /** Próg rzadkości: pole obwiedni > SPARSE_FACTOR × pole wypełnienia → duży cienki element. */
 const SPARSE_FACTOR = 4;
+
+/**
+ * Budżet pozycji na element w `frontierScan` (kotwic × masek × 4). Przy zwartym bloku frontier
+ * jest duży, a przy drobnej rotacji jest WIELE masek (np. 72 przy kroku 5°) → pełny iloczyn
+ * eksploduje. Stride po komórkach frontiera utrzymuje liczbę kotwic w budżecie; lokalne
+ * dostrojenie (±rad co 1 komórkę) i tak dociąga finalną pozycję, więc jakość spada minimalnie.
+ * Pomiar 2026-06-30: 120k było absurdalnym nadmiarem (104k evalPos/element) → 25k tnie ~5×.
+ */
+const FRONTIER_BUDGET = 25_000;
+
+/**
+ * Rozmiar bloku zgrubnej bitmapy zajętości (B') = 2^BLOCK_SHIFT komórek drobnej siatki.
+ * Blok jest „zajęty", gdy DOWOLNA jego drobna komórka jest zajęta (element lub ramka).
+ * Służy do BŁYSKAWICZNEGO pominięcia pustych obszarów w `evalPos` — drobna siatka pozostaje
+ * źródłem prawdy (zero straty jakości), bitmapa tylko odsiewa jawnie pustą przestrzeń, gdzie
+ * `fits`/`contact`/`enclosure` i tak przeszłyby całą wielką maskę, by stwierdzić „nic tu nie ma".
+ */
+const BLOCK_SHIFT = 3;
+
+/**
+ * Czy obszar maski (gx,gy,mw,mh) POWIĘKSZONY o 1 komórkę marginesu jest w CAŁOŚCI wolny wg
+ * zgrubnej bitmapy? Margines pokrywa sąsiadów testowanych przez `contact`/`enclosure`. Gdy true:
+ * maska na pewno się mieści (fits), a styk i otoczenie = 0 (brak sąsiadów) — można pominąć
+ * wszystkie trzy drobne funkcje. Konserwatywne i DOKŁADNE: blok wolny ⟹ wszystkie jego komórki
+ * wolne, więc false-positive (uznać zajęty obszar za wolny) jest niemożliwy.
+ */
+function regionFree(
+  coarse: Uint8Array,
+  CGW: number,
+  CGH: number,
+  gx: number,
+  gy: number,
+  mw: number,
+  mh: number,
+): boolean {
+  let bx0 = (gx - 1) >> BLOCK_SHIFT;
+  let by0 = (gy - 1) >> BLOCK_SHIFT;
+  const bx1 = Math.min(CGW - 1, (gx + mw) >> BLOCK_SHIFT);
+  const by1 = Math.min(CGH - 1, (gy + mh) >> BLOCK_SHIFT);
+  if (bx0 < 0) bx0 = 0;
+  if (by0 < 0) by0 = 0;
+  for (let by = by0; by <= by1; by++) {
+    const row = by * CGW;
+    for (let bx = bx0; bx <= bx1; bx++) {
+      if (coarse[row + bx]) return false;
+    }
+  }
+  return true;
+}
 
 /** Parametry siatki dla danej płyty/odstępu — wspólne dla rasteryzacji i skanu. */
 export function computeGridParams(
@@ -103,57 +229,20 @@ export function computeGridParams(
   return { res, GW, GH, gapCells };
 }
 
-// ── Maska runtime (z `cellSet` do testu sąsiedztwa) ──────────────────────────────
+// ── Maska runtime ────────────────────────────────────────────────────────────────
+// RtMask == SerMask (wszystko policzone już w prepareNesting). `materialize` jest tożsamością,
+// więc worker NIE alokuje nic per próba — koniec OOM z `Set` × workery.
 
-interface RtMask {
-  angle: number;
-  mw: number;
-  mh: number;
-  cellDx: Int16Array;
-  cellDy: Int16Array;
-  cellSet: Set<number>;
-}
-
-interface RtElement {
-  nodeId: string;
-  w: number;
-  h: number;
-  masks: RtMask[];
-}
-
-export interface RtPrepared {
-  plateW: number;
-  plateH: number;
-  res: number;
-  GW: number;
-  GH: number;
-  gapCells: number;
-  elements: RtElement[];
-}
+type RtMask = SerMask;
+type RtElement = PreparedElement;
+export type RtPrepared = PreparedNest;
 
 /**
- * Odtwarza `cellSet` z typed-arrayów raz na komplet (poza pętlą strategii). Wynik jest
- * READ-ONLY dla `runPlacement`, więc tę samą `RtPrepared` można uruchomić wielokrotnie.
+ * Tożsamość: komórki brzegowe/kierunki są już w `SerMask` (policzone RAZ na głównym wątku).
+ * Zostaje jako cienki shim, by nie zmieniać wywołań w workerze i silniku.
  */
 export function materialize(prep: PreparedNest): RtPrepared {
-  return {
-    plateW: prep.plateW,
-    plateH: prep.plateH,
-    res: prep.res,
-    GW: prep.GW,
-    GH: prep.GH,
-    gapCells: prep.gapCells,
-    elements: prep.elements.map((e) => ({
-      nodeId: e.nodeId,
-      w: e.w,
-      h: e.h,
-      masks: e.masks.map((m) => {
-        const set = new Set<number>();
-        for (let i = 0; i < m.cellDx.length; i++) set.add(m.cellDy[i] * m.mw + m.cellDx[i]);
-        return { angle: m.angle, mw: m.mw, mh: m.mh, cellDx: m.cellDx, cellDy: m.cellDy, cellSet: set };
-      }),
-    })),
-  };
+  return prep;
 }
 
 // ── Operacje na siatce zajętości ────────────────────────────────────────────────
@@ -166,28 +255,19 @@ function fits(grid: Uint8Array, GW: number, m: RtMask, gx: number, gy: number): 
   return true;
 }
 
-const NEIGH = [
-  [1, 0],
-  [-1, 0],
-  [0, 1],
-  [0, -1],
-] as const;
-
 function contactScore(grid: Uint8Array, GW: number, GH: number, m: RtMask, gx: number, gy: number): number {
-  const { cellDx, cellDy, cellSet, mw, mh } = m;
+  // Tylko komórki BRZEGOWE, i tylko ich kierunki NA ZEWNĄTRZ (bity `boundaryOut`) — wnętrze i
+  // sąsiedzi wewnątrz maski dają 0 styku. Bez `Set`: kierunki policzone raz w `computeBoundary`.
+  const { boundaryDx, boundaryDy, boundaryOut } = m;
   let contact = 0;
-  for (let i = 0; i < cellDx.length; i++) {
-    const lx = cellDx[i];
-    const ly = cellDy[i];
-    for (const [ddx, ddy] of NEIGH) {
-      const nlx = lx + ddx;
-      const nly = ly + ddy;
-      if (nlx >= 0 && nlx < mw && nly >= 0 && nly < mh && cellSet.has(nly * mw + nlx)) continue;
-      const gxx = gx + lx + ddx;
-      const gyy = gy + ly + ddy;
-      if (gxx < 0 || gxx >= GW || gyy < 0 || gyy >= GH) continue;
-      if (grid[gyy * GW + gxx] === 1) contact++;
-    }
+  for (let i = 0; i < boundaryDx.length; i++) {
+    const out = boundaryOut[i];
+    const bx = gx + boundaryDx[i];
+    const by = gy + boundaryDy[i];
+    if ((out & 1) && bx + 1 < GW && grid[by * GW + bx + 1] === 1) contact++;
+    if ((out & 2) && bx - 1 >= 0 && grid[by * GW + bx - 1] === 1) contact++;
+    if ((out & 4) && by + 1 < GH && grid[(by + 1) * GW + bx] === 1) contact++;
+    if ((out & 8) && by - 1 >= 0 && grid[(by - 1) * GW + bx] === 1) contact++;
   }
   return contact;
 }
@@ -225,6 +305,8 @@ function markAndFrontier(
   gy: number,
   gapCells: number,
   frontier: Set<number>,
+  coarse: Uint8Array,
+  CGW: number,
 ): void {
   const { cellDx, cellDy } = m;
   const newly: number[] = [];
@@ -242,6 +324,7 @@ function markAndFrontier(
         if (grid[idx] === 0) {
           grid[idx] = 1;
           newly.push(idx);
+          coarse[(yy >> BLOCK_SHIFT) * CGW + (xx >> BLOCK_SHIFT)] = 1; // B': zaznacz blok
         }
       }
     }
@@ -298,6 +381,19 @@ export function runPlacement(rt: RtPrepared, strategy: NestStrategy): NestResult
   const grid = new Uint8Array(GW * GH);
   blockBorder(grid, GW, GH, gapCells);
 
+  // B': zgrubna bitmapa zajętości (blok = 2^BLOCK_SHIFT komórek). Budowana raz z `grid` (na razie
+  // tylko ramka), potem utrzymywana inkrementalnie w `markAndFrontier`.
+  const CGW = (GW >> BLOCK_SHIFT) + 1;
+  const CGH = (GH >> BLOCK_SHIFT) + 1;
+  const coarse = new Uint8Array(CGW * CGH);
+  for (let y = 0; y < GH; y++) {
+    const row = y * GW;
+    const cRow = (y >> BLOCK_SHIFT) * CGW;
+    for (let x = 0; x < GW; x++) {
+      if (grid[row + x] !== 0) coarse[cRow + (x >> BLOCK_SHIFT)] = 1;
+    }
+  }
+
   const sortKey = strategy.sort;
   const sortMetric = (e: RtElement): number => {
     switch (sortKey) {
@@ -319,8 +415,20 @@ export function runPlacement(rt: RtPrepared, strategy: NestStrategy): NestResult
   let occArea = 0;
   const frontier = new Set<number>();
 
+  // Liczniki diagnostyczne (tymczasowe).
+  const _t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+  let diagFrontierScans = 0;
+  let diagCoarseFallbacks = 0;
+  let diagFirstScans = 0;
+  let diagEvalPos = 0;
+  let diagFits = 0;
+  let diagCoarseSkips = 0;
+  let diagFrontierSum = 0;
+  let diagMaxFrontier = 0;
+
   interface Best {
-    growth: number;
+    longSide: number; // dłuższy bok wynikowej obwiedni (PIERWSZORZĘDNE — broni przed paskiem)
+    area: number; // pole wynikowej obwiedni (drugorzędne — ciasność/gęstość)
     enclosure: number;
     contact: number;
     tie: number;
@@ -337,35 +445,71 @@ export function runPlacement(rt: RtPrepared, strategy: NestStrategy): NestResult
     }
 
     const hasOcc = occMaxX >= 0;
-    const curArea = hasOcc ? (occMaxX - occMinX + 1) * (occMaxY - occMinY + 1) : 0;
 
     const evalPos = (m: RtMask, gx: number, gy: number, best: Best | null): Best | null => {
-      let growth: number;
+      diagEvalPos++;
+      // Wynikowa obwiednia po dołożeniu maski w (gx,gy).
+      let nW: number, nH: number;
       if (hasOcc) {
         const nMinX = Math.min(occMinX, gx);
         const nMinY = Math.min(occMinY, gy);
         const nMaxX = Math.max(occMaxX, gx + m.mw - 1);
         const nMaxY = Math.max(occMaxY, gy + m.mh - 1);
-        growth = (nMaxX - nMinX + 1) * (nMaxY - nMinY + 1) - curArea;
+        nW = nMaxX - nMinX + 1;
+        nH = nMaxY - nMinY + 1;
       } else {
-        growth = m.mw * m.mh;
+        nW = m.mw;
+        nH = m.mh;
       }
-      if (best && growth > best.growth) return best;
-      if (!fits(grid, GW, m, gx, gy)) return best;
-      const enclosure = enclosureSides(grid, GW, GH, m, gx, gy);
-      const contact = contactScore(grid, GW, GH, m, gx, gy);
+      // PIERWSZORZĘDNE: dłuższy bok obwiedni (klaster rośnie ku KWADRATOWI, nie w pasek).
+      // Min POLA jako primary degenerowało w kolumnę 1-szeroką: dokładanie pod spodem zawsze
+      // dawało mniejszy przyrost pola niż z prawej → sprzężenie zwrotne. Dłuższy bok to blokuje.
+      // DRUGORZĘDNE: pole (ciasność). Pozycja wewnątrz obwiedni (otwór/zatoka) ma OBA minimalne
+      // = wciąż wygrywa → wkładanie drobnych w dziury zachowane; enclosure/contact wybierają dziurę.
+      const longSide = nW >= nH ? nW : nH;
+      const area = nW * nH;
+      // Odcięcie na (longSide, area) — OBA liczone tanio przed fits. Sam `longSide` był zbyt
+      // zgrubny (duże plateau jednakowych wartości) → fits/enclosure/contact liczone dla mnóstwa
+      // pozycji = regresja ~20×. Człon `area` (drobnoziarnisty) przywraca odcięcie z plateau.
+      if (best && (longSide > best.longSide || (longSide === best.longSide && area > best.area))) {
+        return best;
+      }
+      // B': zgrubny pre-check. Gdy maska + 1 komórka marginesu są w CAŁOŚCI w wolnych blokach →
+      // na pewno się mieści, a styk i otoczenie = 0. Pomijamy wszystkie 3 drogie drobne funkcje
+      // (to one zżerały czas w pustych obszarach „lewego" projektu). DOKŁADNE — bez straty jakości.
+      let enclosure: number;
+      let contact: number;
+      if (regionFree(coarse, CGW, CGH, gx, gy, m.mw, m.mh)) {
+        diagCoarseSkips++;
+        enclosure = 0;
+        contact = 0;
+      } else {
+        diagFits++;
+        if (!fits(grid, GW, m, gx, gy)) return best;
+        enclosure = enclosureSides(grid, GW, GH, m, gx, gy);
+        contact = contactScore(grid, GW, GH, m, gx, gy);
+      }
       const tie = tieOf(gx, gy);
-      const eq = !!best && growth === best.growth && enclosure === best.enclosure && contact === best.contact;
+      const eq =
+        !!best &&
+        longSide === best.longSide &&
+        area === best.area &&
+        enclosure === best.enclosure &&
+        contact === best.contact;
       if (
         !best ||
-        growth < best.growth ||
-        (growth === best.growth && enclosure > best.enclosure) ||
-        (growth === best.growth && enclosure === best.enclosure && contact > best.contact) ||
+        longSide < best.longSide ||
+        (longSide === best.longSide && area < best.area) ||
+        (longSide === best.longSide && area === best.area && enclosure > best.enclosure) ||
+        (longSide === best.longSide &&
+          area === best.area &&
+          enclosure === best.enclosure &&
+          contact > best.contact) ||
         (eq && tie < best.tie) ||
         (eq && tie === best.tie && gy < best.gy) ||
         (eq && tie === best.tie && gy === best.gy && gx < best.gx)
       ) {
-        return { growth, enclosure, contact, tie, gx, gy, mask: m };
+        return { longSide, area, enclosure, contact, tie, gx, gy, mask: m };
       }
       return best;
     };
@@ -407,6 +551,9 @@ export function runPlacement(rt: RtPrepared, strategy: NestStrategy): NestResult
     const frontierScan = (): Best | null => {
       let best: Best | null = null;
       const cells = Array.from(frontier);
+      // Stride po frontierze, by iloczyn kotwic×masek×4 nie przekroczył budżetu (patrz FRONTIER_BUDGET).
+      const totalRaw = cells.length * masks.length * 4;
+      const stride = totalRaw > FRONTIER_BUDGET ? Math.ceil(totalRaw / FRONTIER_BUDGET) : 1;
       for (const m of masks) {
         const gxMax = GW - m.mw - gapCells;
         const gyMax = GH - m.mh - gapCells;
@@ -416,7 +563,8 @@ export function runPlacement(rt: RtPrepared, strategy: NestStrategy): NestResult
         const lastX = m.mw - 1;
         const lastY = m.mh - 1;
         const seen = new Set<number>();
-        for (const f of cells) {
+        for (let ci = 0; ci < cells.length; ci += stride) {
+          const f = cells[ci];
           const fx = f % GW;
           const fy = (f - fx) / GW;
           const c0x = fx, c0y = fy - halfH;
@@ -438,13 +586,18 @@ export function runPlacement(rt: RtPrepared, strategy: NestStrategy): NestResult
       return best;
     };
 
+    diagFrontierSum += frontier.size;
+    if (frontier.size > diagMaxFrontier) diagMaxFrontier = frontier.size;
+
     let best: Best | null;
     if (frontier.size === 0) {
+      diagFirstScans++;
       best = coarseScan(false);
-      if (!best) best = coarseScan(true);
+      if (!best) { diagCoarseFallbacks++; best = coarseScan(true); }
     } else {
+      diagFrontierScans++;
       best = frontierScan();
-      if (!best) best = coarseScan(true);
+      if (!best) { diagCoarseFallbacks++; best = coarseScan(true); }
     }
 
     if (best) {
@@ -468,7 +621,7 @@ export function runPlacement(rt: RtPrepared, strategy: NestStrategy): NestResult
       continue;
     }
 
-    markAndFrontier(grid, GW, GH, best.mask, best.gx, best.gy, gapCells, frontier);
+    markAndFrontier(grid, GW, GH, best.mask, best.gx, best.gy, gapCells, frontier, coarse, CGW);
     occMinX = Math.min(occMinX, best.gx);
     occMinY = Math.min(occMinY, best.gy);
     occMaxX = Math.max(occMaxX, best.gx + best.mask.mw - 1);
@@ -484,7 +637,20 @@ export function runPlacement(rt: RtPrepared, strategy: NestStrategy): NestResult
   }
 
   const bboxCells = occMaxX >= 0 ? (occMaxX - occMinX + 1) * (occMaxY - occMinY + 1) : 0;
-  return { placed, overflow, filledCells: occArea, bboxCells };
+  const ms = (typeof performance !== "undefined" ? performance.now() : Date.now()) - _t0;
+  const diag: NestDiag = {
+    elements: rt.elements.length,
+    frontierScans: diagFrontierScans,
+    coarseFallbacks: diagCoarseFallbacks,
+    firstScans: diagFirstScans,
+    evalPos: diagEvalPos,
+    fits: diagFits,
+    coarseSkips: diagCoarseSkips,
+    frontierSum: diagFrontierSum,
+    maxFrontier: diagMaxFrontier,
+    ms,
+  };
+  return { placed, overflow, filledCells: occArea, bboxCells, diag };
 }
 
 // ── Multi-start: dobór strategii i wybór najlepszej ──────────────────────────────

@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import paper from "paper";
-import { clampViewCenter, fitViewToPage, type PageDims } from "./paperUtils";
+import { fitViewToPage, type PageDims } from "./paperUtils";
 
 interface UseZoomActionsParams {
   setZoomLevel: (z: number) => void;
@@ -37,17 +37,17 @@ export function useZoomActions(params: UseZoomActionsParams): UseZoomActionsResu
 
   const handleZoomIn = useCallback(() => {
     const z = Math.min(paper.view.zoom * 1.25, ZOOM_MAX);
-    paper.view.zoom = z; clampViewCenter(pageDimsRef.current); setZoomLevel(z); drawRulersRef.current();
+    paper.view.zoom = z; setZoomLevel(z); drawRulersRef.current();
     toolCbRef.current.drawResizeHandles();
     applyUiStrokeWidth(z);
-  }, [setZoomLevel, drawRulersRef, toolCbRef, applyUiStrokeWidth, pageDimsRef]);
+  }, [setZoomLevel, drawRulersRef, toolCbRef, applyUiStrokeWidth]);
 
   const handleZoomOut = useCallback(() => {
     const z = Math.max(paper.view.zoom / 1.25, ZOOM_MIN);
-    paper.view.zoom = z; clampViewCenter(pageDimsRef.current); setZoomLevel(z); drawRulersRef.current();
+    paper.view.zoom = z; setZoomLevel(z); drawRulersRef.current();
     toolCbRef.current.drawResizeHandles();
     applyUiStrokeWidth(z);
-  }, [setZoomLevel, drawRulersRef, toolCbRef, applyUiStrokeWidth, pageDimsRef]);
+  }, [setZoomLevel, drawRulersRef, toolCbRef, applyUiStrokeWidth]);
 
   const handleResetView = useCallback(() => {
     fitViewToPage(paper.view.viewSize, pageDimsRef.current);
@@ -61,12 +61,12 @@ export function useZoomActions(params: UseZoomActionsParams): UseZoomActionsResu
     const pct = parseInt(raw, 10);
     if (!isNaN(pct) && pct >= 10 && pct <= ZOOM_MAX * 100) {
       const z = pct / 100;
-      paper.view.zoom = z; clampViewCenter(pageDimsRef.current); setZoomLevel(z); drawRulersRef.current();
+      paper.view.zoom = z; setZoomLevel(z); drawRulersRef.current();
       toolCbRef.current.drawResizeHandles();
       applyUiStrokeWidth(z);
     }
     setZoomInput(null);
-  }, [setZoomLevel, setZoomInput, drawRulersRef, toolCbRef, applyUiStrokeWidth, pageDimsRef]);
+  }, [setZoomLevel, setZoomInput, drawRulersRef, toolCbRef, applyUiStrokeWidth]);
 
   return { handleZoomIn, handleZoomOut, handleResetView, handleZoomInputCommit };
 }

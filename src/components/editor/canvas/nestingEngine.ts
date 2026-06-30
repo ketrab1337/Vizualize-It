@@ -1,6 +1,7 @@
 import paper from "paper";
 import {
   computeGridParams,
+  computeBoundary,
   materialize,
   runPlacement,
   isBetterNest,
@@ -82,10 +83,18 @@ function buildMask(item: paper.Item, angle: number, res: number): SerMask {
       }
   };
 
+  // Składa SerMask z komórek dx/dy + dolicza komórki brzegowe (raz, na głównym wątku).
+  const finish = (): SerMask => {
+    const cellDx = Int16Array.from(dx);
+    const cellDy = Int16Array.from(dy);
+    const b = computeBoundary(cellDx, cellDy, mw, mh);
+    return { angle, mw, mh, cellDx, cellDy, ...b };
+  };
+
   if (!itemHasFill(c)) {
     fillFullRect();
     c.remove();
-    return { angle, mw, mh, cellDx: Int16Array.from(dx), cellDy: Int16Array.from(dy) };
+    return finish();
   }
 
   let ok = false;
@@ -145,7 +154,7 @@ function buildMask(item: paper.Item, angle: number, res: number): SerMask {
   }
 
   c.remove();
-  return { angle, mw, mh, cellDx: Int16Array.from(dx), cellDy: Int16Array.from(dy) };
+  return finish();
 }
 
 // ── Przygotowanie danych (rasteryzacja wszystkich masek) ─────────────────────────

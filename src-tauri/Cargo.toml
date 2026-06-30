@@ -1,6 +1,6 @@
 [package]
 name = "vizualizeit"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2021"
 
 [lib]
@@ -27,3 +27,4 @@ async-trait = "0.1"
 printpdf = { version = "0.6", features = ["embedded_images"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-notification = "2"

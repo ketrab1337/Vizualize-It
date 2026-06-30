@@ -4,6 +4,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { useEditorStore } from "../../stores/editorStore";
 import { useToastStore } from "../../stores/toastStore";
+import { notifyIfBackground } from "../../lib/notify";
 import {
   runNestingFnRef,
   clearNestingFnRef,
@@ -68,7 +69,7 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
 
   const [plateW, setPlateW] = useState("0");
   const [plateH, setPlateH] = useState("0");
-  const [gapMm, setGapMm] = useState("1");
+  const [gapMm, setGapMm] = useState("2");
   const [rotationStep, setRotationStep] = useState<RotationStep>(90);
   const [attempts, setAttempts] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -78,6 +79,8 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
   // więc przycisk „Układaj" zostaje aktywny i można dorzucać kolejne, gdy inne liczą się w tle.
   const [jobs, setJobs] = useState<JobEntry[]>([]);
   const jobIdRef = useRef(0);
+  /** true tylko podczas fazy rasteryzacji masek (główny wątek) — wtedy kursor wait. */
+  const [preparing, setPreparing] = useState(false);
 
   // Pierwsze załadowanie listy elementów — zastosuj aktualną selekcję canvasa lub wszystkie.
   useEffect(() => {
@@ -160,25 +163,39 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
     setJobs((prev) => [entry, ...prev].slice(0, 12));
 
     // Pozwól przeglądarce odświeżyć UI przed rasteryzacją masek (krótki spike na głównym wątku)
+    setPreparing(true);
     await new Promise((r) => setTimeout(r, 30));
 
     try {
-      const res = await runNestingFnRef.current?.(job);
+      const res = await runNestingFnRef.current?.(job, () => setPreparing(false));
+      const placed = res?.placed ?? 0;
+      const overflow = res?.overflow ?? [];
       setJobs((prev) =>
         prev.map((j) =>
           j.id === id
             ? {
                 ...j,
                 status: "done",
-                placed: res?.placed ?? 0,
-                overflow: res?.overflow ?? [],
+                placed,
+                overflow,
                 fillPercent: res?.fillPercent,
               }
             : j,
         ),
       );
+      const overflowNote =
+        overflow.length > 0 ? ` (${overflow.length} nie zmieściło się)` : "";
+      notifyIfBackground(
+        "Układanie zakończone",
+        `Ułożono ${placed}/${job.nodeIds.length} elementów${overflowNote}.`
+      );
     } catch {
+      setPreparing(false); // bezpiecznik — gdyby onPrepared nie zdążyło
       setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "error" } : j)));
+      notifyIfBackground(
+        "Układanie nie powiodło się",
+        "Wystąpił błąd podczas układania płyty."
+      );
     }
   }
 
@@ -210,6 +227,18 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
   // Przycisk aktywny niezależnie od trwających układań — można dorzucać kolejne.
   const canRun = selectedIds.size > 0 && parseFloat(plateW) > 0 && parseFloat(plateH) > 0;
   const runningCount = jobs.reduce((n, j) => n + (j.status === "running" ? 1 : 0), 0);
+
+  // Kursor „czekaj" TYLKO podczas rasteryzacji masek (faza main thread — kilka sekund).
+  // Po onPrepared() workery przejmują i UI jest wolne — spinner znika.
+  // Używamy <style> z !important, bo canvas.style.cursor inline nadpisuje body.style.cursor.
+  useEffect(() => {
+    if (!preparing) return;
+    const style = document.createElement("style");
+    style.textContent = "* { cursor: wait !important; }";
+    document.head.appendChild(style);
+    return () => { document.head.removeChild(style); };
+  }, [preparing]);
+
   const hasDoneJob = jobs.some((j) => j.status === "done");
   const runningLabel = (() => {
     if (runningCount === 1) return "1 układanie w toku";
@@ -316,6 +345,7 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
             step={1}
             value={attempts}
             onChange={(e) => setAttempts(parseInt(e.target.value, 10))}
+            onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
             className="w-full accent-blue-500 cursor-pointer"
           />
           <p className="text-[11px] text-gray-600 mt-1 leading-snug">

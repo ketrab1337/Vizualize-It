@@ -58,6 +58,7 @@
     "sql:allow-select",
     "sql:allow-close",
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "notification:default"
   ]
 }
