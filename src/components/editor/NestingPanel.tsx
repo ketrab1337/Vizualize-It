@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { X, Play, Trash2, RotateCcw, Download, ChevronDown, ChevronUp } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
@@ -8,7 +8,6 @@ import {
   runNestingFnRef,
   clearNestingFnRef,
   exportNestingSvgFnRef,
-  type NestingRunResult,
   type RotationStep,
 } from "../../lib/paperCanvas";
 
@@ -17,6 +16,19 @@ interface NestableElement {
   label: string;
   widthMm: number;
   heightMm: number;
+}
+
+/** Jedno układanie na liście wyników — własny status i wynik, niezależnie od innych. */
+interface JobEntry {
+  id: number;
+  status: "running" | "done" | "error";
+  /** Ile elementów wybrano do tego zadania (mianownik „X z Y"). */
+  total: number;
+  placed?: number;
+  overflow?: string[];
+  fillPercent?: number;
+  /** Rozwinięta lista nie-zmieszczonych elementów. */
+  expanded?: boolean;
 }
 
 interface NestingPanelProps {
@@ -58,12 +70,14 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
   const [plateH, setPlateH] = useState("0");
   const [gapMm, setGapMm] = useState("1");
   const [rotationStep, setRotationStep] = useState<RotationStep>(90);
+  const [attempts, setAttempts] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   // true po pierwszym ustawieniu listy — gotowy na live-sync z canvasa
   const [initialized, setInitialized] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
-  const [result, setResult] = useState<NestingRunResult | null>(null);
-  const [overflowExpanded, setOverflowExpanded] = useState(true);
+  // Lista układań (najnowsze na górze). Każde ma własny status/wynik — odpięte od formularza,
+  // więc przycisk „Układaj" zostaje aktywny i można dorzucać kolejne, gdy inne liczą się w tle.
+  const [jobs, setJobs] = useState<JobEntry[]>([]);
+  const jobIdRef = useRef(0);
 
   // Pierwsze załadowanie listy elementów — zastosuj aktualną selekcję canvasa lub wszystkie.
   useEffect(() => {
@@ -129,29 +143,52 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
     if (!w || !h || isNaN(w) || isNaN(h) || isNaN(g) || w <= 0 || h <= 0 || g < 0) return;
     if (selectedIds.size === 0) return;
 
-    setIsRunning(true);
-    setResult(null);
+    // Migawka zadania ROBIONA TERAZ — kolejne zmiany zaznaczenia/wymiarów w panelu nie wpływają
+    // na to już wystartowane układanie (config przekazany przez wartość).
+    const job = {
+      nodeIds: Array.from(selectedIds),
+      plateWidthMm: w,
+      plateHeightMm: h,
+      gapMm: g,
+      rotationStep,
+      attempts,
+    };
 
-    // Pozwól przeglądarce odświeżyć UI przed ciężkim obliczeniem
+    const id = ++jobIdRef.current;
+    // Dodaj wpis „w toku" na górę listy (cap 12, by nie rosła w nieskończoność).
+    const entry: JobEntry = { id, status: "running", total: job.nodeIds.length };
+    setJobs((prev) => [entry, ...prev].slice(0, 12));
+
+    // Pozwól przeglądarce odświeżyć UI przed rasteryzacją masek (krótki spike na głównym wątku)
     await new Promise((r) => setTimeout(r, 30));
 
     try {
-      const res = runNestingFnRef.current?.({
-        nodeIds: Array.from(selectedIds),
-        plateWidthMm: w,
-        plateHeightMm: h,
-        gapMm: g,
-        rotationStep,
-      });
-      setResult(res ?? null);
-    } finally {
-      setIsRunning(false);
+      const res = await runNestingFnRef.current?.(job);
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === id
+            ? {
+                ...j,
+                status: "done",
+                placed: res?.placed ?? 0,
+                overflow: res?.overflow ?? [],
+                fillPercent: res?.fillPercent,
+              }
+            : j,
+        ),
+      );
+    } catch {
+      setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "error" } : j)));
     }
   }
 
   function handleClear() {
     clearNestingFnRef.current?.();
-    setResult(null);
+    setJobs([]);
+  }
+
+  function toggleJobExpanded(id: number) {
+    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, expanded: !j.expanded } : j)));
   }
 
   async function handleExport() {
@@ -170,7 +207,17 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
     }
   }
 
-  const canRun = !isRunning && selectedIds.size > 0 && parseFloat(plateW) > 0 && parseFloat(plateH) > 0;
+  // Przycisk aktywny niezależnie od trwających układań — można dorzucać kolejne.
+  const canRun = selectedIds.size > 0 && parseFloat(plateW) > 0 && parseFloat(plateH) > 0;
+  const runningCount = jobs.reduce((n, j) => n + (j.status === "running" ? 1 : 0), 0);
+  const hasDoneJob = jobs.some((j) => j.status === "done");
+  const runningLabel = (() => {
+    if (runningCount === 1) return "1 układanie w toku";
+    const last = runningCount % 10;
+    const lastTwo = runningCount % 100;
+    const few = last >= 2 && last <= 4 && !(lastTwo >= 12 && lastTwo <= 14);
+    return `${runningCount} ${few ? "układania" : "układań"} w toku`;
+  })();
 
   return (
     <div
@@ -256,6 +303,28 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
           </div>
         </section>
 
+        {/* Liczba prób (multi-start) */}
+        <section>
+          <div className="flex items-center justify-between mb-1.5">
+            <p className="text-xs font-medium text-gray-400">Liczba prób</p>
+            <span className="text-xs font-medium text-gray-200">{attempts}</span>
+          </div>
+          <input
+            type="range"
+            min={1}
+            max={8}
+            step={1}
+            value={attempts}
+            onChange={(e) => setAttempts(parseInt(e.target.value, 10))}
+            className="w-full accent-blue-500 cursor-pointer"
+          />
+          <p className="text-[11px] text-gray-600 mt-1 leading-snug">
+            {attempts === 1
+              ? "Jeden układ — jak dotąd."
+              : `Wypróbuje ${attempts} wariantów i zostawi najciaśniejszy (nie gorszy niż 1 próba). Wolniej.`}
+          </p>
+        </section>
+
         {/* Lista elementów */}
         <section>
           <div className="flex items-center justify-between mb-1.5">
@@ -306,74 +375,111 @@ export function NestingPanel({ onClose }: NestingPanelProps) {
           )}
         </section>
 
-        {/* Wynik */}
-        {result && (
+        {/* Lista wyników — jedno zadanie = jedna płyta = jeden wpis, własny status i wynik */}
+        {jobs.length > 0 && (
           <section className="border-t border-gray-800 pt-3">
-            <p className="text-xs font-medium text-gray-400 mb-2">Wynik</p>
-            <div className="flex items-center gap-2 mb-1">
-              <div className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
-              <span className="text-xs text-gray-300">
-                Ułożono: <span className="font-medium text-green-400">{result.placed}</span>{" "}
-                z {selectedIds.size} elementów
-              </span>
-            </div>
-
-            {result.overflow.length > 0 && (
-              <div>
-                <button
-                  onClick={() => setOverflowExpanded((v) => !v)}
-                  className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 transition-colors mb-1"
-                >
-                  {overflowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                  Nie zmieściło się: {result.overflow.length}
-                </button>
-                {overflowExpanded && (
-                  <div className="ml-4 flex flex-col gap-0.5">
-                    {result.overflow.map((id) => (
-                      <span key={id} className="text-xs text-gray-500 truncate">{id}</span>
-                    ))}
+            <p className="text-xs font-medium text-gray-400 mb-2">Wyniki układań</p>
+            <div className="flex flex-col gap-2">
+              {jobs.map((job) => (
+                <div key={job.id} className="rounded border border-gray-800 bg-[#202020] px-2.5 py-2">
+                  <div className="flex items-center gap-2">
+                    {job.status === "running" ? (
+                      <div className="w-3 h-3 border-2 border-blue-400/30 border-t-blue-400 rounded-full animate-spin shrink-0" />
+                    ) : (
+                      <div
+                        className={`w-2 h-2 rounded-full shrink-0 ${
+                          job.status === "error" ? "bg-red-500" : "bg-green-500"
+                        }`}
+                      />
+                    )}
+                    <span className="text-xs font-medium text-gray-300">Zadanie #{job.id}</span>
+                    {job.status === "running" && (
+                      <span className="text-xs text-blue-300 ml-auto">Układam…</span>
+                    )}
                   </div>
-                )}
 
-                <button
-                  onClick={() => {
-                    // Zaznacz tylko overflow — kliknięcie Układaj zrobi NOWĄ płytę obok
-                    // istniejących (nie czyścimy poprzednich płyt)
-                    setSelectedIds(new Set(result.overflow));
-                    setResult(null);
-                  }}
-                  className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  Zaznacz pozostałe (do nowej płyty)
-                </button>
-              </div>
-            )}
+                  {job.status === "error" && (
+                    <p className="text-xs text-red-400 mt-1">Błąd układania.</p>
+                  )}
+
+                  {job.status === "done" && (
+                    <>
+                      <div className="text-xs text-gray-300 mt-1">
+                        Ułożono <span className="font-medium text-green-400">{job.placed}</span> z{" "}
+                        {job.total}
+                        {typeof job.fillPercent === "number" && (job.placed ?? 0) > 0 && (
+                          <>
+                            {" · "}upakowanie{" "}
+                            <span className="font-medium text-blue-400">{job.fillPercent}%</span>
+                          </>
+                        )}
+                      </div>
+
+                      {job.overflow && job.overflow.length > 0 && (
+                        <div className="mt-1">
+                          <button
+                            onClick={() => toggleJobExpanded(job.id)}
+                            className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                          >
+                            {job.expanded ? (
+                              <ChevronUp className="w-3 h-3" />
+                            ) : (
+                              <ChevronDown className="w-3 h-3" />
+                            )}
+                            Nie zmieściło się: {job.overflow.length}
+                          </button>
+                          {job.expanded && (
+                            <div className="ml-4 mt-0.5 flex flex-col gap-0.5">
+                              {job.overflow.map((id) => (
+                                <span key={id} className="text-xs text-gray-500 truncate">
+                                  {id}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <button
+                            onClick={() => setSelectedIds(new Set(job.overflow))}
+                            className="mt-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            Zaznacz pozostałe (do nowej płyty)
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
           </section>
         )}
       </div>
 
+      {/* Pasek statusu układań w tle — widoczny tylko gdy coś się liczy. Nie blokuje przycisku. */}
+      {runningCount > 0 && (
+        <div className="shrink-0 flex items-center gap-2 px-3 pt-2.5 border-t border-gray-800">
+          <div className="w-3.5 h-3.5 border-2 border-blue-400/30 border-t-blue-400 rounded-full animate-spin shrink-0" />
+          <span className="text-xs text-blue-300">{runningLabel}…</span>
+        </div>
+      )}
+
       {/* Akcje */}
-      <div className="shrink-0 flex items-center gap-2 px-3 py-2.5 border-t border-gray-800">
+      <div
+        className={`shrink-0 flex items-center gap-2 px-3 py-2.5 ${
+          runningCount > 0 ? "" : "border-t border-gray-800"
+        }`}
+      >
         <button
           onClick={handleRun}
           disabled={!canRun}
+          title="Dodaj układanie (możesz dorzucić kolejne, gdy inne liczą się w tle)"
           className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {isRunning ? (
-            <>
-              <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Układam…
-            </>
-          ) : (
-            <>
-              <Play className="w-3.5 h-3.5" />
-              Układaj
-            </>
-          )}
+          <Play className="w-3.5 h-3.5" />
+          Układaj
         </button>
 
-        {result && (
+        {hasDoneJob && (
           <button
             onClick={handleExport}
             title="Eksportuj płytę do SVG"

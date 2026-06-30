@@ -52,13 +52,17 @@ export interface NestingConfig {
   plateHeightMm: number;
   gapMm: number;
   rotationStep: RotationStep;
+  /** Liczba prób multi-start: 1 = zwykłe „Układaj" (domyślnie), >1 = optymalizacja (najlepszy z N). */
+  attempts?: number;
 }
 
 export interface NestingRunResult {
   placed: number;
   overflow: string[];
+  /** Gęstość upakowania: pole wypełnienia / pole obwiedni ułożonych (0–100%). Wyższe = ciaśniej. */
+  fillPercent?: number;
 }
 
-export const runNestingFnRef: { current: ((config: NestingConfig) => NestingRunResult | null) | null } = { current: null };
+export const runNestingFnRef: { current: ((config: NestingConfig) => Promise<NestingRunResult | null>) | null } = { current: null };
 export const clearNestingFnRef: { current: (() => void) | null } = { current: null };
 export const exportNestingSvgFnRef: { current: (() => string | null) | null } = { current: null };

@@ -13,7 +13,8 @@ import {
   saveFnRef, resizeElementFnRef, captureCanvasFnRef, pushHistoryRef,
   runNestingFnRef, clearNestingFnRef, exportNestingSvgFnRef,
 } from "../../lib/paperCanvas";
-import { computeNesting } from "./canvas/nestingEngine";
+import { prepareNesting, computeNestingBest, type NestResult } from "./canvas/nestingEngine";
+import { nestingPool } from "./canvas/nestingPool";
 import { mergeLetterHoles } from "./canvas/mergeHoles";
 import { NestingPanel } from "./NestingPanel";
 import { updateSvgWithOverrides, patchSvgLayerState } from "../../lib/svgHelpers";
@@ -981,7 +982,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   // ── Nesting ────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    runNestingFnRef.current = (config) => {
+    runNestingFnRef.current = async (config) => {
       const svgLayer = svgLayerRef.current;
       const nestingLayer = nestingLayerRef.current;
       if (!svgLayer || !nestingLayer) return null;
@@ -1042,14 +1043,36 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       (plateOutline as paper.Item & { data: { isPlate: boolean } }).data = { isPlate: true };
       prevLayer.activate();
 
-      // Uruchom algorytm nestingu
-      const result = computeNesting(
+      // Rasteryzacja masek (Paper.js, główny wątek — krótki spike). Robione RAZ; skan na tych
+      // maskach idzie do puli workerów, więc UI nie zamarza na czas pakowania.
+      const prepared = prepareNesting(
         inputs,
         config.plateWidthMm,
         config.plateHeightMm,
         config.gapMm,
         config.rotationStep,
       );
+      const attempts = config.attempts ?? 1;
+
+      // Skan w puli workerów (równolegle dla attempts>1). Gdy workery niedostępne lub zawiodą —
+      // fallback na wariant synchroniczny (ta sama logika, tylko na głównym wątku).
+      let result: NestResult;
+      try {
+        if (!nestingPool.isSupported()) throw new Error("workers unavailable");
+        result = await nestingPool.runBest(prepared, attempts);
+      } catch {
+        result = computeNestingBest(
+          inputs,
+          config.plateWidthMm,
+          config.plateHeightMm,
+          config.gapMm,
+          config.rotationStep,
+          attempts,
+        );
+      }
+
+      // Warstwy mogły zostać zburzone w trakcie (remount/zmiana projektu) — sprawdź ponownie.
+      if (!svgLayerRef.current || !nestingLayerRef.current) return null;
 
       // PRZESUŃ (nie klonuj!) ułożone elementy na płytę — pozostają edytowalne
       // w svgLayer. Obrót zmienia bounds, więc przeliczamy boundsPerElement po przesunięciu.
@@ -1077,7 +1100,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         rebuildLayerItems();
       }, 0);
 
-      return { placed: result.placed.length, overflow: result.overflow };
+      const fillPercent =
+        result.bboxCells > 0 ? Math.round((result.filledCells / result.bboxCells) * 100) : 0;
+      return { placed: result.placed.length, overflow: result.overflow, fillPercent };
     };
 
     clearNestingFnRef.current = () => {
