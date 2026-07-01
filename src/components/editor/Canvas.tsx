@@ -2203,8 +2203,14 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   // ── Eksport SVG ────────────────────────────────────────────────────────────
 
   const handleExportSvg = useCallback(async () => {
-    const content = svgContentRef.current;
-    if (!content) return;
+    // Eksportuj bezpośrednio z warstwy Paper.js, nie z svgContentRef — ten ref
+    // synchronizuje się dopiero po renderze (patrz pushHistory w useCanvasHistory.ts),
+    // więc na świeżo zaimportowanym projekcie (zwłaszcza na wolniejszej maszynie)
+    // bywał jeszcze `null` mimo że warstwa miała już elementy — przycisk był
+    // widoczny (hasSvg liczone z layer.children), ale eksport cicho nic nie robił.
+    const layer = svgLayerRef.current;
+    if (!layer || layer.children.length === 0) return;
+    const content = exportSvgLayer(layer, mmPerUnitRef.current);
     const updated = updateSvgWithOverrides(content, nodeOverridesRef.current);
 
     // Produkty (rastry) to wizualizacja, nie geometria cięcia — usuń je z pliku eksportu.
@@ -2212,7 +2218,6 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
 
     // Obwiednia tylko geometrii cięcia (z pominięciem rastrów), żeby viewBox/wymiary
     // pliku nie obejmowały produktu stojącego obok szyldu.
-    const layer = svgLayerRef.current;
     let cutBounds: paper.Rectangle | null = null;
     if (layer) {
       (layer.children as paper.Item[]).forEach((c) => {
