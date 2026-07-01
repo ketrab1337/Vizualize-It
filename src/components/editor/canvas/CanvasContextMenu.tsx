@@ -4,6 +4,7 @@ export interface CtxMenuState {
   x: number;
   y: number;
   showUngroup: boolean;
+  showSplit: boolean;
   showGroup: boolean;
   groupCount: number;
   itemName: string | null;
@@ -20,6 +21,7 @@ interface CanvasContextMenuProps {
   onRedo: () => void;
   onGroup: () => void;
   onUngroup: () => void;
+  onSplit: () => void;
   onToggleLock: (name: string) => void;
   onDelete: () => void;
 }
@@ -27,7 +29,7 @@ interface CanvasContextMenuProps {
 export function CanvasContextMenu({
   menu, clipboardEmpty,
   onClose, onCopy, onPaste, onUndo, onRedo,
-  onGroup, onUngroup, onToggleLock, onDelete,
+  onGroup, onUngroup, onSplit, onToggleLock, onDelete,
 }: CanvasContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: menu.x, y: menu.y });
@@ -91,6 +93,14 @@ export function CanvasContextMenu({
             Rozgrupuj
           </button>
         )}
+        {menu.showSplit && (
+          <button
+            onClick={() => { onSplit(); onClose(); }}
+            className="w-full text-left px-3 py-1.5 text-gray-300 hover:bg-gray-800 transition-colors"
+          >
+            Rozdziel
+          </button>
+        )}
         {menu.showGroup && (
           <button
             onClick={() => { onGroup(); onClose(); }}
@@ -99,7 +109,7 @@ export function CanvasContextMenu({
             Grupuj zaznaczenie ({menu.groupCount})
           </button>
         )}
-        {(menu.showUngroup || menu.showGroup) && (
+        {(menu.showUngroup || menu.showSplit || menu.showGroup) && (
           <div className="h-px bg-gray-700 my-1" />
         )}
         {menu.itemName && (

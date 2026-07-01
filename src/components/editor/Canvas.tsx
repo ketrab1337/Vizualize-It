@@ -777,6 +777,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     setContextMenu({
       x, y,
       showUngroup: effectiveSelected.length === 1 && clicked?.type === "group",
+      showSplit: effectiveSelected.length === 1 && clicked?.type === "compound",
       showGroup: effectiveSelected.length >= 2,
       groupCount: effectiveSelected.length,
       itemName: id,
@@ -1632,6 +1633,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
         x: e.clientX,
         y: e.clientY,
         showUngroup: items.length === 1 && items[0] instanceof paper.Group,
+        showSplit: items.length === 1 && items[0] instanceof paper.CompoundPath,
         showGroup: items.length >= 2,
         groupCount: items.length,
         itemName: clickedItem?.name ?? null,
@@ -2040,6 +2042,79 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
     setContextMenu(null);
   }, [clearSelection, addToSelection, setSvgContent, rebuildLayerItems, pushHistory, setNodeOverride, removeNodeOverride, setChildParent, removeFromParentMap, removeBoundsForElement]);
 
+  // ── Rozdzielanie CompoundPath (wielokonturowy wektor) na osobne elementy ──
+  // CompoundPath to NIE Group — Rozgrupuj go nie obsługuje (Paper.js: CompoundPath
+  // dziedziczy z PathItem, nie z Group). Rozdziela WSZYSTKIE subpaths bezwarunkowo,
+  // bez sprawdzania zawierania geometrycznego — jeśli któryś kontur miał tworzyć
+  // otwór w literze (O, P, R…), użytkownik scala go z powrotem przyciskiem
+  // "Scal otwory" w toolbarze (mergeHoles.ts).
+  const handleSplitCompound = useCallback(() => {
+    const item = selectedItemsRef.current[0];
+    if (!item || !(item instanceof paper.CompoundPath) || !svgLayerRef.current) return;
+    const parent = item.parent;
+    if (!parent) return;
+    const idx = (parent.children as paper.Item[]).indexOf(item);
+    const compoundName = item.name;
+    const compoundOverride = compoundName ? nodeOverridesRef.current[compoundName] : undefined;
+
+    const children = [...(item.children as paper.Path[])];
+    if (children.length < 2) return; // pojedynczy kontur — nie ma czego dzielić
+
+    // Snapshot stylu z compounda — subpaths zwykle nie mają własnego stylu
+    // (renderują się jako jeden kształt evenodd), więc przy usamodzielnieniu
+    // trzeba im jawnie nadać kolor/obrys, inaczej znikną wizualnie.
+    const fillColor = item.fillColor;
+    const strokeColor = item.strokeColor;
+    const strokeWidth = item.strokeWidth;
+    const dashArray = item.dashArray;
+    const opacity = item.opacity;
+
+    children.forEach((c, i) => {
+      c.name = compoundName ? `${compoundName}_${i}` : `path_${i}`;
+      if (!c.fillColor) c.fillColor = fillColor ?? null;
+      if (!c.strokeColor) c.strokeColor = strokeColor ?? null;
+      if (strokeWidth != null && c.strokeWidth == null) c.strokeWidth = strokeWidth;
+      if (dashArray && dashArray.length && (!c.dashArray || !c.dashArray.length)) c.dashArray = dashArray;
+      c.opacity = opacity ?? 1;
+    });
+
+    // Migracja override compounda → każdy nowy kontur (tylko te bez własnego override)
+    if (compoundOverride) {
+      children.forEach((c) => {
+        const childName = c.name;
+        if (!childName) return;
+        if (!nodeOverridesRef.current[childName]) {
+          setNodeOverride(childName, compoundOverride);
+          if (compoundOverride.fill) applyFillByName(childName, compoundOverride.fill);
+        }
+      });
+      if (compoundName) removeNodeOverride(compoundName);
+    }
+
+    // Aktualizuj parentMap: nowe kontury przechodzą na poziom rodzica compounda
+    const compoundParentName = compoundName ? useEditorStore.getState().parentMap[compoundName] : undefined;
+    children.forEach((c) => {
+      if (!c.name) return;
+      if (compoundParentName) setChildParent(c.name, compoundParentName);
+      else removeFromParentMap(c.name);
+    });
+    if (compoundName) removeFromParentMap(compoundName);
+
+    parent.insertChildren(idx, children);
+    item.remove();
+    if (compoundName) removeBoundsForElement(compoundName);
+    clearSelection();
+    children.forEach((c) => addToSelection(c));
+    setTimeout(() => rebuildLayerItems(), 0);
+    if (svgContentRef.current) {
+      const updated = exportSvgLayer(svgLayerRef.current, mmPerUnitRef.current);
+      lastSavedContentRef.current = updated;
+      setSvgContent(updated);
+    }
+    pushHistory();
+    setContextMenu(null);
+  }, [clearSelection, addToSelection, setSvgContent, rebuildLayerItems, pushHistory, setNodeOverride, removeNodeOverride, setChildParent, removeFromParentMap, removeBoundsForElement]);
+
   // ── Wykrywanie otworów w literach (do nestingu) ───────────────────────────
   // Łączy kontur zewnętrzny litery z jej środkiem (oczkiem) w jeden CompoundPath
   // z evenodd → środek pusty, każda litera = jeden element. Patrz canvas/mergeHoles.ts.
@@ -2095,8 +2170,9 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
   ]);
 
   // ── Skróty klawiszowe ─────────────────────────────────────────────────────
-  // Blok musi być po handleGroup/handleUngroup (zdefiniowanych wyżej przez useCallback),
-  // żeby ich nazwy nie były w temporal dead zone przy ewaluacji tablicy deps.
+  // Blok musi być po handleGroup/handleUngroup/handleSplitCompound (zdefiniowanych
+  // wyżej przez useCallback), żeby ich nazwy nie były w temporal dead zone przy
+  // ewaluacji tablicy deps.
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -2108,14 +2184,21 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
       if (ctrl && e.code === "KeyZ" && !e.shiftKey) { e.preventDefault(); handleUndo(); return; }
       if (ctrl && e.code === "KeyZ" && e.shiftKey)  { e.preventDefault(); handleRedo(); return; }
       if (ctrl && e.code === "KeyG" && !e.shiftKey) { e.preventDefault(); handleGroup(); return; }
-      if (ctrl && e.code === "KeyG" && e.shiftKey)  { e.preventDefault(); handleUngroup(); return; }
+      if (ctrl && e.code === "KeyG" && e.shiftKey)  {
+        e.preventDefault();
+        // Rozgrupuj (Group) lub Rozdziel (CompoundPath) — ten sam skrót, zależnie od typu zaznaczenia
+        const sel = selectedItemsRef.current[0];
+        if (sel instanceof paper.CompoundPath) handleSplitCompound();
+        else handleUngroup();
+        return;
+      }
       if (ctrl && e.key === "c") { e.preventDefault(); handleCopy(); return; }
       if (ctrl && e.key === "v") { e.preventDefault(); handlePaste(); return; }
       if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); handleDelete(); return; }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleUndo, handleRedo, handleGroup, handleUngroup, handleCopy, handlePaste, handleDelete]);
+  }, [handleUndo, handleRedo, handleGroup, handleUngroup, handleSplitCompound, handleCopy, handlePaste, handleDelete]);
 
   // ── Eksport SVG ────────────────────────────────────────────────────────────
 
@@ -2799,6 +2882,7 @@ const [selectedItemNames, setSelectedItemNames] = useState<string[]>([]);
           onRedo={handleRedo}
           onGroup={handleGroup}
           onUngroup={handleUngroup}
+          onSplit={handleSplitCompound}
           onToggleLock={handleLayerToggleLock}
           onDelete={handleDelete}
         />
